@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Usernode dApp Starter</title>
+    <script src="./usernode-bridge.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        /* Light theme (default) */
+        --bg: #f7f8fb;
+        --fg: #0b1220;
+        --muted: #4b5568;
+        --card: #ffffff;
+        --border: rgba(15, 23, 42, 0.12);
+        --accent: #2563eb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0f16;
+          --fg: #e7edf7;
+          --muted: #a8b3c7;
+          --card: #141b26;
+          --border: rgba(255, 255, 255, 0.12);
+          --accent: #6ea8fe;
+        }
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: var(--bg);
+        color: var(--fg);
+      }
+      main {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .card {
+        width: min(760px, 100%);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 22px 20px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+        letter-spacing: 0.2px;
+      }
+      p {
+        margin: 10px 0;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 0.95em;
+        color: var(--fg);
+      }
+      .row {
+        margin-top: 14px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      a.button {
+        display: inline-block;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        text-decoration: none;
+      }
+      a.button:hover {
+        border-color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>Usernode dApp Starter</h1>
+        <p>
+          This is a minimal static page served by <code>server.js</code> on port
+          <code>8000</code>.
+        </p>
+        <p>
+          <strong>Node address (from mobile app):</strong>
+          <code id="nodeAddress">(loading...)</code>
+        </p>
+        <p>
+          <strong>App pubkey (destination):</strong>
+          <code id="appPubkey">ut1_app_demo_pubkey</code>
+        </p>
+        <p>
+          Next: replace this page with your app UI and start wiring in Usernode
+          RPC / wallet flows.
+        </p>
+
+        <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0;" />
+
+        <h2 style="margin: 0 0 8px; font-size: 16px;">Send a transaction</h2>
+        <p style="margin-top: 0;">
+          Sends <code>amount=1</code> to the app pubkey with a random memo.
+        </p>
+        <div style="display: grid; gap: 10px; margin: 10px 0 6px;">
+          <label style="display: grid; gap: 6px;">
+            <span style="color: var(--muted); font-size: 13px;">Memo</span>
+            <input
+              id="memoInput"
+              type="text"
+              spellcheck="false"
+              style="
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px 12px;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                background: transparent;
+                color: var(--fg);
+                outline: none;
+              "
+            />
+          </label>
+          <div class="row" style="margin-top: 0;">
+            <a class="button" href="#" id="regenMemoBtn">Randomize memo</a>
+          </div>
+        </div>
+        <div class="row">
+          <a class="button" href="#" id="sendTxBtn">Send 1 token</a>
+        </div>
+        <pre id="sendTxStatus" style="margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;">(idle)</pre>
+
+        <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0;" />
+
+        <h2 style="margin: 0 0 8px; font-size: 16px;">Transactions</h2>
+        <p style="margin-top: 0;">
+          Auto-refreshes every 5 seconds via <code>getTransactions()</code>.
+        </p>
+        <p style="margin: 0;">
+          <strong>Status:</strong> <code id="txPollStatus">(starting...)</code>
+        </p>
+        <pre id="txList" style="margin-top: 10px; white-space: pre-wrap; word-break: break-word;"></pre>
+
+        <div class="row">
+          <a class="button" href="/" rel="noopener">Reload</a>
+        </div>
+      </div>
+    </main>
+    <script>
+      (function () {
+        const el = document.getElementById("nodeAddress");
+        const appPubkeyEl = document.getElementById("appPubkey");
+        const sendBtn = document.getElementById("sendTxBtn");
+        const memoInput = document.getElementById("memoInput");
+        const regenMemoBtn = document.getElementById("regenMemoBtn");
+        const sendStatusEl = document.getElementById("sendTxStatus");
+        const txPollStatusEl = document.getElementById("txPollStatus");
+        const txListEl = document.getElementById("txList");
+
+        const APP_PUBKEY = (appPubkeyEl && appPubkeyEl.textContent) || "ut1_app_demo_pubkey";
+        const FIXED_AMOUNT = 1;
+
+        function setText(s) {
+          if (!el) return;
+          el.textContent = s;
+        }
+
+        function setSendStatus(s) {
+          if (!sendStatusEl) return;
+          sendStatusEl.textContent =
+            typeof s === "string" ? s : JSON.stringify(s, null, 2);
+        }
+
+        function setPollStatus(s) {
+          if (!txPollStatusEl) return;
+          txPollStatusEl.textContent = s;
+        }
+
+        function setTxList(s) {
+          if (!txListEl) return;
+          txListEl.textContent = s;
+        }
+
+        function randomHex(bytes) {
+          const a = new Uint8Array(bytes);
+          if (window.crypto && window.crypto.getRandomValues) {
+            window.crypto.getRandomValues(a);
+          } else {
+            for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256);
+          }
+          return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+        }
+
+        function randomMemo() {
+          return `memo_${Date.now()}_${randomHex(6)}`;
+        }
+
+        function setMemoValue(v) {
+          if (!memoInput) return;
+          memoInput.value = v;
+        }
+
+        function getMemoValue() {
+          if (!memoInput) return randomMemo();
+          return (memoInput.value || "").trim() || randomMemo();
+        }
+
+        async function refreshTransactionsOnce() {
+          try {
+            setPollStatus("loading...");
+            const resp = await window.getTransactions({ limit: 50 });
+            const items = resp && resp.items ? resp.items : resp;
+            setTxList(JSON.stringify(items, null, 2));
+            setPollStatus(`ok (${Array.isArray(items) ? items.length : "?"} items)`);
+          } catch (e) {
+            setPollStatus(`error: ${e && e.message ? e.message : String(e)}`);
+          }
+        }
+
+        async function main() {
+          try {
+            const addr = await window.getNodeAddress();
+            setText(addr || "(empty)");
+          } catch (e) {
+            setText(`(error: ${e && e.message ? e.message : String(e)})`);
+          }
+
+          // Initialize memo field with a random value on each page load.
+          setMemoValue(randomMemo());
+          if (regenMemoBtn) {
+            regenMemoBtn.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              setMemoValue(randomMemo());
+            });
+          }
+
+          if (sendBtn) {
+            sendBtn.addEventListener("click", async (ev) => {
+              ev.preventDefault();
+              try {
+                setSendStatus("sending...");
+                const memo = getMemoValue();
+                const result = await window.sendTransaction(APP_PUBKEY, FIXED_AMOUNT, memo);
+                setSendStatus(result);
+                // Generate a new random memo after sending (user can still edit before next send).
+                setMemoValue(randomMemo());
+              } catch (e) {
+                setSendStatus(`(error: ${e && e.message ? e.message : String(e)})`);
+              }
+            });
+          }
+
+          // Poll transactions every 5 seconds.
+          await refreshTransactionsOnce();
+          setInterval(refreshTransactionsOnce, 5000);
+        }
+
+        main();
+      })();
+    </script>
+  </body>
+</html>
+
