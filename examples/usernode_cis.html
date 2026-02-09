@@ -339,6 +339,8 @@
 
               <div class="panel hide" id="addSurveyPanel" style="margin-top: 10px;">
                 <h3 style="margin: 0 0 8px; font-size: 14px;">Create survey</h3>
+                <div id="surveyCooldownHint" class="muted hide" style="font-size: 12px; margin-bottom: 8px;"></div>
+                <div class="muted" style="font-size: 12px; margin-bottom: 8px;">You can create one survey every 24 hours.</div>
                 <label style="display: grid; gap: 6px; margin-top: 8px;">
                   <span class="muted" style="font-size: 13px;">Title</span>
                   <input id="newSurveyTitle" class="input" maxlength="80" />
@@ -767,6 +769,7 @@
         const addSurveyBtn = $("addSurveyBtn");
         const addSurveyPanel = $("addSurveyPanel");
         const addSurveyPendingEl = $("addSurveyPending");
+        const surveyCooldownHintEl = $("surveyCooldownHint");
         const saveSurveyBtn = $("saveSurveyBtn");
         const cancelSurveyBtn = $("cancelSurveyBtn");
         const newSurveyTitleEl = $("newSurveyTitle");
@@ -1137,6 +1140,38 @@
           return latest;
         }
 
+        const SURVEY_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+        function getMyLastSurveyCreationMs(txs, address) {
+          if (!address) return null;
+          const meAddr = String(address);
+          let latest = null;
+          for (const rawTx of txs) {
+            const tx = normalizeTx(rawTx);
+            if (!tx || !tx.from || !tx.to) continue;
+            if (tx.from !== meAddr || tx.to !== CIS_APP_PUBKEY) continue;
+            const memoObj = parseMemo(tx.memo);
+            const memoApp = memoObj && memoObj.app ? String(memoObj.app) : null;
+            const isCisMemo = memoApp === "cis" || memoApp === "exocortex";
+            if (!memoObj || !isCisMemo || memoObj.type !== "create_survey") continue;
+            if (latest === null || tx.ts > latest) latest = tx.ts;
+          }
+          return latest;
+        }
+
+        function formatCooldownRemaining(lastCreationMs) {
+          if (lastCreationMs == null) return null;
+          const diff = (lastCreationMs + SURVEY_COOLDOWN_MS) - Date.now();
+          if (diff <= 0) return null;
+          const pad = (n) => String(n).padStart(2, "0");
+          const totalMin = Math.floor(diff / 60000);
+          const hh = Math.floor(totalMin / 60);
+          const mm = totalMin % 60;
+          return `${pad(hh)}h ${pad(mm)}m`;
+        }
+
+        let lastSurveyCreationMs = null;
+
         function computeResults(txs, myAddress, surveyId) {
           const s =
             SURVEYS.find((x) => x.id === surveyId) || SURVEYS[0] || null;
@@ -1344,6 +1379,30 @@
 
         }
 
+        function isSurveyCooldownActive() {
+          if (lastSurveyCreationMs == null) return false;
+          return Date.now() < lastSurveyCreationMs + SURVEY_COOLDOWN_MS;
+        }
+
+        function updateSurveyCooldownUi() {
+          const remaining = formatCooldownRemaining(lastSurveyCreationMs);
+          const onCooldown = !!remaining;
+          if (surveyCooldownHintEl) {
+            if (onCooldown) {
+              surveyCooldownHintEl.textContent = `You can create another survey in ${remaining}.`;
+              show(surveyCooldownHintEl, true);
+            } else {
+              show(surveyCooldownHintEl, false);
+            }
+          }
+          // Disable form inputs and save button while on cooldown
+          if (saveSurveyBtn) setDisabled(saveSurveyBtn, sending || onCooldown);
+          if (newSurveyTitleEl) setDisabled(newSurveyTitleEl, sending || onCooldown);
+          if (newSurveyQuestionEl) setDisabled(newSurveyQuestionEl, sending || onCooldown);
+          if (newSurveyOptionsEl) setDisabled(newSurveyOptionsEl, sending || onCooldown);
+          if (newSurveyDurationEl) setDisabled(newSurveyDurationEl, sending || onCooldown);
+        }
+
         async function refreshLoopOnce() {
           try {
             const txs = await getCisTransactions(400);
@@ -1355,6 +1414,10 @@
             rebuildSurveysFromTransactions(txs);
             latestTxs = txs;
             renderSurveyList();
+
+            // Update survey creation cooldown
+            lastSurveyCreationMs = getMyLastSurveyCreationMs(txs, me);
+            updateSurveyCooldownUi();
 
             if (currentSurveyId && !SURVEYS.some((s) => s.id === currentSurveyId)) {
               navigateToList();
@@ -1636,7 +1699,11 @@
             addSurveyBtn.addEventListener("click", () => {
               const opening = addSurveyPanel && addSurveyPanel.classList.contains("hide");
               show(addSurveyPanel, !!opening);
-              if (!opening) clearAddSurveyForm();
+              if (opening) {
+                updateSurveyCooldownUi();
+              } else {
+                clearAddSurveyForm();
+              }
             });
           }
           if (cancelSurveyBtn) {
@@ -1648,6 +1715,10 @@
           if (saveSurveyBtn) {
             saveSurveyBtn.addEventListener("click", async () => {
               try {
+                if (isSurveyCooldownActive()) {
+                  const remaining = formatCooldownRemaining(lastSurveyCreationMs) || "some time";
+                  throw new Error(`You can create another survey in ${remaining}.`);
+                }
                 const survey = createSurveyFromForm();
                 setSending(true);
                 const memo = makeMemo({
@@ -1684,7 +1755,7 @@
           await refreshLoopOnce();
           window.setInterval(refreshLoopOnce, 4000);
 
-          // 1-second ticker for sub-hour countdowns
+          // 1-second ticker for sub-hour countdowns and cooldown hint
           window.setInterval(() => {
             document.querySelectorAll(".countdownTick[data-expires]").forEach((el) => {
               const exp = Number(el.dataset.expires);
@@ -1693,6 +1764,10 @@
             if (surveyCountdownEl && surveyCountdownEl.dataset.expires) {
               const exp = Number(surveyCountdownEl.dataset.expires);
               if (exp) surveyCountdownEl.textContent = "⏱ " + formatCountdown(exp);
+            }
+            // Keep cooldown hint fresh if the add-survey panel is open
+            if (addSurveyPanel && !addSurveyPanel.classList.contains("hide")) {
+              updateSurveyCooldownUi();
             }
           }, 1000);
         }
