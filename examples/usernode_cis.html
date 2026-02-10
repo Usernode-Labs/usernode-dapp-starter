@@ -349,16 +349,11 @@
                   <span class="muted" style="font-size: 13px;">Question</span>
                   <input id="newSurveyQuestion" class="input" maxlength="160" />
                 </label>
-                <label style="display: grid; gap: 6px; margin-top: 8px;">
-                  <span class="muted" style="font-size: 13px;">Options (one per line)</span>
-                  <textarea
-                    id="newSurveyOptions"
-                    class="input"
-                    rows="4"
-                    placeholder="Option A&#10;Option B&#10;Option C"
-                    style="resize: vertical;"
-                  ></textarea>
-                </label>
+                <div style="display: grid; gap: 6px; margin-top: 8px;">
+                  <span class="muted" style="font-size: 13px;">Options</span>
+                  <div id="surveyOptionsList" style="display: grid; gap: 6px;"></div>
+                  <button class="btn" id="addSurveyOptionBtn" type="button" style="justify-self: start; font-size: 12px;">+ Add option</button>
+                </div>
                 <label style="display: grid; gap: 6px; margin-top: 8px;">
                   <span class="muted" style="font-size: 13px;">Active for</span>
                   <select id="newSurveyDuration" class="input">
@@ -787,7 +782,8 @@
         const cancelSurveyBtn = $("cancelSurveyBtn");
         const newSurveyTitleEl = $("newSurveyTitle");
         const newSurveyQuestionEl = $("newSurveyQuestion");
-        const newSurveyOptionsEl = $("newSurveyOptions");
+        const surveyOptionsListEl = $("surveyOptionsList");
+        const addSurveyOptionBtn = $("addSurveyOptionBtn");
         const newSurveyDurationEl = $("newSurveyDuration");
         const activeSurveyListEl = $("activeSurveyList");
         const archivedSurveyListEl = $("archivedSurveyList");
@@ -963,10 +959,53 @@
           setText(headerUsernameEl, v);
         }
 
+        function addSurveyOptionField(value) {
+          if (!surveyOptionsListEl) return;
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;gap:6px;align-items:center;";
+          const inp = document.createElement("input");
+          inp.className = "input";
+          inp.maxLength = 80;
+          inp.placeholder = "Option " + (surveyOptionsListEl.children.length + 1);
+          inp.value = value || "";
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "btn";
+          removeBtn.style.cssText = "font-size:12px;padding:4px 8px;flex:0 0 auto;";
+          removeBtn.textContent = "✕";
+          removeBtn.addEventListener("click", () => {
+            row.remove();
+            reindexOptionPlaceholders();
+          });
+          row.appendChild(inp);
+          row.appendChild(removeBtn);
+          surveyOptionsListEl.appendChild(row);
+        }
+
+        function reindexOptionPlaceholders() {
+          if (!surveyOptionsListEl) return;
+          Array.from(surveyOptionsListEl.children).forEach((row, i) => {
+            const inp = row.querySelector("input");
+            if (inp) inp.placeholder = "Option " + (i + 1);
+          });
+        }
+
+        function getSurveyOptionInputs() {
+          if (!surveyOptionsListEl) return [];
+          return Array.from(surveyOptionsListEl.querySelectorAll("input"));
+        }
+
+        function initSurveyOptionFields() {
+          if (!surveyOptionsListEl) return;
+          surveyOptionsListEl.innerHTML = "";
+          addSurveyOptionField("");
+          addSurveyOptionField("");
+        }
+
         function clearAddSurveyForm() {
           if (newSurveyTitleEl) newSurveyTitleEl.value = "";
           if (newSurveyQuestionEl) newSurveyQuestionEl.value = "";
-          if (newSurveyOptionsEl) newSurveyOptionsEl.value = "";
+          initSurveyOptionFields();
           if (newSurveyDurationEl) newSurveyDurationEl.value = String(DEFAULT_SURVEY_DURATION_MS);
         }
 
@@ -982,17 +1021,12 @@
           setText(usernameSuffixEl, usernameSuffix(me));
         }
 
-        function parseOptionsInput(raw) {
-          return String(raw || "")
-            .split(/\r?\n/g)
-            .map((s) => s.trim())
-            .filter(Boolean);
-        }
-
         function createSurveyFromForm() {
           const title = String(newSurveyTitleEl && newSurveyTitleEl.value || "").trim();
           const question = String(newSurveyQuestionEl && newSurveyQuestionEl.value || "").trim();
-          const labels = parseOptionsInput(newSurveyOptionsEl && newSurveyOptionsEl.value);
+          const labels = getSurveyOptionInputs()
+            .map((inp) => inp.value.trim())
+            .filter(Boolean);
           const activeDurationMs = normalizeSurveyDurationMs(
             newSurveyDurationEl ? newSurveyDurationEl.value : DEFAULT_SURVEY_DURATION_MS
           );
@@ -1033,7 +1067,8 @@
           setDisabled(cancelSurveyBtn, sending);
           setDisabled(newSurveyTitleEl, sending);
           setDisabled(newSurveyQuestionEl, sending);
-          setDisabled(newSurveyOptionsEl, sending);
+          getSurveyOptionInputs().forEach((inp) => setDisabled(inp, sending));
+          setDisabled(addSurveyOptionBtn, sending);
           setDisabled(newSurveyDurationEl, sending);
           if (resultsBarsEl) {
             const btns = resultsBarsEl.querySelectorAll("button");
@@ -1284,6 +1319,27 @@
           };
         }
 
+        const IMAGE_URL_RE = /https?:\/\/\S+\.(?:png|jpe?g|gif|webp|svg|bmp|ico)(?:\?\S*)?/i;
+
+        function parseOptionLabel(label) {
+          const match = IMAGE_URL_RE.exec(label || "");
+          if (!match) return { text: label || "", imageUrl: null };
+          const url = match[0];
+          const text = (label.slice(0, match.index) + " " + label.slice(match.index + url.length)).trim();
+          return { text: text || "", imageUrl: url };
+        }
+
+        function makeOptionImage(url, alt) {
+          const img = document.createElement("img");
+          img.src = url;
+          img.alt = alt || "option image";
+          img.style.cssText = "display:block;max-width:100%;max-height:100vw;border-radius:4px;margin-top:6px;object-fit:contain;";
+          img.onerror = function () {
+            this.replaceWith(document.createTextNode(url));
+          };
+          return img;
+        }
+
         function renderResults(res) {
           if (!res || !res.survey) return;
           const s = res.survey;
@@ -1311,25 +1367,34 @@
                   setSending(false);
                 }
               });
+              const parsed = parseOptionLabel(opt.label);
+              // Top: text + vote count
               const header = document.createElement("div");
               header.className = "row";
-              header.style.justifyContent = "space-between";
+              header.style.cssText = "justify-content:space-between;align-items:flex-start;";
               const left = document.createElement("strong");
-              left.textContent = opt.label;
+              left.textContent = parsed.text || opt.key;
               const right = document.createElement("span");
               right.className = "muted";
+              right.style.cssText = "flex:0 0 auto;margin-left:8px;";
               const countCode = document.createElement("code");
               countCode.textContent = count;
               right.appendChild(countCode);
               header.appendChild(left);
               header.appendChild(right);
+              row.appendChild(header);
+              // Middle: vote bar
               const bar = document.createElement("div");
               bar.className = "bar";
+              if (count === 0) bar.style.borderColor = "transparent";
               const inner = document.createElement("div");
               inner.style.width = pct(count) + "%";
               bar.appendChild(inner);
-              row.appendChild(header);
               row.appendChild(bar);
+              // Bottom: image (if any)
+              if (parsed.imageUrl) {
+                row.appendChild(makeOptionImage(parsed.imageUrl, parsed.text));
+              }
               resultsBarsEl.appendChild(row);
             }
           }
@@ -1360,7 +1425,8 @@
           if (saveSurveyBtn) setDisabled(saveSurveyBtn, sending || onCooldown);
           if (newSurveyTitleEl) setDisabled(newSurveyTitleEl, sending || onCooldown);
           if (newSurveyQuestionEl) setDisabled(newSurveyQuestionEl, sending || onCooldown);
-          if (newSurveyOptionsEl) setDisabled(newSurveyOptionsEl, sending || onCooldown);
+          getSurveyOptionInputs().forEach((inp) => setDisabled(inp, sending || onCooldown));
+          if (addSurveyOptionBtn) setDisabled(addSurveyOptionBtn, sending || onCooldown);
           if (newSurveyDurationEl) setDisabled(newSurveyDurationEl, sending || onCooldown);
         }
 
@@ -1405,6 +1471,7 @@
                 addOptionToggleBtn.style.display = res.survey.archived ? "none" : "";
               }
               myAddedOptionBySurvey[currentSurveyId] = res.myAddedOption || null;
+              const addOptionOpen = addOptionPanelEl && !addOptionPanelEl.classList.contains("hide");
               if (addOptionHintEl) {
                 if (res.myAddedOption) {
                   addOptionHintEl.textContent = `You already added: "${res.myAddedOption.label}"`;
@@ -1413,7 +1480,8 @@
                 }
               }
               if (newOptionInputEl) {
-                newOptionInputEl.value = "";
+                // Don't clear the input while the user has the panel open and is typing.
+                if (!addOptionOpen) newOptionInputEl.value = "";
                 setDisabled(newOptionInputEl, !!res.myAddedOption || sending || !!res.survey.archived);
               }
               if (addOptionToggleBtn) {
@@ -1426,7 +1494,10 @@
                 );
               }
               if (cancelOptionBtn) setDisabled(cancelOptionBtn, sending);
-              if (res.myAddedOption || res.survey.archived) show(addOptionPanelEl, false);
+              // Only collapse the panel on refresh if it isn't currently open for editing.
+              if (!addOptionOpen && (res.myAddedOption || res.survey.archived)) {
+                show(addOptionPanelEl, false);
+              }
 
               // Also reflect the current user's latest vote from chain state.
               if (res.meEntry && res.meEntry.voteKey) {
@@ -1658,6 +1729,11 @@
             });
           }
 
+          if (addSurveyOptionBtn) {
+            addSurveyOptionBtn.addEventListener("click", () => {
+              addSurveyOptionField("");
+            });
+          }
           if (addSurveyBtn) {
             addSurveyBtn.addEventListener("click", () => {
               const opening = addSurveyPanel && addSurveyPanel.classList.contains("hide");
@@ -1708,6 +1784,9 @@
               }
             });
           }
+
+          // Set up initial option fields for the create-survey form.
+          initSurveyOptionFields();
 
           // Results polling
           await refreshLoopOnce();
