@@ -1343,13 +1343,30 @@
         }
 
         const IMAGE_URL_RE = /https?:\/\/\S+\.(?:png|jpe?g|gif|webp|svg|bmp|ico)(?:\?\S*)?/i;
+        const ANY_URL_RE = /https?:\/\/\S+/gi;
 
+        /**
+         * Parse an option label into text, image URL (if any), and non-image
+         * URLs (rendered as clickable links).
+         */
         function parseOptionLabel(label) {
-          const match = IMAGE_URL_RE.exec(label || "");
-          if (!match) return { text: label || "", imageUrl: null };
-          const url = match[0];
-          const text = (label.slice(0, match.index) + " " + label.slice(match.index + url.length)).trim();
-          return { text: text || "", imageUrl: url };
+          if (!label) return { text: label || "", imageUrl: null, linkUrls: [] };
+          const imageMatch = IMAGE_URL_RE.exec(label);
+          const imageUrl = imageMatch ? imageMatch[0] : null;
+
+          // Find all non-image URLs.
+          const linkUrls = [];
+          let match;
+          ANY_URL_RE.lastIndex = 0;
+          while ((match = ANY_URL_RE.exec(label)) !== null) {
+            const u = match[0];
+            if (u === imageUrl) continue; // skip the image URL
+            linkUrls.push(u);
+          }
+
+          // Strip ALL URLs from text.
+          let text = label.replace(ANY_URL_RE, " ").replace(/\s{2,}/g, " ").trim();
+          return { text, imageUrl, linkUrls };
         }
 
         function makeOptionImage(url, alt) {
@@ -1361,6 +1378,31 @@
             this.replaceWith(document.createTextNode(url));
           };
           return img;
+        }
+
+        function makeOptionLinks(urls) {
+          if (!urls || urls.length === 0) return null;
+          const container = document.createElement("div");
+          container.style.cssText = "margin-top:4px;font-size:12px;display:flex;flex-wrap:wrap;gap:4px 8px;";
+          for (const url of urls) {
+            const a = document.createElement("a");
+            a.href = url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.style.cssText = "color:var(--accent);text-decoration:underline;word-break:break-all;";
+            // Stop clicks from bubbling to the parent <button> (which would trigger a vote).
+            a.addEventListener("click", (e) => e.stopPropagation());
+            // Show a shorter display text.
+            try {
+              const u = new URL(url);
+              a.textContent = u.hostname + (u.pathname.length > 1 ? u.pathname.slice(0, 30) : "");
+              if (u.pathname.length > 30) a.textContent += "…";
+            } catch (_) {
+              a.textContent = url.slice(0, 50) + (url.length > 50 ? "…" : "");
+            }
+            container.appendChild(a);
+          }
+          return container;
         }
 
         function renderResults(res) {
@@ -1435,6 +1477,9 @@
               if (parsed.imageUrl) {
                 row.appendChild(makeOptionImage(parsed.imageUrl, parsed.text));
               }
+              // Links (non-image URLs)
+              const linksEl = makeOptionLinks(parsed.linkUrls);
+              if (linksEl) row.appendChild(linksEl);
               resultsBarsEl.appendChild(row);
             }
           }

@@ -10,9 +10,11 @@ require("dotenv").config();
  *   CIS_APP_PUBKEY    — The CIS app's public key (default ut1_cis_demo_pubkey)
  *   BOT_ADDRESS       — This bot's public-key / address
  *   BOT_NAME          — Display name base for the bot (e.g. "chatgpt_bot")
- *   LLM_API_KEY       — OpenAI API key (required)
- *   LLM_CHAT_MODEL    — Chat model (default gpt-4o)
- *   LLM_IMAGE_MODEL   — Image model (default dall-e-3)
+ *   LLM_PROVIDER      — LLM provider: openai | anthropic | gemini | grok (default openai)
+ *   LLM_API_KEY       — API key for the chosen provider (required)
+ *   LLM_BASE_URL      — Override the API base URL (optional)
+ *   LLM_CHAT_MODEL    — Chat model (default per provider)
+ *   LLM_IMAGE_MODEL   — Image model (default per provider, if supported)
  *   POLL_INTERVAL_S   — Seconds between poll cycles (default 60)
  *   VOTE_RECONSIDER_S — Seconds between vote reconsiderations (default 3600)
  *   ENABLE_IMAGES     — Set to "false" to skip image generation (default true)
@@ -29,6 +31,7 @@ const {
 } = require("./cis-client");
 
 const { createLLM } = require("./llm");
+const { createSearchTools } = require("./search");
 
 // ---------------------------------------------------------------------------
 // Config
@@ -38,13 +41,20 @@ const NODE_URL = process.env.NODE_URL || "http://localhost:8000";
 const CIS_APP_PUBKEY = process.env.CIS_APP_PUBKEY || "ut1_cis_demo_pubkey";
 const BOT_ADDRESS = process.env.BOT_ADDRESS || "ut1_bot_chatgpt_default";
 const BOT_NAME = process.env.BOT_NAME || "chatgpt_bot";
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 const LLM_API_KEY = process.env.LLM_API_KEY;
-const LLM_CHAT_MODEL = process.env.LLM_CHAT_MODEL || "gpt-4o";
-const LLM_IMAGE_MODEL = process.env.LLM_IMAGE_MODEL || "dall-e-3";
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "";
+const LLM_CHAT_MODEL = process.env.LLM_CHAT_MODEL || "";
+const IMAGE_PROVIDER = process.env.IMAGE_PROVIDER || "";
+const IMAGE_API_KEY = process.env.IMAGE_API_KEY || "";
+const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || "";
+const IMAGE_MODEL = process.env.IMAGE_MODEL || "";
 const POLL_INTERVAL_S = Number(process.env.POLL_INTERVAL_S) || 10;
 const VOTE_RECONSIDER_S = Number(process.env.VOTE_RECONSIDER_S) || 3600;
 const ENABLE_IMAGES = process.env.ENABLE_IMAGES !== "false";
 const IMAGE_STORE_URL = process.env.IMAGE_STORE_URL || "http://localhost:8001";
+const SEARCH_API_KEY = process.env.SEARCH_API_KEY || "";
+const MAX_RESEARCH_STEPS = Number(process.env.MAX_RESEARCH_STEPS) || 6;
 
 // ---------------------------------------------------------------------------
 // State
@@ -236,7 +246,7 @@ async function considerAddingOption(llm, survey, results) {
 // ---------------------------------------------------------------------------
 
 async function runOnce(llm) {
-  const txs = await fetchTransactions(NODE_URL, CIS_APP_PUBKEY, 400);
+  let txs = await fetchTransactions(NODE_URL, CIS_APP_PUBKEY, 400);
   const surveys = rebuildSurveys(txs, CIS_APP_PUBKEY);
   const activeSurveys = surveys.filter((s) => !s.archived);
 
@@ -278,22 +288,32 @@ async function main() {
   console.log(`  Name:     ${botUsername()}`);
   console.log(`  Node:     ${NODE_URL}`);
   console.log(`  App key:  ${CIS_APP_PUBKEY}`);
-  console.log(`  Model:    ${LLM_CHAT_MODEL}`);
-  console.log(`  Images:   ${ENABLE_IMAGES ? "enabled (" + LLM_IMAGE_MODEL + ")" : "disabled"}`);
+  console.log(`  Provider: ${LLM_PROVIDER}`);
+  console.log(`  Images:   ${ENABLE_IMAGES ? "enabled" : "disabled"}`);
   console.log(`  Img store:${ENABLE_IMAGES ? " " + IMAGE_STORE_URL : " (disabled)"}`);
   console.log(`  Poll:     every ${POLL_INTERVAL_S}s`);
   console.log(`  Reconsider votes: every ${VOTE_RECONSIDER_S}s`);
   console.log("═══════════════════════════════════════════════");
 
   if (!LLM_API_KEY) {
-    console.error("❌ LLM_API_KEY is required. Set it in .env or as an environment variable.");
-    process.exit(1);
+    console.log("⏭️  No LLM_API_KEY set — skipping this bot.");
+    process.exit(0);
   }
 
+  const searchTools = createSearchTools({ apiKey: SEARCH_API_KEY });
+
   const llm = createLLM({
+    provider: LLM_PROVIDER,
     apiKey: LLM_API_KEY,
-    chatModel: LLM_CHAT_MODEL,
-    imageModel: LLM_IMAGE_MODEL,
+    baseURL: LLM_BASE_URL || undefined,
+    chatModel: LLM_CHAT_MODEL || undefined,
+    imageProvider: IMAGE_PROVIDER || undefined,
+    imageApiKey: IMAGE_API_KEY || undefined,
+    imageBaseURL: IMAGE_BASE_URL || undefined,
+    imageModel: IMAGE_MODEL || undefined,
+    imageStoreURL: IMAGE_STORE_URL,
+    searchTools,
+    maxResearchSteps: MAX_RESEARCH_STEPS,
   });
 
   // Run immediately, then on interval.

@@ -3,6 +3,15 @@
 #
 # Requires a running dapp-starter server (the NODE_URL target).
 # By default it points at the host's localhost:8000.
+#
+# Set API keys via .env or env vars. Only bots with a key will stay running;
+# the rest exit cleanly and Docker won't restart them.
+#
+#   OPENAI_API_KEY    — ChatGPT bot; also used by Claude bot for image rendering
+#   ANTHROPIC_API_KEY — Claude bot (chat)
+#   GEMINI_API_KEY    — Gemini bot (chat + native Imagen image gen)
+#   GROK_API_KEY      — Grok bot (chat + native image gen)
+#   SEARCH_API_KEY    — Brave Search API key (shared by all bots, optional)
 
 services:
   image-store:
@@ -17,24 +26,105 @@ services:
       PUBLIC_URL: "${IMAGE_STORE_PUBLIC_URL:-http://localhost:8001}"
     restart: unless-stopped
 
+  # -----------------------------------------------------------------------
+  # ChatGPT bot (OpenAI) — native DALL-E image gen
+  # -----------------------------------------------------------------------
   bot-chatgpt:
     build: .
     container_name: cis-bot-chatgpt
     environment:
+      LLM_PROVIDER: "openai"
+      LLM_API_KEY: "${OPENAI_API_KEY}"
       NODE_URL: "${NODE_URL:-http://host.docker.internal:8000}"
       CIS_APP_PUBKEY: "${CIS_APP_PUBKEY:-ut1_cis_demo_pubkey}"
-      BOT_ADDRESS: "${BOT_ADDRESS:-ut1_bot_chatgpt_default}"
+      BOT_ADDRESS: "${BOT_ADDRESS_CHATGPT:-ut1_bot_chatgpt}"
       BOT_NAME: "chatgpt_bot"
-      LLM_API_KEY: "${LLM_API_KEY}"
-      LLM_CHAT_MODEL: "${LLM_CHAT_MODEL:-gpt-4o}"
-      LLM_IMAGE_MODEL: "${LLM_IMAGE_MODEL:-dall-e-3}"
       POLL_INTERVAL_S: "${POLL_INTERVAL_S:-10}"
       VOTE_RECONSIDER_S: "${VOTE_RECONSIDER_S:-3600}"
       ENABLE_IMAGES: "${ENABLE_IMAGES:-true}"
       IMAGE_STORE_URL: "http://image-store:8001"
+      SEARCH_API_KEY: "${SEARCH_API_KEY}"
+      MAX_RESEARCH_STEPS: "${MAX_RESEARCH_STEPS:-6}"
     depends_on:
       - image-store
-    restart: unless-stopped
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # -----------------------------------------------------------------------
+  # Claude bot (Anthropic) — Claude refines prompts, DALL-E renders images
+  # -----------------------------------------------------------------------
+  bot-claude:
+    build: .
+    container_name: cis-bot-claude
+    environment:
+      LLM_PROVIDER: "anthropic"
+      LLM_API_KEY: "${ANTHROPIC_API_KEY}"
+      IMAGE_PROVIDER: "openai"
+      IMAGE_API_KEY: "${OPENAI_API_KEY}"
+      NODE_URL: "${NODE_URL:-http://host.docker.internal:8000}"
+      CIS_APP_PUBKEY: "${CIS_APP_PUBKEY:-ut1_cis_demo_pubkey}"
+      BOT_ADDRESS: "${BOT_ADDRESS_CLAUDE:-ut1_bot_claude}"
+      BOT_NAME: "claude_bot"
+      POLL_INTERVAL_S: "${POLL_INTERVAL_S:-10}"
+      VOTE_RECONSIDER_S: "${VOTE_RECONSIDER_S:-3600}"
+      ENABLE_IMAGES: "${ENABLE_IMAGES:-true}"
+      IMAGE_STORE_URL: "http://image-store:8001"
+      SEARCH_API_KEY: "${SEARCH_API_KEY}"
+      MAX_RESEARCH_STEPS: "${MAX_RESEARCH_STEPS:-6}"
+    depends_on:
+      - image-store
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # -----------------------------------------------------------------------
+  # Gemini bot (Google) — native Imagen 3 image gen (returns base64 → image-store)
+  # -----------------------------------------------------------------------
+  bot-gemini:
+    build: .
+    container_name: cis-bot-gemini
+    environment:
+      LLM_PROVIDER: "gemini"
+      LLM_API_KEY: "${GEMINI_API_KEY}"
+      NODE_URL: "${NODE_URL:-http://host.docker.internal:8000}"
+      CIS_APP_PUBKEY: "${CIS_APP_PUBKEY:-ut1_cis_demo_pubkey}"
+      BOT_ADDRESS: "${BOT_ADDRESS_GEMINI:-ut1_bot_gemini}"
+      BOT_NAME: "gemini_bot"
+      POLL_INTERVAL_S: "${POLL_INTERVAL_S:-10}"
+      VOTE_RECONSIDER_S: "${VOTE_RECONSIDER_S:-3600}"
+      ENABLE_IMAGES: "${ENABLE_IMAGES:-true}"
+      IMAGE_STORE_URL: "http://image-store:8001"
+      SEARCH_API_KEY: "${SEARCH_API_KEY}"
+      MAX_RESEARCH_STEPS: "${MAX_RESEARCH_STEPS:-6}"
+    depends_on:
+      - image-store
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # -----------------------------------------------------------------------
+  # Grok bot (xAI) — native grok-2-image gen
+  # -----------------------------------------------------------------------
+  bot-grok:
+    build: .
+    container_name: cis-bot-grok
+    environment:
+      LLM_PROVIDER: "grok"
+      LLM_API_KEY: "${GROK_API_KEY}"
+      NODE_URL: "${NODE_URL:-http://host.docker.internal:8000}"
+      CIS_APP_PUBKEY: "${CIS_APP_PUBKEY:-ut1_cis_demo_pubkey}"
+      BOT_ADDRESS: "${BOT_ADDRESS_GROK:-ut1_bot_grok}"
+      BOT_NAME: "grok_bot"
+      POLL_INTERVAL_S: "${POLL_INTERVAL_S:-10}"
+      VOTE_RECONSIDER_S: "${VOTE_RECONSIDER_S:-3600}"
+      ENABLE_IMAGES: "${ENABLE_IMAGES:-true}"
+      IMAGE_STORE_URL: "http://image-store:8001"
+      SEARCH_API_KEY: "${SEARCH_API_KEY}"
+      MAX_RESEARCH_STEPS: "${MAX_RESEARCH_STEPS:-6}"
+    depends_on:
+      - image-store
+    restart: on-failure
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
