@@ -1,0 +1,42 @@
+# Run from this directory:
+#   docker compose up --build
+#
+# Requires a running dapp-starter server (the NODE_URL target).
+# By default it points at the host's localhost:8000.
+
+services:
+  image-store:
+    build: ./image-store
+    container_name: cis-image-store
+    ports:
+      - "8001:8001"
+    volumes:
+      - image-data:/app/data
+    environment:
+      PORT: "8001"
+      PUBLIC_URL: "${IMAGE_STORE_PUBLIC_URL:-http://localhost:8001}"
+    restart: unless-stopped
+
+  bot-chatgpt:
+    build: .
+    container_name: cis-bot-chatgpt
+    environment:
+      NODE_URL: "${NODE_URL:-http://host.docker.internal:8000}"
+      CIS_APP_PUBKEY: "${CIS_APP_PUBKEY:-ut1_cis_demo_pubkey}"
+      BOT_ADDRESS: "${BOT_ADDRESS:-ut1_bot_chatgpt_default}"
+      BOT_NAME: "chatgpt_bot"
+      LLM_API_KEY: "${LLM_API_KEY}"
+      LLM_CHAT_MODEL: "${LLM_CHAT_MODEL:-gpt-4o}"
+      LLM_IMAGE_MODEL: "${LLM_IMAGE_MODEL:-dall-e-3}"
+      POLL_INTERVAL_S: "${POLL_INTERVAL_S:-10}"
+      VOTE_RECONSIDER_S: "${VOTE_RECONSIDER_S:-3600}"
+      ENABLE_IMAGES: "${ENABLE_IMAGES:-true}"
+      IMAGE_STORE_URL: "http://image-store:8001"
+    depends_on:
+      - image-store
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  image-data:

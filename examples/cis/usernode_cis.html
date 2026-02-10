@@ -400,6 +400,7 @@
                 </div>
               </div>
               <p style="margin-top: 0;" id="surveyQuestion"></p>
+              <div id="surveyCreatedBy" class="muted" style="font-size: 11px; margin: 6px 0;"></div>
               <div id="votePending" class="loadingRow hide" role="status" aria-live="polite">
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Registering vote...</span>
@@ -496,6 +497,7 @@
 
         // Surveys: rebuilt from on-chain transactions each refresh cycle.
         let SURVEYS = [];
+        let GLOBAL_USERNAMES = new Map(); // address -> username
 
         function last6(s) {
           const v = String(s || "");
@@ -582,7 +584,7 @@
               return { key, label };
             })
             .filter(Boolean);
-          if (!title || !question || options.length < 2) return null;
+          if (!title || !question) return null;
           const idBase = String(rawSurvey.id || slugify(title) || "").trim();
           if (!idBase) return null;
           return {
@@ -596,6 +598,20 @@
         }
 
         function rebuildSurveysFromTransactions(txs) {
+          // Build global username map from set_username txs (latest per sender wins).
+          const nameMap = new Map();
+          for (const rawTx of txs) {
+            const p = parseCisTx(rawTx);
+            if (!p || p.memo.type !== "set_username") continue;
+            const prev = nameMap.get(p.tx.from);
+            if (!prev || p.tx.ts >= prev.ts) {
+              const u = normalizeUsername(p.memo.username, deriveDefaultUsername(p.tx.from), p.tx.from);
+              nameMap.set(p.tx.from, { name: u, ts: p.tx.ts });
+            }
+          }
+          GLOBAL_USERNAMES = new Map();
+          for (const [addr, v] of nameMap) GLOBAL_USERNAMES.set(addr, v.name);
+
           // Collect all valid create_survey txs with sender + timestamp.
           const allCreations = []; // { survey, ts, from }
           for (const rawTx of txs) {
@@ -622,7 +638,7 @@
             lastAcceptedBySender.set(entry.from, entry.ts);
             const existing = latestCreated.get(entry.survey.id);
             if (!existing || entry.ts >= existing.ts) {
-              latestCreated.set(entry.survey.id, { survey: entry.survey, ts: entry.ts });
+              latestCreated.set(entry.survey.id, { survey: entry.survey, ts: entry.ts, from: entry.from });
             }
           }
 
@@ -634,6 +650,7 @@
               const expiresAtMs = x.ts + x.survey.activeDurationMs;
               return {
                 ...x.survey,
+                createdBy: x.from,
                 createdAtMs: x.ts,
                 expiresAtMs,
                 archived: now >= expiresAtMs,
@@ -790,6 +807,7 @@
         const screenSurvey = $("screenSurvey");
         const surveyTitleEl = $("surveyTitle");
         const surveyQuestionEl = $("surveyQuestion");
+        const surveyCreatedByEl = $("surveyCreatedBy");
         const votePendingEl = $("votePending");
         const addOptionToggleBtn = $("addOptionToggleBtn");
         const addOptionPanelEl = $("addOptionPanel");
@@ -1032,7 +1050,7 @@
           );
           if (!title) throw new Error("Title is required");
           if (!question) throw new Error("Question is required");
-          if (labels.length < 2) throw new Error("At least 2 options are required");
+          // Options are optional — users/bots can add options later.
 
           const options = labels.map((label, i) => ({
             key: slugify(label) || `opt_${i + 1}`,
@@ -1310,12 +1328,17 @@
           const meKey = myAddress == null ? null : String(myAddress);
           const meEntry = meKey ? users.get(meKey) || null : null;
           const myAddedOption = meKey ? oldestOptionBySender.get(meKey) || null : null;
+          const usernameByAddress = new Map();
+          for (const u of users.values()) {
+            usernameByAddress.set(u.from, u.username);
+          }
           return {
             counts,
             voters,
             meEntry,
             survey: surveyWithOptions,
             myAddedOption,
+            usernameByAddress,
           };
         }
 
@@ -1347,6 +1370,13 @@
           const total = s.options.reduce((acc, o) => acc + (c[o.key] || 0), 0);
           const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
           if (resultsBarsEl) resultsBarsEl.textContent = "";
+          if (resultsBarsEl && s.options.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "muted";
+            empty.style.cssText = "font-size:13px;margin:8px 0;";
+            empty.textContent = "No options yet — add an option above!";
+            resultsBarsEl.appendChild(empty);
+          }
           if (resultsBarsEl) {
             for (const opt of s.options) {
               const count = c[opt.key] || 0;
@@ -1383,6 +1413,16 @@
               header.appendChild(left);
               header.appendChild(right);
               row.appendChild(header);
+              // Attribution for user-added options
+              if (opt.userAdded && opt.addedBy) {
+                const addedBy = document.createElement("div");
+                addedBy.className = "muted";
+                addedBy.style.cssText = "font-size:11px;margin:6px 0;";
+                const name = (res.usernameByAddress && res.usernameByAddress.get(opt.addedBy))
+                  || deriveDefaultUsername(opt.addedBy);
+                addedBy.textContent = "Added by " + name;
+                row.appendChild(addedBy);
+              }
               // Middle: vote bar
               const bar = document.createElement("div");
               bar.className = "bar";
@@ -1535,6 +1575,11 @@
           if (backBtn) backBtn.style.display = "";
           if (surveyTitleEl) surveyTitleEl.textContent = s.title;
           if (surveyQuestionEl) surveyQuestionEl.textContent = s.question;
+          if (surveyCreatedByEl) {
+            const creatorName = (s.createdBy && GLOBAL_USERNAMES.get(s.createdBy))
+              || (s.createdBy ? deriveDefaultUsername(s.createdBy) : "unknown");
+            surveyCreatedByEl.textContent = "Created by " + creatorName;
+          }
           if (surveyCountdownEl) {
             if (s.archived) {
               delete surveyCountdownEl.dataset.expires;
@@ -1630,8 +1675,16 @@
             botRow.appendChild(questionEl);
             botRow.appendChild(votesEl);
 
+            const createdByRow = document.createElement("div");
+            createdByRow.className = "muted";
+            createdByRow.style.cssText = "font-size:11px;margin:6px 0 0;";
+            const creatorName = (s.createdBy && GLOBAL_USERNAMES.get(s.createdBy))
+              || (s.createdBy ? deriveDefaultUsername(s.createdBy) : "unknown");
+            createdByRow.textContent = "Created by " + creatorName;
+
             b.appendChild(topRow);
             b.appendChild(botRow);
+            b.appendChild(createdByRow);
             b.addEventListener("click", () => {
               navigateToSurvey(s.id);
               refreshLoopOnce();

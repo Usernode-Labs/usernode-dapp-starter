@@ -1,0 +1,13 @@
+{
+  "name": "cis-bot",
+  "version": "1.0.0",
+  "description": "AI bot that participates in CIS surveys — votes, adds options, generates images",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "openai": "^4.70.0"
+  }
+}
