@@ -292,7 +292,7 @@ Spinner HTML:
 
 ### Rubber-Band Scroll
 
-For a native-feeling pull gesture at the edges of the scroll area, implement a pointer-event-based rubber-band effect. See the `attachRubberBand()` function in `examples/usernode_cis.html` for the full implementation.
+For a native-feeling pull gesture at the edges of the scroll area, implement a pointer-event-based rubber-band effect. See the `attachRubberBand()` function in `examples/cis/usernode_cis.html` for the full implementation.
 
 ### Building DOM Safely (No innerHTML for User Content)
 
@@ -367,7 +367,7 @@ A standard pattern for dapps that want user identity:
 
 ## 9. Survey / Voting Pattern (One Example — Not the Only One)
 
-The CIS example (`examples/usernode_cis.html`) implements a complete survey/voting system as a reference. This is just one type of app — users will want to build all kinds of things: games, chat apps, marketplaces, collaborative tools, etc. Study this example for the patterns, then adapt to whatever the user wants to build.
+The CIS example (`examples/cis/usernode_cis.html`) implements a complete survey/voting system as a reference. This is just one type of app — users will want to build all kinds of things: games, chat apps, marketplaces, collaborative tools, etc. Study this example for the patterns, then adapt to whatever the user wants to build.
 
 Key transaction types in the CIS example:
 
@@ -397,7 +397,8 @@ Key transaction types in the CIS example:
 ├── usernode-bridge.js    # The bridge — DO NOT EDIT per-dapp; shared by all dapps
 ├── server.js             # Dev server + mock API — DO NOT EDIT per-dapp
 ├── examples/
-│   └── usernode_cis.html # Reference example: Collective Intelligence Service
+│   └── cis/
+│       └── usernode_cis.html # Reference example: Collective Intelligence Service
 ├── Dockerfile            # Production container
 ├── docker-compose.yml
 ├── Makefile              # make up / make down / make logs
