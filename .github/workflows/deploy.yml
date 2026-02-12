@@ -1,0 +1,43 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            REPO_DIR=${{ secrets.DEPLOY_PATH }}
+            cd "$REPO_DIR"
+
+            echo "==> Pulling latest code..."
+            git pull --recurse-submodules
+            git submodule update --init --recursive
+
+            echo "==> Rebuilding and restarting main app..."
+            docker compose down
+            docker compose up -d --build
+
+            echo "==> Rebuilding and restarting CIS bots..."
+            cd "$REPO_DIR/examples/cis/bot"
+            docker compose down
+            docker compose up -d --build
+
+            echo "==> Rebuilding and restarting falling-sands..."
+            cd "$REPO_DIR/examples/falling-sands"
+            docker build -t falling-sands .
+            docker stop falling-sands 2>/dev/null || true
+            docker rm falling-sands 2>/dev/null || true
+            docker run -d --name falling-sands --restart unless-stopped -p 3333:3333 falling-sands
+
+            echo "==> Deploy complete!"
