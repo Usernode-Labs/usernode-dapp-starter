@@ -718,31 +718,24 @@ const BRIDGE_PATH = (() => {
 4. **Mock transaction store** — same `/__mock/*` endpoints as the root server for local-dev mode
 5. **Chain polling** — if the server reacts to on-chain data, implement the pattern from Section 11
 
-### Dockerfile
+### Dockerfile & Docker Compose
 
-Sub-app Dockerfiles use the **repo root as build context** so they can access shared files:
+Each sub-app has its **own Dockerfile and docker-compose.yml** in its own directory, using local build context. This keeps apps independent — adding a new app doesn't affect existing ones.
+
+The shared `usernode-bridge.js` is copied from the repo root before building (the deploy workflow handles this automatically):
 
 ```dockerfile
-# In docker-compose.yml:
-#   build:
-#     context: .
-#     dockerfile: examples/my-app/Dockerfile
-
-# In the Dockerfile:
-COPY examples/my-app/server.js examples/my-app/index.html ./
+# examples/my-app/Dockerfile — uses local context
+COPY server.js index.html ./
 COPY usernode-bridge.js ./
 ```
 
-### docker-compose.yml
-
-Each sub-app gets its own service entry:
-
 ```yaml
+# examples/my-app/docker-compose.yml
 services:
   my-app:
-    build:
-      context: .
-      dockerfile: examples/my-app/Dockerfile
+    build: .
+    container_name: my-app
     environment:
       PORT: "3333"
       VIRTUAL_HOST: "myapp.usernodelabs.org"
@@ -751,6 +744,37 @@ services:
       - "3333"
     networks:
       - proxy-network
+
+networks:
+  proxy-network:
+    external: true
+```
+
+For local testing, also create a `docker-compose.local.yml` override with port mappings:
+
+```yaml
+# examples/my-app/docker-compose.local.yml
+services:
+  my-app:
+    ports:
+      - "3333:3333"
+    networks:
+      - default
+
+networks:
+  proxy-network:
+    external: false
+```
+
+### Deploy Workflow
+
+The deploy workflow (`.github/workflows/deploy.yml`) copies `usernode-bridge.js` into each sub-app directory then runs `docker compose up` independently:
+
+```bash
+cd "$REPO_DIR/examples/my-app"
+cp "$REPO_DIR/usernode-bridge.js" .
+docker compose down
+docker compose up -d --build
 ```
 
 ---
@@ -767,14 +791,16 @@ services:
 │   ├── cis/
 │   │   └── usernode_cis.html # Reference: Collective Intelligence Service
 │   └── falling-sands/
-│       ├── server.js         # Standalone server (WASM simulation + WS + chain polling)
-│       ├── index.html        # Client UI
-│       ├── Dockerfile        # Multi-stage build (Rust WASM + Node runtime)
-│       ├── wasm-loader.js    # WASM module loader
-│       └── sandspiel/        # Rust WASM source (git submodule)
-├── Dockerfile                # Production container (root server)
-├── docker-compose.yml        # Production: all services + nginx-proxy network
-├── docker-compose.local.yml  # Local override: port mappings + local network
+│       ├── server.js              # Standalone server (WASM simulation + WS + chain polling)
+│       ├── index.html             # Client UI
+│       ├── Dockerfile             # Multi-stage build (Rust WASM + Node runtime)
+│       ├── docker-compose.yml     # Production: own service + nginx-proxy network
+│       ├── docker-compose.local.yml # Local override: port mapping
+│       ├── wasm-loader.js         # WASM module loader
+│       └── sandspiel/             # Rust WASM source (git submodule)
+├── Dockerfile                     # Production container (root server)
+├── docker-compose.yml             # Production: root dapp-starter service only
+├── docker-compose.local.yml       # Local override: port mapping
 ├── Makefile                  # make up / make down / make logs
 └── README.md
 ```
@@ -836,21 +862,23 @@ The Dockerfile copies all HTML files and the `examples/` directory. If you add n
 
 ### Local Testing
 
-The production `docker-compose.yml` uses an external `proxy-network` (nginx-proxy) and only `expose`s ports. For local testing, use the override file that adds host port mappings:
+Each service runs independently. The production `docker-compose.yml` files use an external `proxy-network` (nginx-proxy) and only `expose` ports. For local testing, use the override files that add host port mappings.
+
+**Root dapp-starter** (`http://localhost:8000`):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 ```
 
-This starts all services with ports mapped to localhost:
-- `http://localhost:8000` — main dapp-starter server
-- `http://localhost:3333` — falling-sands server
-
-Stop with `Ctrl+C`, then clean up:
+**Falling-sands** (`http://localhost:3333`):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml down
+cd examples/falling-sands
+cp ../../usernode-bridge.js .
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 ```
+
+Stop either with `Ctrl+C`, then `docker compose -f docker-compose.yml -f docker-compose.local.yml down`.
 
 > **Note**: The falling-sands build compiles Rust to WASM in a multi-stage Docker build, so the first build takes several minutes. Subsequent builds are fast due to layer caching.
 
@@ -886,9 +914,9 @@ This is a starting-point checklist based on the patterns above. Not every item a
 - [ ] Include the explorer API proxy (`/explorer-api/*`)
 - [ ] Implement chain polling with dedup if the server reacts to on-chain data
 - [ ] Use flexible bridge path resolution for `usernode-bridge.js`
-- [ ] Use repo-root build context in Dockerfile to access shared files
-- [ ] Add service entry to `docker-compose.yml`
+- [ ] Create own `Dockerfile` + `docker-compose.yml` + `docker-compose.local.yml` in the app directory
+- [ ] Add deploy step to `.github/workflows/deploy.yml` (copy bridge.js + docker compose up)
 
 **Testing:**
 - [ ] Test with `node server.js --local-dev`
-- [ ] Test Docker builds with `docker compose -f docker-compose.yml -f docker-compose.local.yml up --build`
+- [ ] Test Docker: `cp ../../usernode-bridge.js . && docker compose -f docker-compose.yml -f docker-compose.local.yml up --build`

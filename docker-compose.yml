@@ -13,22 +13,6 @@ services:
       - proxy-network
     restart: unless-stopped
 
-  falling-sands:
-    build:
-      context: .
-      dockerfile: examples/falling-sands/Dockerfile
-    container_name: falling-sands
-    environment:
-      PORT: "3333"
-      VIRTUAL_HOST: "sands.usernodelabs.org"
-      VIRTUAL_PORT: "3333"
-      LETSENCRYPT_HOST: "sands.usernodelabs.org"
-    expose:
-      - "3333"
-    networks:
-      - proxy-network
-    restart: unless-stopped
-
 networks:
   proxy-network:
     external: true

@@ -35,9 +35,8 @@ jobs:
 
             echo "==> Rebuilding and restarting falling-sands..."
             cd "$REPO_DIR/examples/falling-sands"
-            docker build -t falling-sands .
-            docker stop falling-sands 2>/dev/null || true
-            docker rm falling-sands 2>/dev/null || true
-            docker run -d --name falling-sands --restart unless-stopped -p 3333:3333 falling-sands
+            cp "$REPO_DIR/usernode-bridge.js" .
+            docker compose down
+            docker compose up -d --build
 
             echo "==> Deploy complete!"
