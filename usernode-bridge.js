@@ -87,6 +87,7 @@
   function extractTxTimestampMs(tx) {
     if (!tx || typeof tx !== "object") return null;
     const candidates = [
+      tx.timestamp_ms,
       tx.created_at,
       tx.createdAt,
       tx.timestamp,
@@ -107,6 +108,13 @@
     return null;
   }
 
+  function pickFirst(obj, keys) {
+    for (const k of keys) {
+      if (obj[k] != null) return obj[k];
+    }
+    return null;
+  }
+
   function txMatches(tx, expected) {
     if (!tx || typeof tx !== "object") return false;
 
@@ -115,6 +123,7 @@
         tx.id,
         tx.txid,
         tx.txId,
+        tx.tx_id,
         tx.hash,
         tx.tx_hash,
         tx.txHash,
@@ -142,18 +151,14 @@
       if (memo !== expected.memo) return false;
     }
     if (expected.destination_pubkey != null) {
-      const dest =
-        tx.destination_pubkey == null ? null : String(tx.destination_pubkey);
+      const raw = pickFirst(tx, ["destination_pubkey", "destination", "to"]);
+      const dest = raw == null ? null : String(raw);
       if (dest !== expected.destination_pubkey) return false;
     }
     if (expected.from_pubkey != null) {
-      const from = tx.from_pubkey == null ? null : String(tx.from_pubkey);
+      const raw = pickFirst(tx, ["from_pubkey", "source", "from"]);
+      const from = raw == null ? null : String(raw);
       if (from !== expected.from_pubkey) return false;
-    }
-    if (expected.amount != null) {
-      // Keep this loose: amount might be string/number/bigint-like.
-      const a = tx.amount;
-      if (String(a) !== String(expected.amount)) return false;
     }
     return true;
   }
@@ -169,15 +174,27 @@
         ? opts.filterOptions
         : null) || {};
 
+    const query = { limit, ...filterOptions };
+    if (expected.from_pubkey && !query.sender && !query.account) {
+      query.sender = expected.from_pubkey;
+    }
+
     const startedAt = Date.now();
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       attempt++;
-      const resp = await window.getTransactions({ limit, ...filterOptions });
+      const resp = await window.getTransactions(query);
       const items = normalizeTransactionsResponse(resp);
       const found = items.find((tx) => txMatches(tx, expected));
-      if (found) return found;
+      if (found) {
+        console.log("[usernode-bridge] tx found after", attempt, "polls,", Date.now() - startedAt, "ms");
+        return found;
+      }
+
+      if (attempt <= 3 || attempt % 10 === 0) {
+        console.log("[usernode-bridge] waitForTx poll #" + attempt + ", " + items.length + " items, no match yet");
+      }
 
       if (Date.now() - startedAt >= timeoutMs) {
         const details = [
@@ -186,6 +203,10 @@
         ]
           .filter(Boolean)
           .join(", ");
+        console.warn("[usernode-bridge] waitForTx timed out. expected:", JSON.stringify(expected));
+        if (items.length > 0) {
+          console.warn("[usernode-bridge] last poll sample (first item):", JSON.stringify(items[0]));
+        }
         throw new Error(
           `Timed out waiting for transaction to appear in getTransactions (${timeoutMs}ms, ${attempt} polls${details ? `, ${details}` : ""
           })`
@@ -260,8 +281,9 @@
           amount,
           memo,
         });
+        const sendFailed = sendResult && (sendResult.error || sendResult.queued === false);
         const shouldWait =
-          !opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion;
+          !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
         if (shouldWait) {
           const txId = extractTxId(sendResult);
           await waitForTransactionVisible(
@@ -311,8 +333,9 @@
           );
         }
         const sendResult = await resp.json();
+        const sendFailed = sendResult && (sendResult.error || sendResult.queued === false);
         const shouldWait =
-          !opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion;
+          !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
         if (shouldWait) {
           const from_pubkey = await window
             .getNodeAddress()

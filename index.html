@@ -2,19 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <title>Usernode dapp Starter</title>
     <script src="./usernode-bridge.js"></script>
     <style>
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
       :root {
         color-scheme: light dark;
-        /* Light theme (default) */
         --bg: #f7f8fb;
         --fg: #0b1220;
         --muted: #4b5568;
         --card: #ffffff;
         --border: rgba(15, 23, 42, 0.12);
         --accent: #2563eb;
+        --green: #16a34a;
+        --red: #dc2626;
+        --yellow: #ca8a04;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -24,10 +29,18 @@
           --card: #141b26;
           --border: rgba(255, 255, 255, 0.12);
           --accent: #6ea8fe;
+          --green: #4ade80;
+          --red: #f87171;
+          --yellow: #facc15;
         }
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
       body {
         margin: 0;
+        overflow-x: hidden;
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
           Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
         background: var(--bg);
@@ -35,21 +48,31 @@
       }
       main {
         min-height: 100vh;
+        min-height: 100dvh;
+        width: 100%;
         display: grid;
         place-items: center;
         padding: 24px;
+        overflow: hidden;
       }
       .card {
-        width: min(760px, 100%);
+        width: 100%;
+        max-width: 760px;
+        min-width: 0;
         background: var(--card);
         border: 1px solid var(--border);
         border-radius: 14px;
         padding: 22px 20px;
+        overflow: hidden;
       }
       h1 {
         margin: 0 0 6px;
         font-size: 22px;
         letter-spacing: 0.2px;
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
       }
       p {
         margin: 10px 0;
@@ -61,6 +84,17 @@
           "Liberation Mono", "Courier New", monospace;
         font-size: 0.95em;
         color: var(--fg);
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+      pre {
+        max-width: 100%;
+        overflow-x: auto;
+      }
+      hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 16px 0;
       }
       .row {
         margin-top: 14px;
@@ -76,6 +110,7 @@
         border: 1px solid var(--border);
         color: var(--fg);
         text-decoration: none;
+        font-size: 14px;
       }
       a.button:hover {
         border-color: var(--accent);
@@ -86,36 +121,212 @@
         cursor: not-allowed;
         pointer-events: none;
       }
+      .info-grid {
+        display: grid;
+        gap: 8px;
+        margin: 12px 0;
+      }
+      .info-row {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+      .info-label {
+        font-size: 13px;
+        color: var(--muted);
+        white-space: nowrap;
+        min-width: 80px;
+      }
+      .info-value {
+        font-size: 14px;
+        min-width: 0;
+      }
+      .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 4px;
+        vertical-align: middle;
+      }
+      .status-dot.ok { background: var(--green); }
+      .status-dot.err { background: var(--red); }
+      .status-dot.pending { background: var(--yellow); }
+      .tx-list {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0;
+      }
+      .tx-item {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        display: grid;
+        gap: 4px;
+      }
+      .tx-item .tx-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .tx-item .tx-type {
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+      }
+      .tx-item .tx-status {
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .tx-item .tx-status.confirmed {
+        background: color-mix(in srgb, var(--green) 15%, transparent);
+        color: var(--green);
+      }
+      .tx-item .tx-status.orphaned {
+        background: color-mix(in srgb, var(--red) 15%, transparent);
+        color: var(--red);
+      }
+      .tx-item .tx-detail {
+        color: var(--muted);
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      .tx-item .tx-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .tx-item .tx-amount {
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .tx-item .tx-memo {
+        font-style: italic;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .tx-item .tx-time {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .empty-state {
+        text-align: center;
+        color: var(--muted);
+        padding: 16px 0;
+        font-size: 14px;
+      }
+      .balance-display {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        margin: 4px 0;
+      }
+      .send-status {
+        margin: 10px 0 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        font-size: 13px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+      .tx-progress {
+        margin: 8px 0 4px;
+      }
+      .tx-progress .tx-progress-track {
+        width: 100%;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--border);
+        overflow: hidden;
+      }
+      .tx-progress .tx-progress-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 3px;
+        background: var(--accent);
+        transition: width 0.4s ease-out, background-color 0.4s ease;
+      }
+      .tx-progress .tx-progress-fill.ok   { background: #6ef0a8; }
+      .tx-progress .tx-progress-fill.warn { background: var(--yellow); }
+      .tx-progress .tx-progress-fill.err  { background: var(--red); }
+      .tx-progress .tx-progress-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .tx-progress .tx-progress-label.warn { color: var(--yellow); }
+      .tx-progress .tx-progress-label.err  { color: var(--red); }
+      .tx-progress.hide { display: none; }
     </style>
   </head>
   <body>
     <main>
       <div class="card">
         <h1>Usernode dapp Starter</h1>
-        <p>
-          This is a minimal static page served by <code>server.js</code> on port
-          <code>8000</code>.
-        </p>
-        <p>
-          <strong>Node address (from mobile app):</strong>
-          <code id="nodeAddress">(loading...)</code>
-        </p>
-        <p>
-          <strong>App pubkey (destination):</strong>
-          <code id="appPubkey">ut1_app_demo_pubkey</code>
-        </p>
-        <p>
-          Next: replace this page with your app UI and start wiring in Usernode
-          RPC / wallet flows.
+
+        <div class="info-grid">
+          <div class="info-row">
+            <span class="info-label">Address</span>
+            <code class="info-value" id="nodeAddress">(loading...)</code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Chain</span>
+            <code class="info-value" id="chainId">(discovering...)</code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Explorer</span>
+            <span class="info-value">
+              <span class="status-dot pending" id="explorerDot"></span>
+              <span id="explorerStatus">connecting...</span>
+            </span>
+          </div>
+        </div>
+
+        <hr />
+
+        <h2>Balance</h2>
+        <div class="balance-display" id="balanceDisplay">--</div>
+        <p style="margin-top: 2px;">
+          <span id="balanceMeta" style="font-size: 12px; color: var(--muted);">at best tip</span>
         </p>
 
-        <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0;" />
+        <hr />
 
-        <h2 style="margin: 0 0 8px; font-size: 16px;">Send a transaction</h2>
+        <h2>Send a transaction</h2>
         <p style="margin-top: 0;">
-          Sends <code>amount=1</code> to the app pubkey with a random memo.
+          Sends <code>amount=1</code> to the destination address.
         </p>
         <div style="display: grid; gap: 10px; margin: 10px 0 6px;">
+          <label style="display: grid; gap: 6px;">
+            <span style="color: var(--muted); font-size: 13px;">Destination</span>
+            <input
+              id="destInput"
+              type="text"
+              spellcheck="false"
+              placeholder="ut1..."
+              style="
+                width: 100%;
+                padding: 10px 12px;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                background: transparent;
+                color: var(--fg);
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                font-size: 16px;
+                outline: none;
+              "
+            />
+          </label>
           <label style="display: grid; gap: 6px;">
             <span style="color: var(--muted); font-size: 13px;">Memo</span>
             <input
@@ -124,76 +335,79 @@
               spellcheck="false"
               style="
                 width: 100%;
-                box-sizing: border-box;
                 padding: 10px 12px;
                 border-radius: 10px;
                 border: 1px solid var(--border);
                 background: transparent;
                 color: var(--fg);
+                font-size: 16px;
                 outline: none;
               "
             />
           </label>
-          <div class="row" style="margin-top: 0;">
-            <a class="button" href="#" id="regenMemoBtn">Randomize memo</a>
-          </div>
         </div>
         <div class="row">
           <a class="button" href="#" id="sendTxBtn">Send Transaction</a>
+          <a class="button" href="#" id="regenMemoBtn">Randomize memo</a>
         </div>
-        <pre id="sendTxStatus" style="margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;">(idle)</pre>
+        <div class="send-status" id="sendTxStatus">(idle)</div>
+        <div class="tx-progress hide" id="sendTxProgress">
+          <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+          <div class="tx-progress-label">Submitting...</div>
+        </div>
 
-        <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0;" />
+        <hr />
 
-        <h2 style="margin: 0 0 8px; font-size: 16px;">Transactions</h2>
+        <h2>On-chain Transactions</h2>
         <p style="margin-top: 0;">
-          Auto-refreshes every 5 seconds via <code>getTransactions()</code>.
+          Fetched from the block explorer API. Auto-refreshes every 10s.
         </p>
         <p style="margin: 0;">
-          <strong>Status:</strong> <code id="txPollStatus">(starting...)</code>
+          <span class="status-dot pending" id="txDot"></span>
+          <span id="txPollStatus">(starting...)</span>
         </p>
-        <pre id="txList" style="margin-top: 10px; white-space: pre-wrap; word-break: break-word;"></pre>
-
         <div class="row">
-          <a class="button" href="/" rel="noopener">Reload</a>
+          <a class="button" href="#" id="refreshTxBtn">Refresh</a>
+          <a class="button" href="/" rel="noopener">Reload page</a>
         </div>
+        <div class="tx-list" id="txList"></div>
       </div>
     </main>
     <script>
       (function () {
-        const el = document.getElementById("nodeAddress");
-        const appPubkeyEl = document.getElementById("appPubkey");
-        const sendBtn = document.getElementById("sendTxBtn");
+        // ── Config ─────────────────────────────────────────────────
+        // Use the local proxy to avoid CORS issues in WebViews.
+        // server.js forwards /explorer-api/* → https://alpha2.usernodelabs.org/explorer/api/*
+        const EXPLORER_BASE = window.location.origin + "/explorer-api";
+        const FIXED_AMOUNT = 1;
+        const TX_POLL_INTERVAL_MS = 10_000;
+        const TX_CONFIRM_POLL_MS = 3_000;
+        const TX_CONFIRM_TIMEOUT_MS = 120_000;
+        const TX_DISPLAY_LIMIT = 25;
+
+        // ── DOM refs ───────────────────────────────────────────────
+        const nodeAddressEl = document.getElementById("nodeAddress");
+        const chainIdEl = document.getElementById("chainId");
+        const explorerDotEl = document.getElementById("explorerDot");
+        const explorerStatusEl = document.getElementById("explorerStatus");
+        const balanceDisplayEl = document.getElementById("balanceDisplay");
+        const balanceMetaEl = document.getElementById("balanceMeta");
+        const destInput = document.getElementById("destInput");
         const memoInput = document.getElementById("memoInput");
         const regenMemoBtn = document.getElementById("regenMemoBtn");
+        const sendBtn = document.getElementById("sendTxBtn");
         const sendStatusEl = document.getElementById("sendTxStatus");
+        const txDotEl = document.getElementById("txDot");
         const txPollStatusEl = document.getElementById("txPollStatus");
         const txListEl = document.getElementById("txList");
+        const refreshTxBtn = document.getElementById("refreshTxBtn");
+        const sendTxProgressEl = document.getElementById("sendTxProgress");
 
-        const APP_PUBKEY = (appPubkeyEl && appPubkeyEl.textContent) || "ut1_app_demo_pubkey";
-        const FIXED_AMOUNT = 1;
+        // ── State ──────────────────────────────────────────────────
+        let chainId = null;
+        let nodeAddress = null;
 
-        function setText(s) {
-          if (!el) return;
-          el.textContent = s;
-        }
-
-        function setSendStatus(s) {
-          if (!sendStatusEl) return;
-          sendStatusEl.textContent =
-            typeof s === "string" ? s : JSON.stringify(s, null, 2);
-        }
-
-        function setPollStatus(s) {
-          if (!txPollStatusEl) return;
-          txPollStatusEl.textContent = s;
-        }
-
-        function setTxList(s) {
-          if (!txListEl) return;
-          txListEl.textContent = s;
-        }
-
+        // ── Helpers ────────────────────────────────────────────────
         function randomHex(bytes) {
           const a = new Uint8Array(bytes);
           if (window.crypto && window.crypto.getRandomValues) {
@@ -208,45 +422,354 @@
           return `memo_${Date.now()}_${randomHex(6)}`;
         }
 
-        function setMemoValue(v) {
-          if (!memoInput) return;
-          memoInput.value = v;
+        function truncate(s, maxLen) {
+          if (!s || s.length <= maxLen) return s || "";
+          const half = Math.floor((maxLen - 3) / 2);
+          return s.slice(0, half) + "..." + s.slice(-half);
         }
 
-        function getMemoValue() {
-          if (!memoInput) return randomMemo();
-          return (memoInput.value || "").trim() || randomMemo();
+        function formatTimestamp(ms) {
+          if (!ms) return "";
+          const d = new Date(ms);
+          const pad = (n) => String(n).padStart(2, "0");
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         }
 
-        async function refreshTransactionsOnce() {
+        function sleep(ms) {
+          return new Promise((r) => setTimeout(r, ms));
+        }
+
+        function setDot(el, cls) {
+          if (!el) return;
+          el.className = "status-dot " + cls;
+        }
+
+        // ── Explorer API ───────────────────────────────────────────
+        async function explorerFetch(path, opts) {
+          const url = `${EXPLORER_BASE}${path}`;
+          const resp = await fetch(url, opts);
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => "");
+            throw new Error(`Explorer API ${resp.status}: ${text}`);
+          }
+          return await resp.json();
+        }
+
+        async function discoverChainId() {
+          const data = await explorerFetch("/active_chain");
+          return data.chain_id;
+        }
+
+        async function getBalance(account) {
+          if (!chainId) return null;
+          return await explorerFetch(
+            `/${chainId}/blocks/best_tip/${encodeURIComponent(account)}/balance?recompute=1`
+          );
+        }
+
+        async function getBestTip() {
+          if (!chainId) return null;
+          return await explorerFetch(`/${chainId}/blocks/best_tip`);
+        }
+
+        async function queryTransactions(body) {
+          if (!chainId) return { items: [] };
+          return await explorerFetch(`/${chainId}/transactions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body || {}),
+          });
+        }
+
+        async function lookupTx(txId) {
+          if (!chainId || !txId) return null;
+          return await explorerFetch(
+            `/${chainId}/txs/${encodeURIComponent(txId)}?include_orphaned=1`
+          );
+        }
+
+        async function fetchRandomAddress(exclude) {
+          const data = await queryTransactions({ limit: 100 });
+          const addrs = new Set();
+          for (const tx of data.items || []) {
+            if (tx.destination) addrs.add(tx.destination);
+            if (tx.source) addrs.add(tx.source);
+          }
+          if (exclude) addrs.delete(exclude);
+          const arr = Array.from(addrs);
+          if (arr.length === 0) return null;
+          return arr[Math.floor(Math.random() * arr.length)];
+        }
+
+        // ── Balance ────────────────────────────────────────────────
+        let lastKnownBalance = null;
+        async function refreshBalance() {
+          if (!nodeAddress || !chainId) return;
           try {
-            setPollStatus("loading...");
-            const resp = await window.getTransactions({ limit: 50 });
-            const items = resp && resp.items ? resp.items : resp;
-            setTxList(JSON.stringify(items, null, 2));
-            setPollStatus(`ok (${Array.isArray(items) ? items.length : "?"} items)`);
+            const data = await getBalance(nodeAddress);
+            if (data && data.balance != null) {
+              lastKnownBalance = data;
+              balanceDisplayEl.textContent = String(data.balance);
+              balanceMetaEl.textContent = `at block #${data.block_height || "?"}`;
+            }
           } catch (e) {
-            setPollStatus(`error: ${e && e.message ? e.message : String(e)}`);
+            // Keep showing the last known balance on transient errors
+            if (lastKnownBalance) {
+              balanceMetaEl.textContent = `at block #${lastKnownBalance.block_height || "?"} (refresh failed)`;
+            } else {
+              balanceDisplayEl.textContent = "--";
+              balanceMetaEl.textContent = `unable to load`;
+            }
           }
         }
 
+        // ── Transaction list ───────────────────────────────────────
+        function renderTxItem(tx) {
+          const item = document.createElement("div");
+          item.className = "tx-item";
+
+          // Header: type + status
+          const header = document.createElement("div");
+          header.className = "tx-header";
+          const typeEl = document.createElement("span");
+          typeEl.className = "tx-type";
+          typeEl.textContent = tx.tx_type || "tx";
+          header.appendChild(typeEl);
+          const statusEl = document.createElement("span");
+          statusEl.className = "tx-status " + (tx.status || "confirmed");
+          statusEl.textContent = tx.status || "confirmed";
+          header.appendChild(statusEl);
+          item.appendChild(header);
+
+          // Amount
+          if (tx.amount != null) {
+            const amountEl = document.createElement("div");
+            amountEl.className = "tx-amount";
+            amountEl.textContent = `Amount: ${tx.amount}`;
+            if (tx.fee != null) {
+              amountEl.textContent += `  (fee: ${tx.fee})`;
+            }
+            item.appendChild(amountEl);
+          }
+
+          // Source → Destination
+          if (tx.source || tx.destination) {
+            const flowEl = document.createElement("div");
+            flowEl.className = "tx-detail";
+            flowEl.textContent = `${truncate(tx.source, 20) || "?"} → ${truncate(tx.destination, 20) || "?"}`;
+            item.appendChild(flowEl);
+          }
+
+          // Memo
+          if (tx.memo) {
+            const memoEl = document.createElement("div");
+            memoEl.className = "tx-memo";
+            memoEl.textContent = `memo: ${tx.memo}`;
+            item.appendChild(memoEl);
+          }
+
+          // Tx ID
+          if (tx.tx_id) {
+            const idEl = document.createElement("div");
+            idEl.className = "tx-id";
+            idEl.textContent = truncate(tx.tx_id, 40);
+            item.appendChild(idEl);
+          }
+
+          // Block + time
+          const metaEl = document.createElement("div");
+          metaEl.className = "tx-time";
+          const parts = [];
+          if (tx.block_height != null) parts.push(`block #${tx.block_height}`);
+          if (tx.timestamp_ms) parts.push(formatTimestamp(tx.timestamp_ms));
+          metaEl.textContent = parts.join(" · ");
+          item.appendChild(metaEl);
+
+          return item;
+        }
+
+        let lastTxRefreshOk = false;
+        async function refreshTransactions() {
+          try {
+            if (!lastTxRefreshOk) {
+              setDot(txDotEl, "pending");
+              txPollStatusEl.textContent = "loading...";
+            }
+
+            const body = { limit: TX_DISPLAY_LIMIT };
+            if (nodeAddress) {
+              body.account = nodeAddress;
+            }
+            const data = await queryTransactions(body);
+            const items = data.items || [];
+
+            txListEl.innerHTML = "";
+            if (items.length === 0) {
+              const empty = document.createElement("div");
+              empty.className = "empty-state";
+              empty.textContent = "No transactions found for this account";
+              txListEl.appendChild(empty);
+            } else {
+              for (const tx of items) {
+                txListEl.appendChild(renderTxItem(tx));
+              }
+            }
+
+            lastTxRefreshOk = true;
+            setDot(txDotEl, "ok");
+            txPollStatusEl.textContent = `${items.length} transaction${items.length !== 1 ? "s" : ""} · updated ${formatTimestamp(Date.now())}`;
+          } catch (e) {
+            // On transient errors, keep showing the last successful data
+            if (lastTxRefreshOk) {
+              txPollStatusEl.textContent += " (refresh failed)";
+            } else {
+              setDot(txDotEl, "err");
+              txPollStatusEl.textContent = `error: ${e.message}`;
+            }
+          }
+        }
+
+        // ── Transaction progress bar controller ────────────────────
+        const TX_PB_EXPECTED_S = 30;
+        const TX_PB_WARN_S    = 45;
+        const TX_PB_ERR_S     = 90;
+        let _pbRaf = null;
+        let _pbStart = 0;
+
+        function pbPercent(elapsedS) {
+          if (elapsedS <= TX_PB_EXPECTED_S) {
+            const t = elapsedS / TX_PB_EXPECTED_S;
+            return 95 * (1 - Math.pow(1 - t, 3));
+          }
+          return 95 + 5 * (1 - Math.exp(-(elapsedS - TX_PB_EXPECTED_S) / 120));
+        }
+
+        function pbApply(pct, elapsedS) {
+          if (!sendTxProgressEl) return;
+          const fill  = sendTxProgressEl.querySelector(".tx-progress-fill");
+          const label = sendTxProgressEl.querySelector(".tx-progress-label");
+          if (fill) {
+            fill.style.width = pct + "%";
+            if (elapsedS >= TX_PB_ERR_S) fill.className = "tx-progress-fill err";
+            else if (elapsedS >= TX_PB_WARN_S) fill.className = "tx-progress-fill warn";
+            else fill.className = "tx-progress-fill";
+          }
+          if (label) {
+            if (elapsedS >= TX_PB_ERR_S) {
+              label.textContent = "Transaction is taking longer than it should; please check Discord for more information";
+              label.className = "tx-progress-label err";
+            } else if (elapsedS >= TX_PB_WARN_S) {
+              label.textContent = "Transaction is taking longer than expected";
+              label.className = "tx-progress-label warn";
+            } else {
+              label.textContent = "Waiting for on-chain confirmation...";
+              label.className = "tx-progress-label";
+            }
+          }
+        }
+
+        function startProgressBar() {
+          stopProgressBar();
+          if (sendTxProgressEl) {
+            sendTxProgressEl.classList.remove("hide");
+            const fill  = sendTxProgressEl.querySelector(".tx-progress-fill");
+            const label = sendTxProgressEl.querySelector(".tx-progress-label");
+            if (fill) { fill.style.width = "0%"; fill.className = "tx-progress-fill"; }
+            if (label) { label.textContent = "Submitting..."; label.className = "tx-progress-label"; }
+          }
+          _pbStart = performance.now();
+          function tick() {
+            const s = (performance.now() - _pbStart) / 1000;
+            pbApply(pbPercent(s), s);
+            _pbRaf = requestAnimationFrame(tick);
+          }
+          _pbRaf = requestAnimationFrame(tick);
+        }
+
+        function completeProgressBar() {
+          stopProgressBar();
+          if (!sendTxProgressEl) return;
+          const fill  = sendTxProgressEl.querySelector(".tx-progress-fill");
+          const label = sendTxProgressEl.querySelector(".tx-progress-label");
+          if (fill) { fill.className = "tx-progress-fill ok"; fill.style.width = "100%"; }
+          if (label) { label.textContent = "Confirmed!"; label.className = "tx-progress-label"; }
+          setTimeout(() => sendTxProgressEl.classList.add("hide"), 1200);
+        }
+
+        function hideProgressBar() {
+          stopProgressBar();
+          if (sendTxProgressEl) sendTxProgressEl.classList.add("hide");
+        }
+
+        function stopProgressBar() {
+          if (_pbRaf) { cancelAnimationFrame(_pbRaf); _pbRaf = null; }
+        }
+
+        // ── Send + track on-chain ──────────────────────────────────
+        function setSendStatus(msg, type) {
+          if (!sendStatusEl) return;
+          sendStatusEl.textContent =
+            typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
+          sendStatusEl.style.borderColor =
+            type === "ok" ? "var(--green)" :
+            type === "err" ? "var(--red)" :
+            type === "pending" ? "var(--yellow)" :
+            "var(--border)";
+        }
+
+        const TX_WAIT_OPTS = {
+          timeoutMs: TX_CONFIRM_TIMEOUT_MS,
+          pollIntervalMs: TX_CONFIRM_POLL_MS,
+        };
+
+        // ── Init ───────────────────────────────────────────────────
         async function main() {
+          // 1. Get node address
           try {
             const addr = await window.getNodeAddress();
-            setText(addr || "(empty)");
+            nodeAddress = addr || null;
+            nodeAddressEl.textContent = nodeAddress || "(empty)";
           } catch (e) {
-            setText(`(error: ${e && e.message ? e.message : String(e)})`);
+            nodeAddressEl.textContent = `(error: ${e.message})`;
           }
 
-          // Initialize memo field with a random value on each page load.
-          setMemoValue(randomMemo());
+          // 2. Discover chain ID
+          try {
+            chainId = await discoverChainId();
+            chainIdEl.textContent = truncate(chainId, 30);
+            setDot(explorerDotEl, "ok");
+            explorerStatusEl.textContent = "connected";
+
+            // Wire up the bridge's getTransactions to use the explorer API
+            window.usernode = window.usernode || {};
+            window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${chainId}`;
+          } catch (e) {
+            chainIdEl.textContent = `(error)`;
+            setDot(explorerDotEl, "err");
+            explorerStatusEl.textContent = `error: ${e.message}`;
+          }
+
+          // 3. Initial balance + transactions
+          await Promise.all([
+            refreshBalance(),
+            refreshTransactions(),
+          ]);
+
+          // 4. Set up memo + pre-fill destination
+          const DEFAULT_DESTINATION = "ut1zvhmxlhmv95cgzaph6cpv0rrcrn29gr4xkdj9fuykc6648hmvgksmkfua6";
+          if (memoInput) memoInput.value = randomMemo();
+          if (destInput) {
+            destInput.value = DEFAULT_DESTINATION;
+          }
+
           if (regenMemoBtn) {
             regenMemoBtn.addEventListener("click", (ev) => {
               ev.preventDefault();
-              setMemoValue(randomMemo());
+              if (memoInput) memoInput.value = randomMemo();
             });
           }
 
+          // 5. Send transaction handler
           if (sendBtn) {
             let sending = false;
             function setSending(v) {
@@ -258,29 +781,74 @@
             sendBtn.addEventListener("click", async (ev) => {
               ev.preventDefault();
               if (sending) return;
+
+              const destination = destInput ? destInput.value.trim() : "";
+              if (!destination) {
+                setSendStatus("Please enter a destination address.", "err");
+                return;
+              }
+
+              const memo = memoInput
+                ? (memoInput.value.trim() || randomMemo())
+                : randomMemo();
+
               try {
                 setSending(true);
-                setSendStatus("sending... (waiting for it to appear in getTransactions)");
-                const memo = getMemoValue();
-                const result = await window.sendTransaction(APP_PUBKEY, FIXED_AMOUNT, memo);
-                setSendStatus({
-                  status: "sent",
-                  note: "transaction is now visible in getTransactions",
-                  result,
-                });
-                // Generate a new random memo after sending (user can still edit before next send).
-                setMemoValue(randomMemo());
+                setSendStatus("Submitting transaction...", "pending");
+                startProgressBar();
+
+                const result = await window.sendTransaction(
+                  destination,
+                  FIXED_AMOUNT,
+                  memo,
+                  TX_WAIT_OPTS
+                );
+
+                const queued = result && result.queued;
+                const sendError = result && result.error;
+
+                if (sendError) {
+                  setSendStatus(`Node error: ${sendError}`, "err");
+                  hideProgressBar();
+                  return;
+                }
+
+                if (!queued) {
+                  setSendStatus(
+                    `Transaction was not queued.\n${JSON.stringify(result, null, 2)}`,
+                    "err"
+                  );
+                  hideProgressBar();
+                  return;
+                }
+
+                setSendStatus("Confirmed on-chain!", "ok");
+                completeProgressBar();
+
+                // Refresh data
+                if (memoInput) memoInput.value = randomMemo();
+                await Promise.all([refreshBalance(), refreshTransactions()]);
               } catch (e) {
-                setSendStatus(`(error: ${e && e.message ? e.message : String(e)})`);
+                setSendStatus(`Error: ${e.message}`, "err");
+                hideProgressBar();
               } finally {
                 setSending(false);
               }
             });
           }
 
-          // Poll transactions every 5 seconds.
-          await refreshTransactionsOnce();
-          setInterval(refreshTransactionsOnce, 5000);
+          // 6. Refresh button
+          if (refreshTxBtn) {
+            refreshTxBtn.addEventListener("click", async (ev) => {
+              ev.preventDefault();
+              await Promise.all([refreshBalance(), refreshTransactions()]);
+            });
+          }
+
+          // 7. Auto-refresh loop
+          setInterval(async () => {
+            await Promise.all([refreshBalance(), refreshTransactions()]);
+          }, TX_POLL_INTERVAL_MS);
         }
 
         main();
@@ -288,4 +856,3 @@
     </script>
   </body>
 </html>
-

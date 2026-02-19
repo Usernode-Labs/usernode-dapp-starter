@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y curl pkg-config libssl-dev && rm -rf /v
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 WORKDIR /build
-COPY sandspiel/ sandspiel/
+COPY examples/falling-sands/sandspiel/ sandspiel/
 RUN cd sandspiel && wasm-pack build crate --target nodejs
 
 # ── Stage 2: Node.js runtime ────────────────────────────────────────────────
@@ -13,10 +13,11 @@ FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY examples/falling-sands/package.json examples/falling-sands/package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js wasm-loader.js index.html ./
+COPY examples/falling-sands/server.js examples/falling-sands/wasm-loader.js examples/falling-sands/index.html ./
+COPY usernode-bridge.js ./
 
 # Copy only the built WASM package (not the full sandspiel source)
 COPY --from=wasm-builder /build/sandspiel/crate/pkg/ sandspiel/crate/pkg/

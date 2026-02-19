@@ -20,6 +20,7 @@
  */
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
@@ -29,6 +30,11 @@ const { Universe, Species, memory } = require("./wasm-loader");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const LOCAL_DEV = process.argv.includes("--local-dev");
+
+// ── Explorer upstream (used for both the proxy and chain polling) ────────────
+const EXPLORER_UPSTREAM = "alpha2.usernodelabs.org";
+const EXPLORER_UPSTREAM_BASE = "/explorer/api";
+const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -73,7 +79,6 @@ universe.paint(100, 120, 5, Species.Water);
 // in-memory and polls the store to apply drawings to the universe.
 
 const MOCK_TX_DELAY_MS = 2000;   // simulated chain inclusion latency
-const APP_PUBKEY = "ut1_fallingsands_shared";
 
 /** @type {Array<{id:string, from_pubkey:string, destination_pubkey:string, amount:any, memo?:string, created_at:string}>} */
 const mockTransactions = [];
@@ -119,20 +124,8 @@ function processDrawings() {
     try {
       if (!tx.memo) continue;
       const memo = JSON.parse(tx.memo);
-      if (memo.app !== "falling-sands" || memo.type !== "draw" || !Array.isArray(memo.s)) continue;
-      for (const seg of memo.s) {
-        if (!Array.isArray(seg) || seg.length < 6) continue;
-        const species = seg[5] | 0;
-        const size = Math.max(1, Math.min(20, seg[4] | 0));
-        const pts = segmentToPoints(seg);
-        for (const pt of pts) {
-          const x = Math.max(0, Math.min(WIDTH - 1, pt.x | 0));
-          const y = Math.max(0, Math.min(HEIGHT - 1, pt.y | 0));
-          universe.paint(x, y, size, species);
-        }
-      }
       const from = (tx.from_pubkey || "").slice(0, 16);
-      console.log(`[tx] applied drawing: ${memo.s.length} stroke(s) from ${from}…`);
+      applyDrawMemo(memo, `${from}… (mock)`);
     } catch (_) {}
   }
   lastProcessedTxIdx = mockTransactions.length;
@@ -140,9 +133,160 @@ function processDrawings() {
 
 setInterval(processDrawings, 500);
 
+// ── Chain poller — fetch real transactions from the explorer API ─────────────
+//
+// When not in --local-dev mode, the server polls the explorer for transactions
+// sent to APP_PUBKEY and applies any falling-sands draw memos to the universe.
+
+const CHAIN_POLL_INTERVAL_MS = 3000;
+let chainId = null;
+const seenTxIds = new Set();
+let chainPollCount = 0;
+
+function httpsJson(method, urlStr, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const bodyBuf = body ? Buffer.from(JSON.stringify(body)) : null;
+    const req = https.request(url, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        ...(bodyBuf ? { "content-length": bodyBuf.length } : {}),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString();
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
+          return;
+        }
+        try { resolve(JSON.parse(text)); }
+        catch (e) { reject(new Error(`JSON parse error: ${e.message}`)); }
+      });
+    });
+    req.on("error", reject);
+    if (bodyBuf) req.write(bodyBuf);
+    req.end();
+  });
+}
+
+async function discoverChainId() {
+  try {
+    const data = await httpsJson("GET", `https://${EXPLORER_UPSTREAM}${EXPLORER_UPSTREAM_BASE}/active_chain`);
+    if (data && data.chain_id) {
+      chainId = data.chain_id;
+      console.log(`[chain] discovered chain_id: ${chainId}`);
+    }
+  } catch (e) {
+    console.warn(`[chain] could not discover chain ID: ${e.message}`);
+  }
+}
+
+function applyDrawMemo(memo, fromLabel) {
+  if (memo.app !== "falling-sands" || memo.type !== "draw" || !Array.isArray(memo.s)) return false;
+  for (const seg of memo.s) {
+    if (!Array.isArray(seg) || seg.length < 6) continue;
+    const species = seg[5] | 0;
+    const size = Math.max(1, Math.min(20, seg[4] | 0));
+    const pts = segmentToPoints(seg);
+    for (const pt of pts) {
+      const x = Math.max(0, Math.min(WIDTH - 1, pt.x | 0));
+      const y = Math.max(0, Math.min(HEIGHT - 1, pt.y | 0));
+      universe.paint(x, y, size, species);
+    }
+  }
+  console.log(`[chain] applied drawing: ${memo.s.length} stroke(s) from ${fromLabel}`);
+  return true;
+}
+
+async function pollChainTransactions() {
+  if (!chainId) {
+    await discoverChainId();
+    if (!chainId) return;
+  }
+
+  chainPollCount++;
+  const baseUrl = `https://${EXPLORER_UPSTREAM}${EXPLORER_UPSTREAM_BASE}/${chainId}`;
+  const url = `${baseUrl}/transactions`;
+  const MAX_PAGES = 10;
+
+  let cursor = null;
+  let totalItems = 0;
+  let totalNew = 0;
+  let totalApplied = 0;
+
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const body = { account: APP_PUBKEY, limit: 50 };
+      if (cursor) body.cursor = cursor;
+
+      const resp = await httpsJson("POST", url, body);
+
+      if (chainPollCount <= 2 && page === 0) {
+        const keys = resp ? Object.keys(resp) : [];
+        const firstItem = resp && resp.items && resp.items[0]
+          ? JSON.stringify(resp.items[0]).slice(0, 200) : "none";
+        console.log(`[chain] poll #${chainPollCount} keys=[${keys}] first=${firstItem}`);
+      }
+
+      const items = Array.isArray(resp) ? resp
+        : (resp && Array.isArray(resp.items)) ? resp.items
+        : (resp && Array.isArray(resp.transactions)) ? resp.transactions
+        : (resp && resp.data && Array.isArray(resp.data.items)) ? resp.data.items
+        : [];
+
+      if (items.length === 0) break;
+      totalItems += items.length;
+
+      let allSeen = true;
+      for (const tx of items) {
+        const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash;
+        if (!txId) continue;
+        if (seenTxIds.has(txId)) continue;
+        allSeen = false;
+        seenTxIds.add(txId);
+        totalNew++;
+
+        if (!tx.memo) continue;
+        try {
+          const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
+          const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
+          if (applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`)) totalApplied++;
+        } catch (_) {}
+      }
+
+      // Stop paginating if we've caught up to already-seen transactions
+      if (allSeen) break;
+
+      // Continue to next page if the API indicates more results
+      const hasMore = resp && resp.has_more;
+      const nextCursor = resp && resp.next_cursor;
+      if (!hasMore || !nextCursor) break;
+      cursor = nextCursor;
+    }
+
+    if (totalNew > 0 || chainPollCount <= 3) {
+      console.log(`[chain] poll #${chainPollCount}: ${totalItems} tx(s) scanned, ${totalNew} new, ${totalApplied} drawing(s)`);
+    }
+  } catch (e) {
+    console.warn(`[chain] poll #${chainPollCount} error: ${e.message}`);
+  }
+}
+
+// Start chain polling (runs alongside mock store processing)
+discoverChainId();
+setInterval(pollChainTransactions, CHAIN_POLL_INTERVAL_MS);
+
 // ── HTTP server (serves index.html + usernode-bridge.js + mock API) ──────────
 
-const BRIDGE_PATH = path.join(__dirname, "..", "..", "usernode-bridge.js");
+const BRIDGE_PATH = (() => {
+  const local = path.join(__dirname, "usernode-bridge.js");
+  if (fs.existsSync(local)) return local;
+  return path.join(__dirname, "..", "..", "usernode-bridge.js");
+})();
 
 const server = http.createServer((req, res) => {
   const pathname = (() => {
@@ -218,6 +362,65 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: e.message }));
     });
     return;
+  }
+
+  // ── Explorer API proxy (/explorer-api/*) ──────────────────────────────
+  const EXPLORER_PROXY_PREFIX = "/explorer-api/";
+
+  if (pathname.startsWith(EXPLORER_PROXY_PREFIX)) {
+    const upstreamPath =
+      EXPLORER_UPSTREAM_BASE + "/" + pathname.slice(EXPLORER_PROXY_PREFIX.length);
+    const upstreamUrl = new URL(`https://${EXPLORER_UPSTREAM}${upstreamPath}`);
+
+    return void (async () => {
+      try {
+        let bodyBuf = null;
+        if (req.method === "POST") {
+          const chunks = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+            if (chunks.reduce((s, c) => s + c.length, 0) > 1_000_000) {
+              res.writeHead(413, { "Content-Type": "text/plain" });
+              res.end("Body too large");
+              return;
+            }
+          }
+          bodyBuf = Buffer.concat(chunks);
+        }
+
+        const proxyReq = https.request(
+          upstreamUrl,
+          {
+            method: req.method,
+            headers: {
+              "content-type": req.headers["content-type"] || "application/json",
+              accept: "application/json",
+              ...(bodyBuf ? { "content-length": bodyBuf.length } : {}),
+            },
+          },
+          (proxyRes) => {
+            const resHeaders = {
+              "content-type": proxyRes.headers["content-type"] || "application/json",
+              "access-control-allow-origin": "*",
+            };
+            res.writeHead(proxyRes.statusCode || 502, resHeaders);
+            proxyRes.pipe(res);
+          }
+        );
+
+        proxyReq.on("error", (err) => {
+          console.error(`Explorer proxy error: ${err.message}`);
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Proxy error: ${err.message}` }));
+        });
+
+        if (bodyBuf) proxyReq.write(bodyBuf);
+        proxyReq.end();
+      } catch (err) {
+        res.writeHead(502, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Proxy error: ${err.message}` }));
+      }
+    })();
   }
 
   // ── Serve static pages ───────────────────────────────────────────────

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Falling Sands — Shared Viewer</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -102,7 +102,9 @@
       display: none;
       align-items: center;
       gap: 6px;
-      flex-shrink: 0;
+      flex-shrink: 1;
+      min-width: 0;
+      overflow: hidden;
     }
     .tb-right.visible { display: flex; }
     .fab {
@@ -127,16 +129,43 @@
       background: #2a3548;
       color: #aaa;
     }
-    /* Spinner (shown while transaction is in flight) */
-    .spinner {
-      width: 20px; height: 20px;
-      border-radius: 999px;
-      border: 2.5px solid rgba(93,211,158,0.3);
-      border-top-color: #5dd39e;
-      animation: spin 0.8s linear infinite;
-      flex-shrink: 0;
+    /* Transaction progress bar (replaces spinner) */
+    .tx-progress-bar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      min-width: 0;
+      width: 100%;
+      max-width: 200px;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .tx-progress-bar .tx-track {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.12);
+      overflow: hidden;
+    }
+    .tx-progress-bar .tx-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 3px;
+      background: #5dd39e;
+      transition: width 0.4s ease-out, background-color 0.4s ease;
+    }
+    .tx-progress-bar .tx-fill.ok   { background: #6ef0a8; }
+    .tx-progress-bar .tx-fill.warn { background: #e6a817; }
+    .tx-progress-bar .tx-fill.err  { background: #ff6b6b; }
+    .tx-progress-bar .tx-label {
+      font-size: 10px;
+      color: #8896ab;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .tx-progress-bar .tx-label.warn { color: #e6a817; }
+    .tx-progress-bar .tx-label.err  { color: #ff6b6b; }
     .hide { display: none !important; }
     #budget-meter {
       width: 48px;
@@ -275,7 +304,10 @@
     </div>
     <button class="fab" id="btn-discard" title="Discard">✕</button>
     <button class="fab" id="btn-send" title="Send">✓</button>
-    <span class="spinner hide" id="send-spinner"></span>
+    <div class="tx-progress-bar hide" id="send-progress">
+      <div class="tx-track"><div class="tx-fill"></div></div>
+      <div class="tx-label">Sending...</div>
+    </div>
   </div>
 </div>
 
@@ -308,6 +340,9 @@ window.onerror = function(msg, src, line) {
   var el = document.getElementById("status");
   el.className = "err";
   el.textContent = "JS Error (line " + line + "): " + msg;
+  if (typeof errorStickyUntil !== "undefined") {
+    errorStickyUntil = performance.now() + ERROR_HOLD_MS;
+  }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -319,8 +354,24 @@ let HEIGHT = 450;
 const CELL_BYTES = 4;
 
 // ── Usernode transaction settings ────────────────────────────────────────
-const APP_PUBKEY = "ut1_fallingsands_shared";
-const TX_SEND_OPTS = { timeoutMs: 15000, pollIntervalMs: 500 };
+const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
+const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+
+// ── Explorer API discovery (needed for bridge's waitForTransactionVisible) ──
+const EXPLORER_BASE = window.location.origin + "/explorer-api";
+(async function setupExplorer() {
+  try {
+    const resp = await fetch(`${EXPLORER_BASE}/active_chain`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.chain_id) {
+      window.usernode = window.usernode || {};
+      window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${data.chain_id}`;
+    }
+  } catch (e) {
+    console.warn("Could not discover chain ID:", e);
+  }
+})();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SPECIES PALETTE  (id → { name, color })
@@ -772,6 +823,20 @@ let lastFpsTime = performance.now();
 let bytesReceived = 0;
 let lastBwTime = performance.now();
 
+// Sticky error: prevent the FPS update from overwriting error messages too soon
+let errorStickyUntil = 0;
+const ERROR_HOLD_MS = 8000;
+
+function showError(msg) {
+  statusEl.className = "err";
+  statusEl.textContent = msg;
+  errorStickyUntil = performance.now() + ERROR_HOLD_MS;
+}
+
+function canOverwriteStatus() {
+  return performance.now() >= errorStickyUntil;
+}
+
 // Binary message types (must match server)
 const MSG_KEYFRAME = 0x01;
 const MSG_DELTA = 0x02;
@@ -851,8 +916,10 @@ function handleMessage(event) {
   if (now - lastFpsTime >= 1000) {
     const kbps = (bytesReceived / 1024 / ((now - lastBwTime) / 1000)).toFixed(1);
     fpsEl.textContent = `${frameCount} fps · ${kbps} KB/s`;
-    statusEl.className = "ok";
-    statusEl.textContent = "Connected";
+    if (canOverwriteStatus()) {
+      statusEl.className = "ok";
+      statusEl.textContent = "Connected";
+    }
     frameCount = 0;
     bytesReceived = 0;
     lastFpsTime = now;
@@ -907,7 +974,7 @@ function startRound() {
       cleanup(sock);
       ws = sock;
       dbg(`R${rid}.${idx} ✅ onopen`);
-      statusEl.className = "ok";
+      if (canOverwriteStatus()) statusEl.className = "ok";
 
       // Tell the server we're ready to receive data
       try {
@@ -1228,18 +1295,88 @@ function localPaint(e) {
   }
 }
 
-// ── Sending state (spinner + disable UI) ────────────────────────────────
+// ── Sending state (progress bar + disable UI) ───────────────────────────
 let sending = false;
-const sendSpinner = document.getElementById("send-spinner");
+const sendProgressEl = document.getElementById("send-progress");
+
+const TX_PROGRESS_EXPECTED_S = 30;
+const TX_PROGRESS_WARN_S    = 45;
+const TX_PROGRESS_ERR_S     = 90;
+let _txRaf = null;
+let _txStart = 0;
+
+function txProgressPct(elapsedS) {
+  if (elapsedS <= TX_PROGRESS_EXPECTED_S) {
+    const t = elapsedS / TX_PROGRESS_EXPECTED_S;
+    return 95 * (1 - Math.pow(1 - t, 3));
+  }
+  return 95 + 5 * (1 - Math.exp(-(elapsedS - TX_PROGRESS_EXPECTED_S) / 120));
+}
+
+function txProgressUpdate(pct, elapsedS) {
+  if (!sendProgressEl) return;
+  const fill  = sendProgressEl.querySelector(".tx-fill");
+  const label = sendProgressEl.querySelector(".tx-label");
+  if (fill) {
+    fill.style.width = pct + "%";
+    if (elapsedS >= TX_PROGRESS_ERR_S) fill.className = "tx-fill err";
+    else if (elapsedS >= TX_PROGRESS_WARN_S) fill.className = "tx-fill warn";
+    else fill.className = "tx-fill";
+  }
+  if (label) {
+    if (elapsedS >= TX_PROGRESS_ERR_S) {
+      label.textContent = "Taking longer than it should; check Discord";
+      label.className = "tx-label err";
+    } else if (elapsedS >= TX_PROGRESS_WARN_S) {
+      label.textContent = "Taking longer than expected";
+      label.className = "tx-label warn";
+    } else {
+      label.textContent = "Sending...";
+      label.className = "tx-label";
+    }
+  }
+}
+
+function startTxProgress() {
+  stopTxProgress();
+  _txStart = performance.now();
+  const fill = sendProgressEl && sendProgressEl.querySelector(".tx-fill");
+  const label = sendProgressEl && sendProgressEl.querySelector(".tx-label");
+  if (fill) { fill.style.width = "0%"; fill.className = "tx-fill"; }
+  if (label) { label.textContent = "Sending..."; label.className = "tx-label"; }
+  function tick() {
+    const s = (performance.now() - _txStart) / 1000;
+    txProgressUpdate(txProgressPct(s), s);
+    _txRaf = requestAnimationFrame(tick);
+  }
+  _txRaf = requestAnimationFrame(tick);
+}
+
+function completeTxProgress() {
+  stopTxProgress();
+  if (!sendProgressEl) return;
+  const fill  = sendProgressEl.querySelector(".tx-fill");
+  const label = sendProgressEl.querySelector(".tx-label");
+  if (fill) { fill.className = "tx-fill ok"; fill.style.width = "100%"; }
+  if (label) { label.textContent = "Confirmed!"; label.className = "tx-label"; }
+  setTimeout(() => sendProgressEl.classList.add("hide"), 1200);
+}
+
+function stopTxProgress() {
+  if (_txRaf) { cancelAnimationFrame(_txRaf); _txRaf = null; }
+}
 
 function setSending(v) {
   sending = !!v;
   btnSend.style.display = v ? "none" : "";
   btnDiscard.style.display = v ? "none" : "";
-  sendSpinner.classList.toggle("hide", !v);
-  // Keep the fab bar visible while the spinner is showing
-  if (v) fabBar.classList.add("visible");
-  // Disable drawing during send
+  if (v) {
+    if (sendProgressEl) sendProgressEl.classList.remove("hide");
+    fabBar.classList.add("visible");
+    startTxProgress();
+  } else {
+    completeTxProgress();
+  }
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
 
@@ -1270,9 +1407,7 @@ btnSend.addEventListener("click", async () => {
     refreshFabs();
   } catch (e) {
     console.error("sendTransaction error:", e);
-    statusEl.className = "err";
-    statusEl.textContent = "Send failed: " + (e.message || e);
-    // Don't clear strokes on error — user can retry
+    showError("Send failed: " + (e.message || e));
   } finally {
     setSending(false);
   }

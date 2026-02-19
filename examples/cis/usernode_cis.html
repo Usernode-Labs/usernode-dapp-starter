@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <title>Usernode Collective Intelligence Service</title>
     <!-- Provides `getNodeAddress()`, `sendTransaction()`, and `getTransactions()` in both
          native (Flutter WebView) and local-dev (browser) modes. -->
@@ -185,6 +185,7 @@
         border: 1px solid var(--border);
         background: transparent;
         color: var(--fg);
+        font-size: 16px;
         outline: none;
       }
       .input:focus {
@@ -209,6 +210,7 @@
         outline: 0;
         background: transparent;
         color: var(--fg);
+        font-size: 16px;
       }
       .inputAffixSuffix {
         padding: 0 12px 0 0;
@@ -250,22 +252,36 @@
         color: var(--muted);
         font-size: 13px;
       }
-      .spinner {
-        width: 14px;
-        height: 14px;
-        border-radius: 999px;
-        border: 2px solid color-mix(in oklab, var(--accent) 35%, var(--border));
-        border-top-color: var(--accent);
-        animation: spin 0.8s linear infinite;
+
+      .tx-progress {
+        width: 100%;
+        margin: 10px 0 4px;
       }
-      @keyframes spin {
-        from {
-          transform: rotate(0deg);
-        }
-        to {
-          transform: rotate(360deg);
-        }
+      .tx-progress .tx-progress-track {
+        width: 100%;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--border);
+        overflow: hidden;
       }
+      .tx-progress .tx-progress-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 3px;
+        background: var(--accent);
+        transition: width 0.4s ease-out, background-color 0.4s ease;
+      }
+      .tx-progress .tx-progress-fill.ok    { background: #6ef0a8; }
+      .tx-progress .tx-progress-fill.warn  { background: #e6a817; }
+      .tx-progress .tx-progress-fill.err   { background: var(--danger); }
+      .tx-progress .tx-progress-label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+        min-height: 16px;
+      }
+      .tx-progress .tx-progress-label.warn { color: #e6a817; }
+      .tx-progress .tx-progress-label.err  { color: var(--danger); }
 
       .muted {
         color: var(--muted);
@@ -317,13 +333,12 @@
               </div>
               <div
                 id="setUsernamePending"
-                class="loadingRow hide"
+                class="tx-progress hide"
                 role="status"
                 aria-live="polite"
-                style="margin-top: 10px;"
               >
-                <span class="spinner" aria-hidden="true"></span>
-                <span>Setting username...</span>
+                <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+                <div class="tx-progress-label">Setting username...</div>
               </div>
             </div>
 
@@ -372,20 +387,19 @@
                 </div>
                 <div
                   id="addSurveyPending"
-                  class="loadingRow hide"
+                  class="tx-progress hide"
                   role="status"
                   aria-live="polite"
-                  style="margin-top: 10px;"
                 >
-                  <span class="spinner" aria-hidden="true"></span>
-                  <span>Creating survey...</span>
+                  <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+                  <div class="tx-progress-label">Creating survey...</div>
                 </div>
               </div>
 
               <div id="activeSurveyList" style="display: grid; gap: 10px; margin-top: 8px;"></div>
             </div>
 
-            <div class="panel archivedDock" id="screenArchivedList">
+            <div class="panel archivedDock hide" id="screenArchivedList">
               <h3 style="margin: 0 0 8px; font-size: 14px;">Archived surveys</h3>
               <div id="archivedSurveyList" style="display: grid; gap: 10px;"></div>
             </div>
@@ -401,9 +415,9 @@
               </div>
               <p style="margin-top: 0;" id="surveyQuestion"></p>
               <div id="surveyCreatedBy" class="muted" style="font-size: 11px; margin: 6px 0;"></div>
-              <div id="votePending" class="loadingRow hide" role="status" aria-live="polite">
-                <span class="spinner" aria-hidden="true"></span>
-                <span>Registering vote...</span>
+              <div id="votePending" class="tx-progress hide" role="status" aria-live="polite">
+                <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+                <div class="tx-progress-label">Registering vote...</div>
               </div>
 
               <div style="margin-top: 10px; display: grid; gap: 8px;">
@@ -493,7 +507,35 @@
           (window.CIS_APP_PUBKEY && String(window.CIS_APP_PUBKEY)) ||
           window.localStorage.getItem("cis:app_pubkey") ||
           window.localStorage.getItem("exocortex:app_pubkey") ||
-          "ut1_cis_demo_pubkey";
+          "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
+
+        // Explorer proxy (server.js forwards /explorer-api/* to the block explorer)
+        const EXPLORER_BASE = window.location.origin + "/explorer-api";
+        let chainId = null;
+
+        async function explorerFetch(path, opts) {
+          const url = `${EXPLORER_BASE}${path}`;
+          const resp = await fetch(url, opts);
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => "");
+            throw new Error(`Explorer API ${resp.status}: ${text}`);
+          }
+          return await resp.json();
+        }
+
+        async function discoverChainId() {
+          const data = await explorerFetch("/active_chain");
+          return data.chain_id;
+        }
+
+        async function queryTransactions(body) {
+          if (!chainId) return { items: [] };
+          return await explorerFetch(`/${chainId}/transactions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body || {}),
+          });
+        }
 
         // Surveys: rebuilt from on-chain transactions each refresh cycle.
         let SURVEYS = [];
@@ -740,16 +782,16 @@
         async function getCisTransactions(limit) {
           const l = typeof limit === "number" ? limit : 200;
 
-          // Prefer native bridge method if present (we add this in Flutter).
-          if (window.Usernode && typeof window.Usernode.postMessage === "function") {
+          // Explorer proxy API (real chain data).
+          if (chainId) {
             try {
-              const resp = await callNative("getTransactions", {
-                account: CIS_APP_PUBKEY,
+              const data = await queryTransactions({
+                recipient: CIS_APP_PUBKEY,
                 limit: l,
               });
-              return normalizeTransactionsResponse(resp);
+              return normalizeTransactionsResponse(data);
             } catch (e) {
-              // Fall through to other strategies.
+              console.warn("Explorer getCisTransactions failed:", e);
             }
           }
 
@@ -1071,11 +1113,134 @@
           });
         }
 
+        // --- Transaction progress bar controller ---
+        const TX_PROGRESS_EXPECTED_S = 30;
+        const TX_PROGRESS_WARN_S    = 45;
+        const TX_PROGRESS_ERR_S     = 90;
+
+        let _txProgressRaf = null;
+        let _txProgressStart = 0;
+
+        function txProgressPercent(elapsedS) {
+          if (elapsedS <= TX_PROGRESS_EXPECTED_S) {
+            const t = elapsedS / TX_PROGRESS_EXPECTED_S;
+            return 95 * (1 - Math.pow(1 - t, 3));
+          }
+          return 95 + 5 * (1 - Math.exp(-(elapsedS - TX_PROGRESS_EXPECTED_S) / 120));
+        }
+
+        function txProgressAllBars() {
+          return [setUsernamePendingEl, addSurveyPendingEl, votePendingEl].filter(
+            (el) => el && !el.classList.contains("hide")
+          );
+        }
+
+        function txProgressApply(bars, pct, elapsedS) {
+          let fillCls = "";
+          let labelCls = "";
+          let labelExtra = "";
+          if (elapsedS >= TX_PROGRESS_ERR_S) {
+            fillCls = "err";
+            labelCls = "err";
+            labelExtra = "Transaction is taking longer than it should; please check Discord for more information";
+          } else if (elapsedS >= TX_PROGRESS_WARN_S) {
+            fillCls = "warn";
+            labelCls = "warn";
+            labelExtra = "Transaction is taking longer than expected";
+          }
+          bars.forEach((container) => {
+            const fill = container.querySelector(".tx-progress-fill");
+            const label = container.querySelector(".tx-progress-label");
+            if (fill) {
+              fill.style.width = pct + "%";
+              fill.className = "tx-progress-fill" + (fillCls ? " " + fillCls : "");
+            }
+            if (label && labelExtra) {
+              label.textContent = labelExtra;
+              label.className = "tx-progress-label" + (labelCls ? " " + labelCls : "");
+            }
+          });
+        }
+
+        function startTxProgress() {
+          stopTxProgress();
+          _txProgressStart = performance.now();
+          function tick() {
+            const elapsedS = (performance.now() - _txProgressStart) / 1000;
+            const pct = txProgressPercent(elapsedS);
+            const bars = txProgressAllBars();
+            txProgressApply(bars, pct, elapsedS);
+            _txProgressRaf = requestAnimationFrame(tick);
+          }
+          _txProgressRaf = requestAnimationFrame(tick);
+        }
+
+        function completeTxProgress() {
+          if (_txProgressRaf) {
+            cancelAnimationFrame(_txProgressRaf);
+            _txProgressRaf = null;
+          }
+          const bars = txProgressAllBars();
+          bars.forEach((container) => {
+            const fill = container.querySelector(".tx-progress-fill");
+            const label = container.querySelector(".tx-progress-label");
+            if (fill) {
+              fill.className = "tx-progress-fill ok";
+              fill.style.width = "100%";
+            }
+            if (label) {
+              label.textContent = "Confirmed!";
+              label.className = "tx-progress-label";
+            }
+          });
+          setTimeout(() => {
+            bars.forEach((c) => c.classList.add("hide"));
+            resetTxProgressBars(bars);
+          }, 1200);
+        }
+
+        function stopTxProgress() {
+          if (_txProgressRaf) {
+            cancelAnimationFrame(_txProgressRaf);
+            _txProgressRaf = null;
+          }
+        }
+
+        function resetTxProgressBars(bars) {
+          (bars || [setUsernamePendingEl, addSurveyPendingEl, votePendingEl]).forEach((container) => {
+            if (!container) return;
+            const fill = container.querySelector(".tx-progress-fill");
+            const label = container.querySelector(".tx-progress-label");
+            if (fill) {
+              fill.style.width = "0%";
+              fill.className = "tx-progress-fill";
+            }
+            if (label) {
+              label.className = "tx-progress-label";
+            }
+          });
+        }
+
         function setSending(v) {
           sending = !!v;
-          show(votePendingEl, sending);
-          show(addSurveyPendingEl, sending && !currentSurveyId);
-          show(setUsernamePendingEl, sending && !currentSurveyId);
+          if (sending) {
+            show(votePendingEl, true);
+            show(addSurveyPendingEl, !currentSurveyId);
+            show(setUsernamePendingEl, !currentSurveyId);
+            resetTxProgressBars();
+            const bars = txProgressAllBars();
+            bars.forEach((container) => {
+              const label = container.querySelector(".tx-progress-label");
+              if (label) {
+                if (container === votePendingEl) label.textContent = "Registering vote...";
+                else if (container === addSurveyPendingEl) label.textContent = "Creating survey...";
+                else if (container === setUsernamePendingEl) label.textContent = "Setting username...";
+              }
+            });
+            startTxProgress();
+          } else {
+            completeTxProgress();
+          }
           setDisabled(headerUsernameBtn, sending);
           setDisabled(saveUsernameBtn, sending);
           setDisabled(cancelUsernameBtn, sending);
@@ -1157,6 +1322,8 @@
             username: value,
           });
           await sendTransaction(CIS_APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+          myUsername = value;
+          setUsernameUi(myUsername);
           await refreshLoopOnce();
         }
 
@@ -1758,6 +1925,27 @@
           } catch (_) {}
           myUsername = deriveDefaultUsername(me);
           setUsernameUi(myUsername);
+
+          // Discover chain ID so explorer API and bridge getTransactions work
+          try {
+            chainId = await discoverChainId();
+            window.usernode = window.usernode || {};
+            window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${chainId}`;
+          } catch (e) {
+            console.warn("Could not discover chain ID:", e);
+          }
+
+          // Check if the user already has a username on-chain
+          try {
+            const txs = await getCisTransactions(400);
+            const latestUsername = getMyLatestUsername(txs, me);
+            if (latestUsername) {
+              myUsername = latestUsername;
+              setUsernameUi(myUsername);
+            }
+          } catch (e) {
+            console.warn("Could not fetch initial username:", e);
+          }
 
           setSending(false);
           renderSurveyList();

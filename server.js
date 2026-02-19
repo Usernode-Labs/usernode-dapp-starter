@@ -7,6 +7,7 @@
  */
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -251,6 +252,67 @@ const server = http.createServer((req, res) => {
           JSON.stringify({ error: `Invalid JSON: ${e.message}` })
         );
       });
+  }
+
+  // ── Explorer API proxy (/explorer-api/*) ──────────────────────────────
+  // Proxies requests to the remote block explorer to avoid CORS issues
+  // when the page is loaded inside a WebView or from a different origin.
+  const EXPLORER_PROXY_PREFIX = "/explorer-api/";
+  const EXPLORER_UPSTREAM = "alpha2.usernodelabs.org";
+  const EXPLORER_UPSTREAM_BASE = "/explorer/api";
+
+  if (pathname.startsWith(EXPLORER_PROXY_PREFIX)) {
+    const upstreamPath =
+      EXPLORER_UPSTREAM_BASE + "/" + pathname.slice(EXPLORER_PROXY_PREFIX.length);
+    const upstreamUrl = new URL(`https://${EXPLORER_UPSTREAM}${upstreamPath}`);
+
+    return void (async () => {
+      try {
+        let bodyBuf = null;
+        if (req.method === "POST") {
+          const chunks = [];
+          for await (const chunk of req) {
+            chunks.push(chunk);
+            if (chunks.reduce((s, c) => s + c.length, 0) > 1_000_000) {
+              return send(res, 413, { "content-type": "text/plain" }, "Body too large");
+            }
+          }
+          bodyBuf = Buffer.concat(chunks);
+        }
+
+        const proxyReq = https.request(
+          upstreamUrl,
+          {
+            method: req.method,
+            headers: {
+              "content-type": req.headers["content-type"] || "application/json",
+              accept: "application/json",
+              ...(bodyBuf ? { "content-length": bodyBuf.length } : {}),
+            },
+          },
+          (proxyRes) => {
+            const resHeaders = {
+              "content-type": proxyRes.headers["content-type"] || "application/json",
+              "access-control-allow-origin": "*",
+            };
+            res.writeHead(proxyRes.statusCode || 502, resHeaders);
+            proxyRes.pipe(res);
+          }
+        );
+
+        proxyReq.on("error", (err) => {
+          console.error(`Explorer proxy error: ${err.message}`);
+          send(res, 502, { "content-type": "application/json" },
+            JSON.stringify({ error: `Proxy error: ${err.message}` }));
+        });
+
+        if (bodyBuf) proxyReq.write(bodyBuf);
+        proxyReq.end();
+      } catch (err) {
+        send(res, 502, { "content-type": "application/json" },
+          JSON.stringify({ error: `Proxy error: ${err.message}` }));
+      }
+    })();
   }
 
   // Static file serving:
