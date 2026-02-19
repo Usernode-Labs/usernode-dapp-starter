@@ -16,27 +16,40 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            set -e
+            set -euxo pipefail
             REPO_DIR=${{ secrets.DEPLOY_PATH }}
             cd "$REPO_DIR"
+            echo "==> Working directory: $(pwd)"
+            echo "==> Git status:"
+            git status --short
 
             echo "==> Pulling latest code..."
             git pull --recurse-submodules
             git submodule update --init --recursive
 
             echo "==> Rebuilding and restarting main app..."
-            docker compose down
-            docker compose up -d --build
+            docker compose down || true
+            docker compose up -d --build 2>&1
+            docker compose ps
+            echo "==> Main app started."
 
             echo "==> Rebuilding and restarting CIS bots..."
             cd "$REPO_DIR/examples/cis/bot"
-            docker compose down
-            docker compose up -d --build
+            docker compose down || true
+            docker compose up -d --build 2>&1
+            docker compose ps
+            echo "==> CIS bots started."
 
             echo "==> Rebuilding and restarting falling-sands..."
             cd "$REPO_DIR/examples/falling-sands"
+            echo "==> Copying usernode-bridge.js..."
             cp "$REPO_DIR/usernode-bridge.js" .
-            docker compose down
-            docker compose up -d --build
+            ls -la usernode-bridge.js
+            docker compose down || true
+            docker compose up -d --build 2>&1
+            docker compose ps
+            echo "==> Falling-sands started."
 
+            echo "==> All running containers:"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             echo "==> Deploy complete!"
