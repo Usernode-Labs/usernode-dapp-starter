@@ -46,6 +46,8 @@ jobs:
             cp "$REPO_DIR/usernode-bridge.js" .
             ls -la usernode-bridge.js
             docker compose down || true
+            docker stop falling-sands 2>/dev/null || true
+            docker rm falling-sands 2>/dev/null || true
             docker compose up -d --build 2>&1
             docker compose ps
             echo "==> Falling-sands started."
