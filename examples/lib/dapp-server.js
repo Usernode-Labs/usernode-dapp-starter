@@ -165,8 +165,8 @@ function createMockApi(opts) {
         return true;
       }
       readJson(req).then((body) => {
-        const owner = String(body.owner_pubkey || "").trim();
         const filterOptions = body.filterOptions || {};
+        const owner = String(body.owner_pubkey || filterOptions.account || "").trim();
         const limit = typeof filterOptions.limit === "number" ? filterOptions.limit : 50;
         const items = transactions
           .filter((tx) => !owner || tx.from_pubkey === owner || tx.destination_pubkey === owner)

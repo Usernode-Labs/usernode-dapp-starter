@@ -224,8 +224,8 @@ const server = http.createServer((req, res) => {
     }
     return void readJson(req)
       .then((body) => {
-        const owner_pubkey = String(body.owner_pubkey || "").trim();
         const filterOptions = body.filterOptions || {};
+        const owner_pubkey = String(body.owner_pubkey || filterOptions.account || "").trim();
         const limit =
           typeof filterOptions.limit === "number" ? filterOptions.limit : 50;
 

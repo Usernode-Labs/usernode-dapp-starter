@@ -78,7 +78,7 @@ Because of this, your dapp should always use the `normalizeTx` helper from Secti
 The basic pattern is:
 
 1. **Write** — `sendTransaction(APP_PUBKEY, amount, JSON.stringify(payload))` to store data.
-2. **Read** — `getTransactions()` to fetch all transactions, then scan memos to derive current state.
+2. **Read** — `getTransactions({ account: APP_PUBKEY })` to fetch all transactions sent to your app, then scan memos to derive current state.
 3. **Derive** — Parse memos, apply conflict resolution rules (e.g., "latest write wins", "oldest submission wins"), and render.
 
 ### The App Public Key
@@ -142,6 +142,16 @@ function normalizeTx(tx) {
 }
 ```
 
+### Transaction Ordering
+
+The explorer API and mock server both return transactions in roughly reverse-chronological order, but **this is not a guaranteed contract**. When your app cares about order (chat messages, event logs, sequential state), always sort client-side after fetching:
+
+```js
+txs.sort((a, b) => a.ts - b.ts); // oldest first
+```
+
+Do not rely on the array order returned by `getTransactions`. Timestamps from `extractTimestamp` are the canonical ordering key.
+
 ### Shared Filter Helper
 
 Since every loop in your dapp will parse + filter app transactions the same way, extract a helper:
@@ -158,6 +168,51 @@ function parseAppTx(rawTx) {
 
 This eliminates copy-pasting the same 6-line filter in every function.
 
+### Standard Helpers — Copy Into Every Dapp
+
+The four functions above (`parseMemo`, `extractTimestamp`, `normalizeTx`, `parseAppTx`) are needed in virtually every dapp. Here they are as a single contiguous block for easy copy-paste. Replace `"myapp"` with your app identifier:
+
+```js
+/* ── Standard dapp helpers ────────────────────────────── */
+function parseMemo(m) {
+  if (m == null) return null;
+  try { return JSON.parse(String(m)); } catch (_) { return null; }
+}
+
+function extractTimestamp(tx) {
+  const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+  for (const v of candidates) {
+    if (typeof v === "number" && Number.isFinite(v))
+      return v < 10_000_000_000 ? v * 1000 : v;
+    if (typeof v === "string" && v.trim()) {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return t;
+    }
+  }
+  return null;
+}
+
+function normalizeTx(tx) {
+  if (!tx || typeof tx !== "object") return null;
+  return {
+    id:     tx.tx_id || tx.id || tx.txid || tx.hash || null,
+    from:   tx.from_pubkey || tx.from || tx.source || null,
+    to:     tx.destination_pubkey || tx.to || tx.destination || null,
+    amount: tx.amount || null,
+    memo:   tx.memo != null ? String(tx.memo) : null,
+    ts:     extractTimestamp(tx) || Date.now(),
+  };
+}
+
+function parseAppTx(rawTx) {
+  const tx = normalizeTx(rawTx);
+  if (!tx || !tx.from || !tx.to || tx.to !== APP_PUBKEY) return null;
+  const memo = parseMemo(tx.memo);
+  if (!memo || memo.app !== "myapp") return null;
+  return { tx, memo };
+}
+```
+
 ---
 
 ## 4. Transaction Types Are Memo-Only
@@ -172,6 +227,19 @@ await sendTransaction(APP_PUBKEY, 1, JSON.stringify({
   channel: "general",
   text: "Hello world!",
 }), TX_SEND_OPTS);
+```
+
+### Memo Size Limit
+
+Memos have a **hard 1024-character limit**. Memos exceeding this may be silently truncated or rejected by the chain. Keep payloads compact: use short field names, avoid redundant data, and don't include whitespace in `JSON.stringify`. Always validate before sending:
+
+```js
+const memo = JSON.stringify(payload);
+if (memo.length > 1024) {
+  showError("Payload too large — please shorten your input.");
+  return;
+}
+await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
 ```
 
 ---
@@ -433,6 +501,74 @@ try {
 }
 ```
 
+### Transaction Progress Bar — Complete Copy-Paste Block
+
+The HTML, CSS, and JS above are shown separately for explanation. Here is the complete progress bar as a single block for easy copy-paste into any dapp:
+
+```html
+<!-- Progress bar HTML — place near your send button -->
+<div class="tx-progress hide" id="txProgress">
+  <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+  <div class="tx-progress-label">Sending...</div>
+</div>
+
+<style>
+.tx-progress { width: 100%; margin: 8px 0 4px; }
+.tx-progress .tx-progress-track { width: 100%; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.tx-progress .tx-progress-fill { height: 100%; width: 0%; border-radius: 3px; background: var(--accent); transition: width 0.4s ease-out, background-color 0.4s ease; }
+.tx-progress .tx-progress-fill.ok { background: #6ef0a8; }
+.tx-progress .tx-progress-fill.warn { background: #e6a817; }
+.tx-progress .tx-progress-fill.err { background: var(--danger); }
+.tx-progress .tx-progress-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.tx-progress .tx-progress-label.warn { color: #e6a817; }
+.tx-progress .tx-progress-label.err { color: var(--danger); }
+.tx-progress.hide { display: none; }
+</style>
+
+<script>
+const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
+let _pbRaf = null, _pbStart = 0;
+
+function pbPercent(s) {
+  if (s <= TX_PB_EXPECTED_S) { const t = s / TX_PB_EXPECTED_S; return 95 * (1 - Math.pow(1 - t, 3)); }
+  return 95 + 5 * (1 - Math.exp(-(s - TX_PB_EXPECTED_S) / 120));
+}
+function pbApply(pct, s) {
+  const el = document.getElementById("txProgress"); if (!el) return;
+  const fill = el.querySelector(".tx-progress-fill"), label = el.querySelector(".tx-progress-label");
+  if (fill) { fill.style.width = pct + "%"; fill.className = "tx-progress-fill" + (s >= TX_PB_ERR_S ? " err" : s >= TX_PB_WARN_S ? " warn" : ""); }
+  if (label) {
+    if (s >= TX_PB_ERR_S) { label.textContent = "Taking longer than it should; check Discord"; label.className = "tx-progress-label err"; }
+    else if (s >= TX_PB_WARN_S) { label.textContent = "Taking longer than expected"; label.className = "tx-progress-label warn"; }
+    else { label.textContent = "Sending..."; label.className = "tx-progress-label"; }
+  }
+}
+function startProgressBar() {
+  stopProgressBar();
+  const el = document.getElementById("txProgress");
+  if (el) { el.classList.remove("hide"); const f = el.querySelector(".tx-progress-fill"), l = el.querySelector(".tx-progress-label"); if (f) { f.style.width = "0%"; f.className = "tx-progress-fill"; } if (l) { l.textContent = "Sending..."; l.className = "tx-progress-label"; } }
+  _pbStart = performance.now();
+  (function tick() { const s = (performance.now() - _pbStart) / 1000; pbApply(pbPercent(s), s); _pbRaf = requestAnimationFrame(tick); })();
+}
+function completeProgressBar() {
+  stopProgressBar(); const el = document.getElementById("txProgress"); if (!el) return;
+  const f = el.querySelector(".tx-progress-fill"), l = el.querySelector(".tx-progress-label");
+  if (f) { f.className = "tx-progress-fill ok"; f.style.width = "100%"; }
+  if (l) { l.textContent = "Confirmed!"; l.className = "tx-progress-label"; }
+  setTimeout(() => el.classList.add("hide"), 1200);
+}
+function stopProgressBar() { if (_pbRaf) { cancelAnimationFrame(_pbRaf); _pbRaf = null; } }
+
+function setSending(v, txSucceeded) {
+  sending = !!v;
+  document.querySelectorAll("button, input, select").forEach(el => { el.disabled = !!v; });
+  if (v) startProgressBar();
+  else if (txSucceeded) completeProgressBar();
+  else { stopProgressBar(); document.getElementById("txProgress").classList.add("hide"); }
+}
+</script>
+```
+
 ### Sticky Error Display
 
 If your dapp has periodic status updates (FPS counter, WebSocket reconnect, polling indicator), error messages will be instantly overwritten. Use a holdoff timer so errors stay visible:
@@ -484,7 +620,7 @@ A simple default is to poll `getTransactions` every ~4 seconds to keep the UI cu
 ```js
 async function refreshLoop() {
   try {
-    const data = await getTransactions({ limit: 200 });
+    const data = await getTransactions({ limit: 200, account: APP_PUBKEY });
     const items = data.items || [];
     const txs = items.map(parseAppTx).filter(Boolean);
     rebuildState(txs);
@@ -522,6 +658,36 @@ After every `sendTransaction`, immediately call `refreshLoop()` so the UI update
 await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
 await refreshLoop(); // Immediate update
 ```
+
+### Client-Side Pagination
+
+For most dapps, a single `getTransactions({ limit: 200, account: APP_PUBKEY })` call is sufficient. But if your app accumulates more transactions than a single page can return, you'll need cursor-based pagination.
+
+The explorer API response includes `next_cursor` (opaque string or `null`) and `has_more` (boolean). Loop through pages to collect all relevant transactions:
+
+```js
+async function getAllAppTransactions() {
+  const allItems = [];
+  let cursor = null;
+  const MAX_PAGES = 10;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const body = { account: APP_PUBKEY, limit: 50 };
+    if (cursor) body.cursor = cursor;
+    const data = await explorerFetch(`/${chainId}/transactions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    allItems.push(...(data.items || []));
+    if (!data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor;
+  }
+  return allItems;
+}
+```
+
+> **Note**: This calls the explorer proxy directly rather than `getTransactions()`, so it only works when the explorer is reachable (not in pure local-dev mock mode). Use this pattern for production apps that need full history; for local dev testing, a high `limit` with the bridge is usually enough.
 
 ---
 
@@ -911,25 +1077,30 @@ The mock server:
 
 The bridge's `getTransactions()` automatically routes to the mock store in local dev, so any code using `getTransactions()` works without changes. This is the recommended approach.
 
-If your app needs to query by **app pubkey** rather than the current user (e.g., to fetch all transactions sent to your dapp's address), you can hit the mock endpoint directly. Try mock first so it works even when the remote explorer is reachable:
+Most dapps need to query by **app pubkey** rather than the current user (to fetch all transactions sent to your dapp's shared address). Pass the `account` field in `filterOptions` — the bridge and mock server both support it transparently:
 
 ```js
-async function getAppTransactions(limit) {
-  // Mock first — returns 404 when not in local-dev, so safe to try always
-  try {
-    const r = await fetch("/__mock/getTransactions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ owner_pubkey: APP_PUBKEY, filterOptions: { limit } }),
-    });
-    if (r.ok) return (await r.json()).items || [];
-  } catch (_) {}
-
-  // Fall back to bridge (explorer API in production)
-  const data = await getTransactions({ limit, account: APP_PUBKEY });
-  return data.items || [];
-}
+const data = await getTransactions({ limit: 200, account: APP_PUBKEY });
+const items = data.items || [];
 ```
+
+This works identically in local dev (mock store) and production (explorer API). No need for separate mock-first fallback logic.
+
+### Testing Multiple Users
+
+Each browser profile gets its own mock identity via `localStorage`. To simulate multiple users in local dev:
+
+1. Open the app in a normal browser window (this is User A).
+2. Open an **incognito/private window** and navigate to the same URL (this is User B, with a fresh mock pubkey).
+3. Both windows share the same mock transaction store on the server, so they see each other's messages/actions.
+
+For deterministic test identities, override the mock address in each window's console:
+
+```js
+localStorage.setItem("usernode:mockAddress", "ut1_test_user_alice");
+```
+
+Then reload. Repeat in the other window with a different address.
 
 ### Overriding the Mock Address
 

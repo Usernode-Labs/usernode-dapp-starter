@@ -389,11 +389,14 @@
         return await resp.json();
       }
 
+      const ownerPubkey = (filterOptions && filterOptions.account)
+        ? filterOptions.account
+        : await window.getNodeAddress();
       const resp = await fetch("/__mock/getTransactions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          owner_pubkey: await window.getNodeAddress(),
+          owner_pubkey: ownerPubkey,
           filterOptions: filterOptions || {},
         }),
       });
