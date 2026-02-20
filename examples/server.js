@@ -34,7 +34,7 @@ const CIS_HTML = path.join(__dirname, "cis", "usernode_cis.html");
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
-const mockApi = createMockApi({ localDev: LOCAL_DEV, delayMs: 2000 });
+const mockApi = createMockApi({ localDev: LOCAL_DEV });
 
 // ── Falling-sands engine ─────────────────────────────────────────────────────
 const engine = createEngine({ wasmLoaderPath: require.resolve("./falling-sands/wasm-loader") });

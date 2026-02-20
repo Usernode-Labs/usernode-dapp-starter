@@ -128,7 +128,7 @@ function handleExplorerProxy(req, res, pathname, opts) {
 
 function createMockApi(opts) {
   const localDev = (opts && opts.localDev) || false;
-  const delayMs = (opts && opts.delayMs) || 2000;
+  const delayMs = (opts && opts.delayMs) || 5000;
   const transactions = [];
 
   function handleRequest(req, res, pathname) {

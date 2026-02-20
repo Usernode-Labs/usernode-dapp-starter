@@ -358,9 +358,9 @@
 
         <hr />
 
-        <h2>On-chain Transactions</h2>
+        <h2>Transactions</h2>
         <p style="margin-top: 0;">
-          Fetched from the block explorer API. Auto-refreshes every 10s.
+          Explorer API when connected, mock store in local dev. Auto-refreshes every 10s.
         </p>
         <p style="margin: 0;">
           <span class="status-dot pending" id="txDot"></span>
@@ -523,8 +523,38 @@
           }
         }
 
+        // ── Transaction normalization ──────────────────────────────
+        function extractTxTimestamp(tx) {
+          const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+          for (const v of candidates) {
+            if (typeof v === "number" && Number.isFinite(v))
+              return v < 10_000_000_000 ? v * 1000 : v;
+            if (typeof v === "string" && v.trim()) {
+              const t = Date.parse(v);
+              if (!Number.isNaN(t)) return t;
+            }
+          }
+          return null;
+        }
+
+        function normalizeTxForDisplay(tx) {
+          return {
+            tx_id: tx.tx_id || tx.id || tx.txid || tx.hash || null,
+            tx_type: tx.tx_type || "transfer",
+            status: tx.status || "confirmed",
+            source: tx.source || tx.from_pubkey || tx.from || null,
+            destination: tx.destination || tx.destination_pubkey || tx.to || null,
+            amount: tx.amount != null ? tx.amount : null,
+            fee: tx.fee != null ? tx.fee : null,
+            memo: tx.memo != null ? String(tx.memo) : null,
+            block_height: tx.block_height != null ? tx.block_height : null,
+            timestamp_ms: extractTxTimestamp(tx),
+          };
+        }
+
         // ── Transaction list ───────────────────────────────────────
-        function renderTxItem(tx) {
+        function renderTxItem(raw) {
+          const tx = normalizeTxForDisplay(raw);
           const item = document.createElement("div");
           item.className = "tx-item";
 
@@ -596,12 +626,8 @@
               txPollStatusEl.textContent = "loading...";
             }
 
-            const body = { limit: TX_DISPLAY_LIMIT };
-            if (nodeAddress) {
-              body.account = nodeAddress;
-            }
-            const data = await queryTransactions(body);
-            const items = data.items || [];
+            const data = await window.getTransactions({ limit: TX_DISPLAY_LIMIT });
+            const items = data.items || data.transactions || (Array.isArray(data) ? data : []);
 
             txListEl.innerHTML = "";
             if (items.length === 0) {
@@ -619,7 +645,6 @@
             setDot(txDotEl, "ok");
             txPollStatusEl.textContent = `${items.length} transaction${items.length !== 1 ? "s" : ""} · updated ${formatTimestamp(Date.now())}`;
           } catch (e) {
-            // On transient errors, keep showing the last successful data
             if (lastTxRefreshOk) {
               txPollStatusEl.textContent += " (refresh failed)";
             } else {

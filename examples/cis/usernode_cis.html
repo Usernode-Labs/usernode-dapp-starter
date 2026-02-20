@@ -782,20 +782,9 @@
         async function getCisTransactions(limit) {
           const l = typeof limit === "number" ? limit : 200;
 
-          // Explorer proxy API (real chain data).
-          if (chainId) {
-            try {
-              const data = await queryTransactions({
-                recipient: CIS_APP_PUBKEY,
-                limit: l,
-              });
-              return normalizeTransactionsResponse(data);
-            } catch (e) {
-              console.warn("Explorer getCisTransactions failed:", e);
-            }
-          }
-
-          // Local-dev mock server (usernode-dapp-starter) supports this endpoint.
+          // Local-dev mock server — try first so mock transactions are visible
+          // even when the remote explorer is reachable.  Returns 404 when
+          // --local-dev is not enabled, so this is a safe no-op in production.
           try {
             const r = await fetch("/__mock/getTransactions", {
               method: "POST",
@@ -810,6 +799,19 @@
               return normalizeTransactionsResponse(json);
             }
           } catch (_) {}
+
+          // Explorer proxy API (real chain data).
+          if (chainId) {
+            try {
+              const data = await queryTransactions({
+                recipient: CIS_APP_PUBKEY,
+                limit: l,
+              });
+              return normalizeTransactionsResponse(data);
+            } catch (e) {
+              console.warn("Explorer getCisTransactions failed:", e);
+            }
+          }
 
           // If a generic getTransactions exists (remote API), try it as a last resort.
           if (typeof window.getTransactions === "function") {

@@ -29,7 +29,7 @@ const BRIDGE_PATH = resolvePath(
 );
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
-const mockApi = createMockApi({ localDev: LOCAL_DEV, delayMs: 2000 });
+const mockApi = createMockApi({ localDev: LOCAL_DEV });
 
 // ── Engine ───────────────────────────────────────────────────────────────────
 const engine = createEngine({ wasmLoaderPath: require.resolve("./wasm-loader") });

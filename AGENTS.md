@@ -30,10 +30,20 @@ Sends a transaction. **Returns only after the tx is confirmed on-chain** (visibl
 |---|---|---|
 | `destination_pubkey` | string | Your app's public key (the "app address") |
 | `amount` | number | Token amount — always use `1` (type discrimination is done via memo) |
-| `memo` | string | JSON-encoded payload — this is where your app data lives |
+| `memo` | string | JSON-encoded payload — **max 1024 characters** — this is where your app data lives |
 | `opts.timeoutMs` | number | Max wait for inclusion (default 20s; **recommend 90s** for real chains) |
 | `opts.pollIntervalMs` | number | Poll interval (default 750ms; **recommend 1500ms** for real chains) |
 | `opts.waitForInclusion` | boolean | Set `false` to fire-and-forget (default `true`) |
+
+**Recommended send options** — define once and reuse everywhere:
+
+```js
+const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+```
+
+**Return value** — shape `{ queued: true, tx: { id, from_pubkey, destination_pubkey, amount, memo, created_at } }`. The `tx` sub-object mirrors what the mock server stores.
+
+**Timeout behavior** — if `waitForInclusion` times out, the transaction has still been submitted and will eventually land on-chain. The timeout only means the bridge gave up *polling* for confirmation. Your app should tell the user something like "Transaction submitted — it may take a moment to appear" rather than treating it as a hard failure.
 
 ### `getTransactions(filterOptions?)` → `{ items: Transaction[] }`
 Fetches transactions. In local dev, returns from the in-memory mock store. In dapp mode, fetches from a configured remote URL or native bridge.
@@ -42,6 +52,22 @@ Fetches transactions. In local dev, returns from the in-memory mock store. In da
 |---|---|---|
 | `filterOptions.limit` | number | Max transactions to return |
 | `filterOptions.account` | string | Filter by account (some implementations) |
+
+**Important**: the bridge returns raw transaction objects — it does **not** normalize field names for you. Transaction shapes differ between the mock server and the explorer API:
+
+| Field | Mock server | Explorer API |
+|---|---|---|
+| Transaction ID | `id` | `tx_id` |
+| Sender | `from_pubkey` | `source` |
+| Recipient | `destination_pubkey` | `destination` |
+| Amount | `amount` | `amount` |
+| Memo | `memo` | `memo` |
+| Timestamp | `created_at` (ISO string) | `timestamp_ms` (epoch ms) |
+| Block height | — | `block_height` |
+| Status | — | `status` (`confirmed` / `orphaned`) |
+| Type | — | `tx_type` (`transfer` / `reward` / `genesis`) |
+
+Because of this, your dapp should always use the `normalizeTx` helper from Section 3 to handle both shapes uniformly.
 
 ---
 
@@ -90,6 +116,19 @@ function parseMemo(m) {
 Transaction objects may come in different shapes depending on the source (mock server, native bridge, explorer API). Always normalize:
 
 ```js
+function extractTimestamp(tx) {
+  const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+  for (const v of candidates) {
+    if (typeof v === "number" && Number.isFinite(v))
+      return v < 10_000_000_000 ? v * 1000 : v; // seconds → ms
+    if (typeof v === "string" && v.trim()) {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return t;
+    }
+  }
+  return null;
+}
+
 function normalizeTx(tx) {
   if (!tx || typeof tx !== "object") return null;
   return {
@@ -105,7 +144,7 @@ function normalizeTx(tx) {
 
 ### Shared Filter Helper
 
-Since every loop in your dapp will parse + filter CIS transactions the same way, extract a helper:
+Since every loop in your dapp will parse + filter app transactions the same way, extract a helper:
 
 ```js
 function parseAppTx(rawTx) {
@@ -129,9 +168,9 @@ All transaction type discrimination is done via the `type` field in the JSON mem
 // Every sendTransaction call uses amount = 1:
 await sendTransaction(APP_PUBKEY, 1, JSON.stringify({
   app: "myapp",
-  type: "vote",
-  survey: "survey_123",
-  choice: "option_a",
+  type: "post_message",
+  channel: "general",
+  text: "Hello world!",
 }), TX_SEND_OPTS);
 ```
 
@@ -437,13 +476,24 @@ A simple default is to poll `getTransactions` every ~4 seconds to keep the UI cu
 
 ```js
 async function refreshLoop() {
-  const txs = await getAppTransactions();
-  rebuildState(txs);
-  renderUI();
+  try {
+    const data = await getTransactions({ limit: 200 });
+    const items = data.items || [];
+    const txs = items.map(parseAppTx).filter(Boolean);
+    rebuildState(txs);
+    renderUI();
+  } catch (e) {
+    console.error("Refresh failed:", e);
+    showError("Connection issue — retrying...");
+  }
 }
 await refreshLoop();
 setInterval(refreshLoop, 4000); // Adjust interval as needed
 ```
+
+Always use `getTransactions()` (the bridge) — not direct explorer API calls — so your dapp works in both local dev (mock store) and production (real chain). The bridge handles the routing automatically.
+
+Always wrap the loop body in a try/catch — network errors, explorer downtime, or chain startup delays will otherwise crash the loop and leave the UI frozen.
 
 ### Fast Ticker for Countdowns
 
@@ -477,6 +527,17 @@ A standard pattern for dapps that want user identity:
 3. **Storage**: `{ app: "myapp", type: "set_username", username: "alice_a1b2c3" }` sent via `sendTransaction`.
 4. **Resolution**: Latest `set_username` tx per sender wins.
 5. **UI**: A clickable pill in the header opens an inline form with a non-editable suffix display.
+
+Extract the suffix from the user's public key:
+
+```js
+const myAddress = await getNodeAddress();
+const suffix = "_" + myAddress.slice(-6);
+
+function defaultUsername(pubkey) {
+  return "user_" + pubkey.slice(-6);
+}
+```
 
 ```html
 <div class="inputAffix">
@@ -571,7 +632,7 @@ For dapps with a backend server that needs to react to on-chain transactions (e.
 
 - **Filter field**: use `account: APP_PUBKEY` (not `receiver` — the explorer API uses `account`)
 - **Transaction ID field**: the explorer API returns `tx_id` (see normalization in Section 3)
-- **Cursor-based pagination**: the API response includes a `cursor` field; loop up to N pages to catch all relevant transactions past reward transactions
+- **Cursor-based pagination**: the API response includes `next_cursor` (opaque string or null) and `has_more` (boolean); loop up to N pages to catch all relevant transactions past reward transactions
 - **`APP_PUBKEY` must match** between server and client
 
 ### Minimal Implementation
@@ -606,13 +667,12 @@ async function pollChainTransactions() {
       if (!txId || seenTxIds.has(txId)) continue;
       allSeen = false;
       seenTxIds.add(txId);
-      // Parse tx.memo and apply to your app state
       try {
         if (tx.memo) applyMemo(JSON.parse(tx.memo));
       } catch (_) {}
     }
-    cursor = data.cursor;
-    if (allSeen || !cursor) break;
+    if (allSeen || !data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor;
   }
 }
 
@@ -771,33 +831,44 @@ const BRIDGE_PATH = (() => {
 ## 14. File Organization
 
 ```
-├── index.html                # Main dapp page (replace with your dapp)
-├── usernode-bridge.js        # The bridge — shared by all dapps, DO NOT EDIT per-dapp
-├── server.js                 # Root dev server + mock API + explorer proxy (template)
-├── scripts/
-│   └── generate-keypair.js   # Generate unique APP_PUBKEY addresses
-├── examples/
-│   ├── server.js             # Combined examples server (all 3 apps + WASM + WS)
-│   ├── Dockerfile            # Multi-stage build (Rust WASM + Node runtime)
-│   ├── docker-compose.yml    # Production: combined service + nginx-proxy
-│   ├── docker-compose.local.yml # Local override: port mapping
-│   ├── package.json          # Dependencies (ws)
-│   ├── cis/
-│   │   └── usernode_cis.html # Reference: Collective Intelligence Service
-│   └── falling-sands/
-│       ├── server.js              # Standalone server (for independent local dev)
-│       ├── index.html             # Client UI
-│       ├── Dockerfile             # Standalone multi-stage build
-│       ├── docker-compose.yml     # Standalone service
-│       ├── docker-compose.local.yml # Local override
-│       ├── wasm-loader.js         # WASM module loader
-│       └── sandspiel/             # Rust WASM source (git submodule)
+├── index.html                     # Main dapp page (replace with your dapp)
+├── usernode-bridge.js             # The bridge — shared by all dapps, DO NOT EDIT per-dapp
+├── server.js                      # Root dev server + mock API + explorer proxy (template)
+├── AGENTS.md                      # This file
+├── README.md
 ├── Dockerfile                     # Production container (root template server)
 ├── docker-compose.yml             # Root template service (not used for showcase deploy)
 ├── docker-compose.local.yml       # Local override: port mapping
-├── Makefile                  # make up / make down / make logs
-└── README.md
+├── Makefile                       # make up / make down / make logs
+├── .gitmodules                    # Git submodule config (falling-sands/sandspiel)
+├── scripts/
+│   └── generate-keypair.js        # Generate unique APP_PUBKEY addresses
+├── .github/
+│   └── workflows/
+│       └── deploy.yml             # GitHub Actions: build + deploy to dapps.usernodelabs.org
+└── examples/
+    ├── server.js                  # Combined examples server (all apps + WASM + WS)
+    ├── Dockerfile                 # Multi-stage build (Rust WASM + Node runtime)
+    ├── docker-compose.yml         # Production: combined service + nginx-proxy
+    ├── docker-compose.local.yml   # Local override: port mapping
+    ├── package.json               # Dependencies (ws)
+    ├── lib/
+    │   └── dapp-server.js         # Shared server utilities (mock API, explorer proxy)
+    ├── cis/
+    │   ├── usernode_cis.html      # Reference: Collective Intelligence Service
+    │   └── README.md
+    └── falling-sands/
+        ├── server.js              # Standalone server (for independent local dev)
+        ├── index.html             # Client UI
+        ├── engine.js              # WASM simulation engine wrapper
+        ├── wasm-loader.js         # WASM module loader
+        ├── Dockerfile             # Standalone multi-stage build
+        ├── docker-compose.yml     # Standalone service
+        ├── docker-compose.local.yml # Local override
+        └── sandspiel/             # Rust WASM source (git submodule)
 ```
+
+> **Note**: there is no root `package.json` — the root server (`server.js`) is zero-dependency Node.js. The `examples/` server has `package.json` with `ws` as a dependency for WebSocket support.
 
 ### Building Your App
 
@@ -827,6 +898,31 @@ The mock server:
 - Stores transactions **in memory** (reset on restart).
 - Adds a **5-second delay** before recording sent transactions (simulates network latency).
 - Returns all transactions where the sender or recipient matches the queried pubkey.
+- Mock endpoints (`/__mock/*`) return **404** when `--local-dev` is not enabled, so code that tries mock first is safe in production.
+
+### Fetching Transactions in Local Dev
+
+The bridge's `getTransactions()` automatically routes to the mock store in local dev, so any code using `getTransactions()` works without changes. This is the recommended approach.
+
+If your app needs to query by **app pubkey** rather than the current user (e.g., to fetch all transactions sent to your dapp's address), you can hit the mock endpoint directly. Try mock first so it works even when the remote explorer is reachable:
+
+```js
+async function getAppTransactions(limit) {
+  // Mock first — returns 404 when not in local-dev, so safe to try always
+  try {
+    const r = await fetch("/__mock/getTransactions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner_pubkey: APP_PUBKEY, filterOptions: { limit } }),
+    });
+    if (r.ok) return (await r.json()).items || [];
+  } catch (_) {}
+
+  // Fall back to bridge (explorer API in production)
+  const data = await getTransactions({ limit, account: APP_PUBKEY });
+  return data.items || [];
+}
+```
 
 ### Overriding the Mock Address
 
