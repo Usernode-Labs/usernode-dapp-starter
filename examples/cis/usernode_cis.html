@@ -777,7 +777,7 @@
           return { tx, memo: memoObj };
         }
 
-        const TX_SEND_OPTS = { timeoutMs: 45_000, pollIntervalMs: 800 };
+        const TX_SEND_OPTS = { timeoutMs: 90_000, pollIntervalMs: 1500 };
 
         async function getCisTransactions(limit) {
           const l = typeof limit === "number" ? limit : 200;
@@ -1223,7 +1223,7 @@
           });
         }
 
-        function setSending(v) {
+        function setSending(v, txSucceeded) {
           sending = !!v;
           if (sending) {
             show(votePendingEl, true);
@@ -1240,8 +1240,14 @@
               }
             });
             startTxProgress();
-          } else {
+          } else if (txSucceeded) {
             completeTxProgress();
+          } else {
+            stopTxProgress();
+            [setUsernamePendingEl, addSurveyPendingEl, votePendingEl].forEach(el => {
+              if (el) el.classList.add("hide");
+            });
+            resetTxProgressBars();
           }
           setDisabled(headerUsernameBtn, sending);
           setDisabled(saveUsernameBtn, sending);
@@ -1607,10 +1613,12 @@
                 if (sending || s.archived) return;
                 try {
                   await voteFlow(opt.key, opt.label);
+                  setSending(false, true);
                 } catch (e) {
+                  setSending(false, false);
                   console.error(e);
-                } finally {
-                  setSending(false);
+                  const msg = e && e.message ? e.message : String(e);
+                  window.alert(msg);
                 }
               });
               const parsed = parseOptionLabel(opt.label);
@@ -1984,11 +1992,11 @@
                 setSending(true);
                 await setUsernameFlow(usernameInputEl ? usernameInputEl.value : "");
                 show(setUsernamePanel, false);
+                setSending(false, true);
               } catch (e) {
+                setSending(false, false);
                 const msg = e && e.message ? e.message : String(e);
                 window.alert(msg);
-              } finally {
-                setSending(false);
               }
             });
           }
@@ -2014,11 +2022,11 @@
                 await addOptionFlow(newOptionInputEl ? newOptionInputEl.value : "");
                 show(addOptionPanelEl, false);
                 if (newOptionInputEl) newOptionInputEl.value = "";
+                setSending(false, true);
               } catch (e) {
+                setSending(false, false);
                 const msg = e && e.message ? e.message : String(e);
                 window.alert(msg);
-              } finally {
-                setSending(false);
               }
             });
           }
@@ -2069,12 +2077,11 @@
                 await refreshLoopOnce();
                 show(addSurveyPanel, false);
                 clearAddSurveyForm();
+                setSending(false, true);
               } catch (e) {
+                setSending(false, false);
                 const msg = e && e.message ? e.message : String(e);
-                // Keep this lightweight; no extra status area needed.
                 window.alert(msg);
-              } finally {
-                setSending(false);
               }
             });
           }

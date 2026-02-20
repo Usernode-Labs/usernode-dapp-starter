@@ -403,26 +403,33 @@ function stopProgressBar() {
 }
 ```
 
-**Usage** — wrap every `sendTransaction` call:
+**Usage** — combine progress bar + UI disable into `setSending(v, txSucceeded)`, then use explicit success/failure paths (never `finally`):
 
 ```js
-startProgressBar();
-try {
-  await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-  completeProgressBar();
-} catch (e) {
-  stopProgressBar();
-  showError("Send failed: " + (e.message || e));
+function setSending(v, txSucceeded) {
+  sending = !!v;
+  document.querySelectorAll("button, input, select").forEach(el => { el.disabled = !!v; });
+  if (v) {
+    startProgressBar();
+  } else if (txSucceeded) {
+    completeProgressBar();
+  } else {
+    stopProgressBar();
+    document.getElementById("txProgress").classList.add("hide");
+  }
 }
 ```
 
-Also disable interactive elements during the send so users can't double-submit:
+**Important**: always pass the success/failure flag explicitly — do **not** use `finally { setSending(false) }`, because that shows "Confirmed!" even when the transaction failed or timed out:
 
 ```js
-function setSending(v) {
-  sending = !!v;
-  document.querySelectorAll("button, input, select").forEach(el => { el.disabled = !!v; });
-  if (v) startProgressBar();
+try {
+  setSending(true);
+  await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+  setSending(false, true);
+} catch (e) {
+  setSending(false, false);
+  showError("Send failed: " + (e.message || e));
 }
 ```
 

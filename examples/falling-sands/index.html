@@ -1366,7 +1366,7 @@ function stopTxProgress() {
   if (_txRaf) { cancelAnimationFrame(_txRaf); _txRaf = null; }
 }
 
-function setSending(v) {
+function setSending(v, txSucceeded) {
   sending = !!v;
   btnSend.style.display = v ? "none" : "";
   btnDiscard.style.display = v ? "none" : "";
@@ -1374,8 +1374,11 @@ function setSending(v) {
     if (sendProgressEl) sendProgressEl.classList.remove("hide");
     fabBar.classList.add("visible");
     startTxProgress();
-  } else {
+  } else if (txSucceeded) {
     completeTxProgress();
+  } else {
+    stopTxProgress();
+    if (sendProgressEl) sendProgressEl.classList.add("hide");
   }
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
@@ -1405,11 +1408,11 @@ btnSend.addEventListener("click", async () => {
     usedBudget = 0;
     overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     refreshFabs();
+    setSending(false, true);
   } catch (e) {
+    setSending(false, false);
     console.error("sendTransaction error:", e);
     showError("Send failed: " + (e.message || e));
-  } finally {
-    setSending(false);
   }
 });
 
