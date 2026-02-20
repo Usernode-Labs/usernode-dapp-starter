@@ -16,6 +16,71 @@ The bridge (`usernode-bridge.js`) abstracts the difference, so your dapp code is
 
 ---
 
+## Quick-Start Procedure — Building a New Dapp
+
+When a user asks you to build a dapp, follow these steps in order. The numbered sections below are reference material — this procedure tells you what to do first.
+
+### Step 1: Generate a keypair and `.env`
+
+```bash
+node scripts/generate-keypair.js --env
+```
+
+This creates a `.env` file at the repo root with `APP_PUBKEY`, `APP_SECRET_KEY`, and `NODE_RPC_URL`. Use the `APP_PUBKEY` value as the shared address in your dapp. If the script can't reach a running node or find the CLI binary, see Section 14 for troubleshooting.
+
+> **Important**: Every dapp needs its own unique address. Do not skip this step or reuse addresses from the examples.
+
+### Step 2: Replace `index.html`
+
+The existing `index.html` is a **diagnostic demo page** (balance viewer, raw transaction sender, explorer status). It is **not** a template to build on — **replace it entirely** with your dapp's HTML.
+
+Your new `index.html` should:
+- Include `<script src="/usernode-bridge.js"></script>` in the `<head>`
+- Define `const APP_PUBKEY = "..."` using the address from Step 1 (with a `localStorage` override for dev — see Section 3)
+- Define `const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };`
+- Include the four standard helpers: `parseMemo`, `extractTimestamp`, `normalizeTx`, `parseAppTx` (copy-paste block in Section 3 — replace `"myapp"` with your app identifier)
+- Include the transaction progress bar (copy-paste block in Section 6)
+- Check `isMockEnabled()` before `discoverChainId()` (pattern in Section 17)
+- Use the single-file HTML structure from Section 6
+
+### Step 3: Decide whether `server.js` needs changes
+
+- **Client-only dapps** (chat, surveys, voting, identity, simple games): **Leave `server.js` as-is.** It already handles static file serving, mock transaction endpoints (`--local-dev`), and the explorer API proxy — everything a client-side dapp needs.
+- **Dapps with server-side logic** (automated payouts, game timers, server-driven state): Add your custom routes and logic to `server.js`, or create a standalone sub-app server under `examples/` following the pattern in Section 15.
+
+**Never modify `usernode-bridge.js`** — it is shared infrastructure used by all dapps.
+
+### Step 4: Run and test
+
+```bash
+node server.js --local-dev
+# Open http://localhost:8000
+```
+
+The `--local-dev` flag is **required for local development** — without it, mock endpoints return 404 and transaction sends/reads won't work outside the Flutter WebView.
+
+Test with multiple users by opening an incognito/private window alongside a normal window (see Section 17).
+
+### Step 5: Reference the rest of this guide as needed
+
+| Topic | Section |
+|---|---|
+| The three APIs (`getNodeAddress`, `sendTransaction`, `getTransactions`) | Section 2 |
+| Core architecture (memo schema, normalization, state derivation) | Section 3 |
+| Transaction types & memo size limits | Section 4 |
+| Conflict resolution patterns | Section 5 |
+| UI patterns (themes, layout, progress bar, navigation) | Section 6 |
+| Polling & real-time updates | Section 7 |
+| Username system | Section 8 |
+| Explorer API proxy | Section 11 |
+| Server-side chain polling | Section 12 |
+| Server-side payouts via RPC | Section 13 |
+| Keypair generation & `.env` details | Section 14 |
+| Docker deployment | Section 18 |
+| Full checklist | Section 19 |
+
+---
+
 ## 2. The Three APIs
 
 Your dapp has exactly three primitives. All are async and return Promises.
@@ -1245,11 +1310,22 @@ const BRIDGE_PATH = (() => {
     │   └── dapp-server.js         # Shared server utilities (mock API, explorer proxy, chain poller)
     ├── cis/
     │   ├── usernode_cis.html      # Reference: Collective Intelligence Service
-    │   └── README.md
+    │   ├── README.md
+    │   └── bot/                   # AI survey bot (LLM-powered participant)
+    │       ├── index.js           # Bot entry point
+    │       ├── cis-client.js      # CIS transaction client
+    │       ├── llm.js             # LLM integration
+    │       ├── search.js          # Web search for survey context
+    │       ├── image-store/       # Image hosting sidecar
+    │       ├── Dockerfile
+    │       ├── docker-compose.yml
+    │       ├── package.json
+    │       └── env.example        # Template for .env (secrets)
     ├── last-one-wins/
     │   ├── index.html             # Client UI (token game)
     │   ├── game-logic.js          # Shared game state, tx processing, payout logic
-    │   └── server.js              # Standalone server (for independent local dev)
+    │   ├── server.js              # Standalone server (for independent local dev)
+    │   └── README.md
     └── falling-sands/
         ├── server.js              # Standalone server (for independent local dev)
         ├── index.html             # Client UI
@@ -1257,7 +1333,6 @@ const BRIDGE_PATH = (() => {
         ├── wasm-loader.js         # WASM module loader
         ├── Dockerfile             # Standalone multi-stage build
         ├── docker-compose.yml     # Standalone service
-        ├── docker-compose.local.yml # Local override
         └── sandspiel/             # Rust WASM source (git submodule)
 ```
 
@@ -1284,7 +1359,7 @@ All static files under the repo root are automatically served by `server.js`.
 node server.js --local-dev
 
 # Then open in browser:
-open http://localhost:8000/examples/my_dapp.html
+open http://localhost:8000
 ```
 
 The mock server:
@@ -1375,7 +1450,7 @@ The showcase deployment uses the combined `examples/` server. The GitHub Actions
 
 1. Copies `usernode-bridge.js` and `index.html` from the repo root into `examples/`
 2. Runs `docker compose up -d --build` in `examples/`
-3. One container serves all three example apps on `dapps.usernodelabs.org`
+3. One container serves all example apps on `dapps.usernodelabs.org`
 
 ### Local Testing (Combined Server)
 
@@ -1399,7 +1474,7 @@ Each sub-app can also be run independently for focused development:
 ```bash
 cd examples/falling-sands
 cp ../../usernode-bridge.js .
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+docker compose up --build
 ```
 
 ### Root Template Server

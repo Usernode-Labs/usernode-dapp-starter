@@ -9,7 +9,36 @@ The bridge (`usernode-bridge.js`) abstracts the difference so your dapp code is 
 
 ---
 
-## Quickstart
+## Build a dapp with an AI agent
+
+This repo is designed to work with AI coding assistants (Cursor, Copilot, etc.). The `AGENTS.md` file contains everything an agent needs to build a complete dapp from scratch. This is the fastest way to get started.
+
+### How to prompt your agent
+
+1. **Clone this repo** and open it in your AI-enabled editor.
+
+2. **Describe what you want to build.** Be specific about the user experience. For example:
+
+   > "Build a dapp where users can post short messages (like tweets) that are stored on-chain. Show a feed of all messages sorted by newest first. Each message should show the sender's username and a timestamp. Include a username system."
+
+   > "Build a token tipping dapp. Users can send tips to other users by entering their address and an amount. Show a leaderboard of who has received the most tips."
+
+   > "Build a simple poll dapp where one person can create a yes/no poll and others can vote. Show the results as a bar chart."
+
+3. **Let the agent read `AGENTS.md`.** It contains the quick-start procedure, all three APIs, memo format, UI patterns, transaction progress bars, and the full checklist. The agent will follow those instructions to generate your dapp.
+
+4. **Test locally** with `node server.js --local-dev` and open http://localhost:8000. Use an incognito window to simulate a second user.
+
+### Tips for better results
+
+- **Start simple.** A single-screen app with one transaction type is a good first prompt. You can add features incrementally.
+- **Mention if you need server-side logic.** Most dapps are client-only (all state derived from on-chain transactions). If your app needs timers, automated payouts, or a backend database, say so — the agent will modify `server.js` accordingly.
+- **Reference the examples.** If your idea is similar to an existing example, mention it: "Similar to the CIS survey app, but for..." — the agent can use it as a starting point.
+- **Ask for `.env` generation** if your dapp needs its own on-chain address (most do): "Generate a keypair and `.env` file for this dapp."
+
+---
+
+## Quickstart (manual)
 
 ### 1) Run the server
 
@@ -100,7 +129,7 @@ Or run any sub-app independently (e.g., `cd examples/last-one-wins && node serve
 
 ---
 
-## Building your own dapp
+## Building your own dapp (manual)
 
 1. Edit `index.html` (or create a new HTML file at root).
 2. Include the bridge: `<script src="/usernode-bridge.js"></script>`.
