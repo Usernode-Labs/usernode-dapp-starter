@@ -40,10 +40,14 @@ function loadEnvFile(filePath) {
   }
 }
 
-const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
-const EXPLORER_UPSTREAM_BASE = process.env.EXPLORER_UPSTREAM_BASE != null
-  ? process.env.EXPLORER_UPSTREAM_BASE
-  : "/explorer/api";
+function getExplorerUpstream() {
+  return process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+}
+function getExplorerUpstreamBase() {
+  return process.env.EXPLORER_UPSTREAM_BASE != null
+    ? process.env.EXPLORER_UPSTREAM_BASE
+    : "/explorer/api";
+}
 
 // ── JSON body parser ─────────────────────────────────────────────────────────
 
@@ -109,8 +113,8 @@ function httpsJson(method, urlStr, body) {
 // Returns true if the request was handled (pathname starts with /explorer-api/).
 
 function handleExplorerProxy(req, res, pathname, opts) {
-  const upstream = (opts && opts.upstream) || EXPLORER_UPSTREAM;
-  const upstreamBase = (opts && opts.upstreamBase) || EXPLORER_UPSTREAM_BASE;
+  const upstream = (opts && opts.upstream) || getExplorerUpstream();
+  const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
   const prefix = "/explorer-api/";
 
   if (!pathname.startsWith(prefix)) return false;
@@ -248,8 +252,8 @@ function createChainPoller(opts) {
   const appPubkey = opts.appPubkey;
   const onTransaction = opts.onTransaction;
   const intervalMs = opts.intervalMs || 3000;
-  const upstream = opts.upstream || EXPLORER_UPSTREAM;
-  const upstreamBase = opts.upstreamBase || EXPLORER_UPSTREAM_BASE;
+  const upstream = opts.upstream || getExplorerUpstream();
+  const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const queryField = opts.queryField || "account";
 
   let chainId = null;
@@ -343,8 +347,8 @@ function resolvePath(...candidates) {
 }
 
 module.exports = {
-  EXPLORER_UPSTREAM,
-  EXPLORER_UPSTREAM_BASE,
+  get EXPLORER_UPSTREAM() { return getExplorerUpstream(); },
+  get EXPLORER_UPSTREAM_BASE() { return getExplorerUpstreamBase(); },
   loadEnvFile,
   readJson,
   httpsJson,
