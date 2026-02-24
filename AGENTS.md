@@ -77,7 +77,8 @@ Test with multiple users by opening an incognito/private window alongside a norm
 | Server-side payouts via RPC | Section 13 |
 | Keypair generation & `.env` details | Section 14 |
 | Docker deployment | Section 18 |
-| Full checklist | Section 19 |
+| Connecting to a localnet | Section 19 |
+| Full checklist | Section 20 |
 
 ---
 
@@ -1525,7 +1526,69 @@ make down    # Stop and remove
 
 ---
 
-## 19. Checklist for Building a New Dapp
+## 19. Connecting to a Localnet (Optional)
+
+By default, dapps are developed with `--local-dev` (mock endpoints) or against the production network (`alpha2.usernodelabs.org`). If you're running a Usernode localnet (via `usernode/tools/localnet/`), you can point the dapp server at it instead.
+
+### Prerequisites
+
+A running localnet with at least a seed node, batcher, producer, and block explorer. See `usernode/tools/localnet/README.md` for setup.
+
+### `.env` Configuration
+
+Create or update `.env` at the repo root with localnet-specific values. Replace `192.168.1.116` with your machine's LAN IP:
+
+```
+APP_PUBKEY=ut1...
+APP_SECRET_KEY=...
+
+# Localnet: point at the seed node's HTTP port
+NODE_RPC_URL=http://192.168.1.116:3001
+# Production (default when not set):
+#NODE_RPC_URL=https://alpha2.usernodelabs.org
+
+# Localnet: point explorer proxy at the local block explorer backend
+EXPLORER_UPSTREAM=192.168.1.116:4173
+EXPLORER_UPSTREAM_BASE=/api
+# Production (default when not set):
+#EXPLORER_UPSTREAM=alpha2.usernodelabs.org
+#EXPLORER_UPSTREAM_BASE=/explorer/api
+```
+
+Key differences from production:
+
+| Variable | Production (default) | Localnet |
+|---|---|---|
+| `NODE_RPC_URL` | `https://alpha2.usernodelabs.org` | `http://<LAN_IP>:3001` |
+| `EXPLORER_UPSTREAM` | `alpha2.usernodelabs.org` | `<LAN_IP>:4173` |
+| `EXPLORER_UPSTREAM_BASE` | `/explorer/api` | `/api` |
+
+The localnet block explorer backend runs on port 4173 with a `/api` prefix (no `/explorer` prefix). The server auto-selects `http` vs `https` based on whether the host looks like a private IP.
+
+### Running
+
+Start the server **without** `--local-dev` so it uses the real explorer proxy (pointed at your localnet) instead of mock endpoints:
+
+```bash
+node server.js
+```
+
+With `--local-dev`, sends and reads route through the in-memory mock store and never touch the localnet. Without it, the explorer proxy forwards to whatever `EXPLORER_UPSTREAM` is set to.
+
+### Switching Back to Production
+
+Comment out or remove the localnet lines in `.env` and uncomment the production values. Or simply delete `.env` — the server falls back to production defaults.
+
+### Notes
+
+- The localnet explorer uses a different API path prefix (`/api`) than production (`/explorer/api`). This is the most common gotcha.
+- If the explorer proxy returns connection errors, verify the block explorer container is running (`docker ps | grep block-explorer`) and that port 4173 is reachable (`curl http://<LAN_IP>:4173/api/active_chain`).
+- For the `examples/` combined server, the same `.env` variables apply — `examples/lib/dapp-server.js` reads `EXPLORER_UPSTREAM` and `EXPLORER_UPSTREAM_BASE` from `process.env`.
+- Generate a fresh keypair for localnet testing: `node scripts/generate-keypair.js --env --node-url http://<LAN_IP>:3001`. This writes `APP_PUBKEY` and `APP_SECRET_KEY` to `.env` and registers the account on the localnet node.
+
+---
+
+## 20. Checklist for Building a New Dapp
 
 This is a starting-point checklist based on the patterns above. Not every item applies to every app — adapt based on what the user wants to build.
 

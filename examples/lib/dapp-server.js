@@ -40,8 +40,10 @@ function loadEnvFile(filePath) {
   }
 }
 
-const EXPLORER_UPSTREAM = "alpha2.usernodelabs.org";
-const EXPLORER_UPSTREAM_BASE = "/explorer/api";
+const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+const EXPLORER_UPSTREAM_BASE = process.env.EXPLORER_UPSTREAM_BASE != null
+  ? process.env.EXPLORER_UPSTREAM_BASE
+  : "/explorer/api";
 
 // ── JSON body parser ─────────────────────────────────────────────────────────
 
@@ -59,13 +61,24 @@ function readJson(req) {
   });
 }
 
-// ── HTTPS JSON requester ─────────────────────────────────────────────────────
+// ── Protocol helper ──────────────────────────────────────────────────────────
+
+function explorerProto(host) {
+  return /^(localhost|127\.|192\.|10\.|172\.)/.test(host) ? "http" : "https";
+}
+
+function explorerTransport(host) {
+  return explorerProto(host) === "https" ? https : http;
+}
+
+// ── JSON requester ───────────────────────────────────────────────────────────
 
 function httpsJson(method, urlStr, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlStr);
+    const transport = url.protocol === "https:" ? https : http;
     const bodyBuf = body ? Buffer.from(JSON.stringify(body)) : null;
-    const req = https.request(url, {
+    const req = transport.request(url, {
       method,
       headers: {
         "content-type": "application/json",
@@ -103,7 +116,8 @@ function handleExplorerProxy(req, res, pathname, opts) {
   if (!pathname.startsWith(prefix)) return false;
 
   const upstreamPath = upstreamBase + "/" + pathname.slice(prefix.length);
-  const upstreamUrl = new URL(`https://${upstream}${upstreamPath}`);
+  const proto = explorerProto(upstream);
+  const upstreamUrl = new URL(`${proto}://${upstream}${upstreamPath}`);
 
   void (async () => {
     try {
@@ -120,7 +134,7 @@ function handleExplorerProxy(req, res, pathname, opts) {
         }
         bodyBuf = Buffer.concat(chunks);
       }
-      const proxyReq = https.request(upstreamUrl, {
+      const proxyReq = explorerTransport(upstream).request(upstreamUrl, {
         method: req.method,
         headers: {
           "content-type": req.headers["content-type"] || "application/json",
@@ -244,7 +258,7 @@ function createChainPoller(opts) {
 
   async function discoverChainId() {
     try {
-      const data = await httpsJson("GET", `https://${upstream}${upstreamBase}/active_chain`);
+      const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
       if (data && data.chain_id) {
         chainId = data.chain_id;
         console.log(`[chain] discovered chain_id: ${chainId}`);
@@ -258,7 +272,7 @@ function createChainPoller(opts) {
     if (!chainId) { await discoverChainId(); if (!chainId) return; }
 
     pollCount++;
-    const baseUrl = `https://${upstream}${upstreamBase}/${chainId}`;
+    const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
     const url = `${baseUrl}/transactions`;
     const MAX_PAGES = 10;
     let cursor = null, totalItems = 0, totalNew = 0;

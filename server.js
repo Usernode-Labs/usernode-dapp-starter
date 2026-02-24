@@ -12,6 +12,21 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
+// Load .env from repo root (KEY=VALUE, does not overwrite existing env vars).
+(function loadDotEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+    if (process.env[key] == null) process.env[key] = val;
+  }
+})();
+
 const PORT = Number(process.env.PORT) || 8000;
 const INDEX_PATH = path.join(__dirname, "index.html");
 const BRIDGE_PATH = path.join(__dirname, "usernode-bridge.js");
@@ -266,13 +281,16 @@ const server = http.createServer((req, res) => {
   // Proxies requests to the remote block explorer to avoid CORS issues
   // when the page is loaded inside a WebView or from a different origin.
   const EXPLORER_PROXY_PREFIX = "/explorer-api/";
-  const EXPLORER_UPSTREAM = "alpha2.usernodelabs.org";
-  const EXPLORER_UPSTREAM_BASE = "/explorer/api";
+  const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+  const EXPLORER_UPSTREAM_BASE = process.env.EXPLORER_UPSTREAM_BASE != null
+    ? process.env.EXPLORER_UPSTREAM_BASE
+    : "/explorer/api";
 
   if (pathname.startsWith(EXPLORER_PROXY_PREFIX)) {
     const upstreamPath =
       EXPLORER_UPSTREAM_BASE + "/" + pathname.slice(EXPLORER_PROXY_PREFIX.length);
-    const upstreamUrl = new URL(`https://${EXPLORER_UPSTREAM}${upstreamPath}`);
+    const proto = EXPLORER_UPSTREAM.match(/^(localhost|127\.|192\.|10\.|172\.)/) ? "http" : "https";
+    const upstreamUrl = new URL(`${proto}://${EXPLORER_UPSTREAM}${upstreamPath}`);
 
     return void (async () => {
       try {
@@ -288,7 +306,8 @@ const server = http.createServer((req, res) => {
           bodyBuf = Buffer.concat(chunks);
         }
 
-        const proxyReq = https.request(
+        const transport = proto === "https" ? https : http;
+        const proxyReq = transport.request(
           upstreamUrl,
           {
             method: req.method,
