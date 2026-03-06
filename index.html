@@ -272,7 +272,21 @@
   <body>
     <main>
       <div class="card">
-        <h1>Usernode dapp Starter</h1>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h1>Usernode dapp Starter</h1>
+          <a class="button" href="#" id="infoToggle" style="font-size:13px;padding:6px 12px;">&#x2753; Info</a>
+        </div>
+        <div id="infoPanel" style="display:none;font-size:13px;line-height:1.6;margin:8px 0 4px;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 5%, transparent);">
+          <p style="margin:0 0 8px;"><strong>What is this?</strong></p>
+          <p style="margin:0 0 8px;">This is a diagnostic demo page for the <strong>Usernode dapp Starter</strong> — a minimal template for building dapps on the Usernode blockchain. It shows your address, balance, and lets you send raw transactions.</p>
+          <p style="margin:0 0 8px;">This page itself isn't a real dapp — it's a starting point for developers. Replace it with your own app. For working examples, check out:</p>
+          <ul style="margin:0 0 8px;padding-left:20px;">
+            <li><strong>Human Input Market</strong> (<code>/him</code>) — prediction market with voting and betting</li>
+            <li><strong>Last One Wins</strong> (<code>/last-one-wins</code>) — token game where the last sender wins the pot</li>
+            <li><strong>Falling Sands</strong> (<code>/falling-sands</code>) — collaborative pixel sandbox</li>
+          </ul>
+          <p style="margin:0;color:var(--muted);">All data lives on-chain as transaction memos. No backend database required.</p>
+        </div>
 
         <div class="info-grid">
           <div class="info-row">
@@ -906,6 +920,16 @@
           setInterval(async () => {
             await Promise.all([refreshBalance(), refreshTransactions()]);
           }, TX_POLL_INTERVAL_MS);
+
+          // 8. Info toggle
+          const infoToggle = document.getElementById("infoToggle");
+          const infoPanel = document.getElementById("infoPanel");
+          if (infoToggle && infoPanel) {
+            infoToggle.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              infoPanel.style.display = infoPanel.style.display === "none" ? "block" : "none";
+            });
+          }
         }
 
         main();

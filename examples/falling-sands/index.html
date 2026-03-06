@@ -278,6 +278,53 @@
     }
     #status-bar .ok { color: #5dd39e; }
     #status-bar .err { color: #ff6b6b; }
+
+    /* Info button in status bar */
+    #info-btn {
+      margin-left: auto;
+      padding: 2px 8px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      background: transparent;
+      color: #8896ab;
+      font-size: 11px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #info-btn:hover { border-color: rgba(255,255,255,0.3); color: #cdd6e4; }
+
+    /* Info overlay */
+    #info-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+    }
+    #info-overlay.open { display: flex; }
+    #info-content {
+      padding: 24px;
+      max-width: 380px;
+      width: 90%;
+      max-height: 80vh;
+      max-height: 80dvh;
+      overflow-y: auto;
+      background: #131820;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.1);
+      font-size: 13px;
+      line-height: 1.6;
+      color: #cdd6e4;
+    }
+    #info-content h2 { margin: 0 0 10px; font-size: 17px; }
+    #info-content p { margin: 0 0 8px; }
+    #info-content ul { margin: 0 0 8px; padding-left: 18px; }
+    #info-content li { margin-bottom: 4px; }
+    #info-content .muted { color: #5a6a80; }
   </style>
 </head>
 <body>
@@ -286,6 +333,7 @@
 <div id="status-bar">
   <span id="status">Connecting…</span>
   <span id="fps-display"></span>
+  <button id="info-btn" type="button">&#x2753; Info</button>
 </div>
 
 <!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
@@ -314,6 +362,22 @@
 <!-- ── Full element picker (hidden) ─────────────────────────────────────── -->
 <div id="picker-overlay">
   <div id="picker-grid"></div>
+</div>
+
+<!-- ── Info overlay (hidden) ──────────────────────────────────────────── -->
+<div id="info-overlay">
+  <div id="info-content">
+    <h2>Falling Sands</h2>
+    <p>A collaborative pixel sandbox on the Usernode blockchain. Draw with physics-simulated elements and watch them interact in real time.</p>
+    <ul>
+      <li><strong>Pick an element</strong> from the toolbar (tap the swatch to see all elements)</li>
+      <li><strong>Draw</strong> on the canvas — strokes appear locally as a preview</li>
+      <li><strong>Send</strong> your strokes (tap the check mark) to commit them on-chain as a transaction</li>
+      <li>Everyone connected sees the same simulation, streamed via WebSocket</li>
+    </ul>
+    <p>Each stroke is stored as a transaction memo on the Usernode blockchain. The server runs a WASM physics engine (based on Sandspiel) that simulates all committed elements.</p>
+    <p class="muted">Tap anywhere outside this panel to close.</p>
+  </div>
 </div>
 
 <!-- ── Canvas ───────────────────────────────────────────────────────────── -->
@@ -1463,6 +1527,18 @@ overlayCanvas.addEventListener("touchmove", (e) => {
   if (painting) for (const touch of e.touches) movePaint(touch);
 }, { passive: false });
 window.addEventListener("touchend", endPaint);
+
+// ── Info overlay toggle ─────────────────────────────────────────────────
+(function () {
+  const btn = document.getElementById("info-btn");
+  const overlay = document.getElementById("info-overlay");
+  const content = document.getElementById("info-content");
+  if (!btn || !overlay) return;
+  btn.addEventListener("click", () => overlay.classList.add("open"));
+  overlay.addEventListener("click", (e) => {
+    if (!content.contains(e.target)) overlay.classList.remove("open");
+  });
+})();
 </script>
 </body>
 </html>

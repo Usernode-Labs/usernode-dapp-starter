@@ -203,7 +203,10 @@
   <main>
     <div class="appCard">
       <div class="header">
-        <h1>Last One Wins</h1>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h1 style="margin:0;">Last One Wins</h1>
+          <button class="btn-sm secondary" id="infoToggle" type="button" style="padding:4px 10px;font-size:12px;">&#x2753;</button>
+        </div>
         <div class="round" id="roundLabel">Round 1</div>
         <button class="username-pill" id="usernamePill" type="button">
           <code id="usernameDisplay">(loading...)</code>
@@ -222,6 +225,17 @@
             <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
             <div class="tx-progress-label">Setting username...</div>
           </div>
+        </div>
+        <div id="infoPanel" class="hide" style="margin-top:12px;text-align:left;font-size:13px;line-height:1.6;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 6%, transparent);">
+          <p style="margin:0 0 6px;font-weight:600;">How it works</p>
+          <p style="margin:0 0 6px;">Last One Wins is a token game on the Usernode blockchain. Players send tokens to the game pot. If nobody sends for 24 hours, the <strong>last sender wins the entire pot</strong>.</p>
+          <ul style="margin:0 0 6px;padding-left:18px;">
+            <li>Send any amount of tokens to enter</li>
+            <li>Each entry resets the countdown timer</li>
+            <li>When the timer runs out, the last sender gets the full pot</li>
+            <li>A new round starts automatically after each payout</li>
+          </ul>
+          <p style="margin:0;color:var(--muted);">All game state is derived from on-chain transactions. The server tracks the timer and sends automated payouts.</p>
         </div>
       </div>
       <div class="content">
@@ -661,6 +675,14 @@
 
       await pollGameState();
       setInterval(pollGameState, GAME_POLL_MS);
+
+      const infoToggle = document.getElementById("infoToggle");
+      const infoPanel = document.getElementById("infoPanel");
+      if (infoToggle && infoPanel) {
+        infoToggle.addEventListener("click", () => {
+          infoPanel.classList.toggle("hide");
+        });
+      }
     }
 
     init();
