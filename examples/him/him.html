@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <title>Human Input Market</title>
     <script src="/usernode-bridge.js"></script>
+    <script src="/usernode-usernames.js"></script>
     <style>
       :root {
         color-scheme: light dark;
@@ -958,7 +959,8 @@
           CREDIT_FLOWS = new Map();
           LEADERBOARD = [];
 
-          // --- Phase 1: Usernames (latest per sender) ---
+          // --- Phase 1: Usernames ---
+          // Legacy per-app names (backward compat for old set_username txs to APP_PUBKEY)
           const nameMap = new Map();
           for (const { tx, memo } of parsed) {
             if (memo.type !== "set_username") continue;
@@ -968,6 +970,11 @@
             }
           }
           for (const [addr, v] of nameMap) GLOBAL_USERNAMES.set(addr, v.name);
+          // Global identity names take precedence over legacy per-app names
+          if (window.UsernodeUsernames) {
+            const globalNames = UsernodeUsernames.getAllUsernamesSync();
+            for (const addr in globalNames) GLOBAL_USERNAMES.set(addr, globalNames[addr]);
+          }
 
           // --- Phase 2: Joins (first per pubkey) ---
           for (const { tx, memo } of parsed) {
@@ -1692,13 +1699,13 @@
 
         function clearUsernameForm() {
           const inp = $("usernameInput");
+          const suffix = window.UsernodeUsernames ? UsernodeUsernames.usernameSuffix(me) : usernameSuffix(me);
           if (inp) {
-            const suffix = usernameSuffix(me);
             const full = myUsername || deriveDefaultUsername(me);
             const base = String(full || "").endsWith(suffix) ? String(full).slice(0, -suffix.length) : String(full || "").replace(/_[A-Za-z0-9]{6}$/, "");
             inp.value = base || "user";
           }
-          setText($("usernameSuffix"), usernameSuffix(me));
+          setText($("usernameSuffix"), suffix);
         }
 
         function createSurveyFromForm() {
@@ -1802,12 +1809,10 @@
         }
 
         async function setUsernameFlow(raw) {
-          const value = normalizeUsername(raw, deriveDefaultUsername(me), me);
-          if (!value) throw new Error("Username is required");
+          if (!raw || !String(raw).trim()) throw new Error("Username is required");
           setSending(true);
           showPending("setUsernamePending", "Setting username...");
-          const memo = makeMemo({ app: "him", type: "set_username", username: value });
-          await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+          const value = await UsernodeUsernames.setUsername(raw);
           myUsername = value;
           setText($("headerUsername"), myUsername);
           await refreshLoopOnce();
@@ -2590,6 +2595,12 @@
          * ================================================================ */
         function getMyLatestUsername(txs, address) {
           if (!address) return null;
+          // Global identity takes precedence
+          if (window.UsernodeUsernames) {
+            const global = UsernodeUsernames.getUsernameSync(address);
+            if (global && global !== UsernodeUsernames.defaultUsername(address)) return global;
+          }
+          // Fall back to legacy per-app usernames
           let latest = null, latestTs = -1;
           for (const raw of txs) {
             const p = parseHimTx(raw);
@@ -2602,6 +2613,7 @@
 
         async function refreshLoopOnce() {
           try {
+            if (window.UsernodeUsernames) await UsernodeUsernames.refresh();
             const txs = await getHimTransactions(400);
             latestTxs = txs;
 
@@ -2642,6 +2654,18 @@
           try { me = await getNodeAddress(); } catch (_) {}
           myUsername = deriveDefaultUsername(me);
           setText($("headerUsername"), myUsername);
+
+          // Initialize global identity system
+          if (window.UsernodeUsernames) {
+            try {
+              await UsernodeUsernames.init();
+              const globalName = UsernodeUsernames.getUsernameSync(me);
+              if (globalName && globalName !== deriveDefaultUsername(me)) {
+                myUsername = globalName;
+                setText($("headerUsername"), myUsername);
+              }
+            } catch (_) {}
+          }
 
           const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
             ? await window.usernode.isMockEnabled() : false;

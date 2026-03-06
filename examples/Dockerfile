@@ -22,8 +22,9 @@ COPY lib/ lib/
 # Combined server
 COPY server.js ./
 
-# Shared bridge (copied into examples/ by deploy script)
+# Shared bridge and identity module (copied into examples/ by deploy script)
 COPY usernode-bridge.js ./
+COPY usernode-usernames.js ./
 
 # HTML files for all apps
 COPY index.html ./

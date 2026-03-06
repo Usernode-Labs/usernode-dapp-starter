@@ -30,6 +30,7 @@ const crypto = require("crypto");
 const PORT = Number(process.env.PORT) || 8000;
 const INDEX_PATH = path.join(__dirname, "index.html");
 const BRIDGE_PATH = path.join(__dirname, "usernode-bridge.js");
+const USERNAMES_PATH = path.join(__dirname, "usernode-usernames.js");
 const ENABLE_MOCK_API = process.argv.includes("--local-dev");
 
 /** @type {Array<{id:string, from_pubkey:string, destination_pubkey:string, amount:any, memo?:string, created_at:string}>} */
@@ -153,6 +154,27 @@ const server = http.createServer((req, res) => {
         },
         buf
       );
+    });
+  }
+
+  if (pathname === "/usernode-usernames.js") {
+    return fs.readFile(USERNAMES_PATH, (err, buf) => {
+      if (err) {
+        return send(res, 500, { "content-type": "text/plain" },
+          `Failed to read usernode-usernames.js: ${err.message}\n`);
+      }
+      if (req.method === "HEAD") {
+        res.writeHead(200, {
+          "content-type": "application/javascript; charset=utf-8",
+          "content-length": buf.length,
+          "cache-control": "no-store",
+        });
+        return res.end();
+      }
+      return send(res, 200, {
+        "content-type": "application/javascript; charset=utf-8",
+        "cache-control": "no-store",
+      }, buf);
     });
   }
 

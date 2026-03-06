@@ -35,7 +35,7 @@ This creates a `.env` file at the repo root with `APP_PUBKEY`, `APP_SECRET_KEY`,
 The existing `index.html` is a **diagnostic demo page** (balance viewer, raw transaction sender, explorer status). It is **not** a template to build on — **replace it entirely** with your dapp's HTML.
 
 Your new `index.html` should:
-- Include `<script src="/usernode-bridge.js"></script>` in the `<head>`
+- Include `<script src="/usernode-bridge.js"></script>` and `<script src="/usernode-usernames.js"></script>` in the `<head>`
 - Define `const APP_PUBKEY = "..."` using the address from Step 1 (with a `localStorage` override for dev — see Section 3)
 - Define `const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };`
 - Include the four standard helpers: `parseMemo`, `extractTimestamp`, `normalizeTx`, `parseAppTx` (copy-paste block in Section 3 — replace `"myapp"` with your app identifier)
@@ -782,26 +782,53 @@ async function getAllAppTransactions() {
 
 ---
 
-## 8. Username System
+## 8. Global Usernames
 
-A standard pattern for dapps that want user identity:
+Usernames are shared across all dapps via a single **usernames address**. Set your name once, every dapp sees it.
 
-1. **Default**: `user_<last 6 chars of pubkey>`.
-2. **Custom**: User picks a base name; the suffix `_<last6>` is always appended and non-editable.
-3. **Storage**: `{ app: "myapp", type: "set_username", username: "alice_a1b2c3" }` sent via `sendTransaction`.
-4. **Resolution**: Latest `set_username` tx per sender wins.
-5. **UI**: A clickable pill in the header opens an inline form with a non-editable suffix display.
+### Include the Module
 
-Extract the suffix from the user's public key:
+```html
+<script src="/usernode-bridge.js"></script>
+<script src="/usernode-usernames.js"></script>
+```
+
+### Usage
 
 ```js
-const myAddress = await getNodeAddress();
-const suffix = "_" + myAddress.slice(-6);
+// Initialize (call once at startup)
+await UsernodeUsernames.init();
 
-function defaultUsername(pubkey) {
-  return "user_" + pubkey.slice(-6);
-}
+// Read usernames
+const name = UsernodeUsernames.getUsernameSync(pubkey);  // sync, from cache
+const name2 = await UsernodeUsernames.getUsername(pubkey); // async, ensures fresh
+
+// Set your username (sends on-chain tx to the global identity address)
+const finalName = await UsernodeUsernames.setUsername("alice"); // → "alice_a1b2c3"
+
+// Get all cached usernames
+const allNames = UsernodeUsernames.getAllUsernamesSync(); // { pubkey: name, ... }
+
+// Refresh cache manually
+await UsernodeUsernames.refresh();
 ```
+
+### How It Works
+
+- All `set_username` transactions go to a shared **usernames address** (`USERNAMES_PUBKEY`) with memo `{ app: "usernames", type: "set_username", username: "..." }`.
+- The module polls this address and caches the latest username per pubkey.
+- The `app` field in the memo is `"usernames"` (not `"identity"`).
+- **Default**: `user_<last 6 chars of pubkey>`.
+- **Custom**: User picks a base name; the suffix `_<last6>` is always appended and non-editable.
+- **Resolution**: Latest `set_username` tx per sender wins.
+
+### Legacy Fallback
+
+Existing dapps (HIM, Last One Wins) previously used per-app `set_username` transactions. The usernames module supports a fallback: if no global username exists for a pubkey, per-app names are used. Use `UsernodeUsernames.importLegacy(nameMap)` to register legacy names as fallbacks.
+
+### UI Pattern
+
+A clickable pill in the header opens an inline form with a non-editable suffix display:
 
 ```html
 <div class="inputAffix">
@@ -809,6 +836,10 @@ function defaultUsername(pubkey) {
   <span id="usernameSuffix" class="inputAffixSuffix">_a1b2c3</span>
 </div>
 ```
+
+When saving, call `UsernodeUsernames.setUsername(inputValue)` instead of sending a per-app transaction.
+
+**Note**: Do not confuse this with the blockchain's *identity* system (which is a protocol-level concept). This is purely a display-name registry for dapp UIs.
 
 ---
 
@@ -1317,6 +1348,7 @@ const BRIDGE_PATH = (() => {
 ```
 ├── index.html                     # Main dapp page (replace with your dapp)
 ├── usernode-bridge.js             # The bridge — shared by all dapps, DO NOT EDIT per-dapp
+├── usernode-usernames.js          # Global usernames module — shared usernames across all dapps
 ├── server.js                      # Root dev server + mock API + explorer proxy (template)
 ├── AGENTS.md                      # This file
 ├── README.md
@@ -1365,7 +1397,7 @@ const BRIDGE_PATH = (() => {
 For a real app, work at the **root level** — edit `index.html` (or replace it entirely) with your dapp. The `examples/` directory is for reference implementations only.
 
 1. Edit `index.html` with your dapp (or create a new `.html` file at root).
-2. Include the bridge: `<script src="/usernode-bridge.js"></script>`.
+2. Include the bridge and identity module: `<script src="/usernode-bridge.js"></script>` and `<script src="/usernode-usernames.js"></script>`.
 3. Define your `APP_PUBKEY`.
 4. Implement your memo schema, state logic, and UI.
 5. Access it at `http://localhost:8000/` (or `http://localhost:8000/your_file.html`).
@@ -1585,7 +1617,7 @@ This is a starting-point checklist based on the patterns above. Not every item a
 
 **Setup:**
 - [ ] Generate a unique `APP_PUBKEY` via `node scripts/generate-keypair.js`
-- [ ] Include `<script src="/usernode-bridge.js"></script>` in your HTML
+- [ ] Include `<script src="/usernode-bridge.js"></script>` and `<script src="/usernode-usernames.js"></script>` in your HTML
 - [ ] Define `APP_PUBKEY` constant (same value in client and server if applicable)
 - [ ] Define memo schema: `{ app, type, ...payload }`
 - [ ] Check `isMockEnabled()` before `discoverChainId()` / setting `transactionsBaseUrl` (see Section 17)

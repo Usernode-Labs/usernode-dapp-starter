@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Last One Wins</title>
   <script src="/usernode-bridge.js"></script>
+  <script src="/usernode-usernames.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     :root {
@@ -357,6 +358,10 @@
 
     function displayName(pubkey) {
       if (!pubkey) return "???";
+      if (window.UsernodeUsernames) {
+        const global = UsernodeUsernames.getUsernameSync(pubkey);
+        if (global && global !== UsernodeUsernames.defaultUsername(pubkey)) return global;
+      }
       if (usernameMap[pubkey]) return usernameMap[pubkey];
       return defaultUsername(pubkey);
     }
@@ -429,11 +434,20 @@
       if (!gameData) return;
 
       if (gameData.usernames) usernameMap = gameData.usernames;
+      // Import server-provided legacy names as fallback for global identity
+      if (window.UsernodeUsernames) UsernodeUsernames.importLegacy(usernameMap);
 
-      // Update own username from the server map
-      if (myAddress && usernameMap[myAddress] && usernameMap[myAddress] !== myUsername) {
-        myUsername = usernameMap[myAddress];
-        setUsernameUi(myUsername);
+      // Update own username (global identity takes precedence)
+      if (myAddress) {
+        const globalName = window.UsernodeUsernames
+          ? UsernodeUsernames.getUsernameSync(myAddress) : null;
+        const serverName = usernameMap[myAddress];
+        const best = (globalName && globalName !== defaultUsername(myAddress))
+          ? globalName : serverName;
+        if (best && best !== myUsername) {
+          myUsername = best;
+          setUsernameUi(myUsername);
+        }
       }
 
       roundLabel.textContent = "Round " + gameData.roundNumber;
@@ -589,7 +603,8 @@
     /* ── Username flow ────────────────────────────────────────── */
     function openUsernamePanel() {
       if (sending) return;
-      const suffix = usernameSuffix(myAddress);
+      const suffix = window.UsernodeUsernames
+        ? UsernodeUsernames.usernameSuffix(myAddress) : usernameSuffix(myAddress);
       const full = myUsername || defaultUsername(myAddress);
       const base = full.endsWith(suffix) ? full.slice(0, -suffix.length) : full.replace(/_[A-Za-z0-9]{6}$/, "");
       usernameInput.value = base || "user";
@@ -610,12 +625,9 @@
     cancelUsernameBtn.addEventListener("click", closeUsernamePanel);
 
     saveUsernameBtn.addEventListener("click", async () => {
-      if (sending || !appPubkey) return;
-      const value = normalizeUsername(usernameInput.value, myAddress);
-      if (!value) return;
-
-      const memo = JSON.stringify({ app: "lastwin", type: "set_username", username: value });
-      if (memo.length > 1024) { showError("Username too long."); return; }
+      if (sending) return;
+      const raw = usernameInput.value;
+      if (!raw || !String(raw).trim()) return;
 
       try {
         sending = true;
@@ -624,7 +636,7 @@
         sendBtn.disabled = true;
         startProgressBar(usernameTxProgress, "Setting username...");
 
-        await window.sendTransaction(appPubkey, 1, memo, TX_SEND_OPTS);
+        const value = await UsernodeUsernames.setUsername(raw);
 
         myUsername = value;
         setUsernameUi(myUsername);
@@ -653,6 +665,19 @@
           usernameSuffixEl.textContent = usernameSuffix(myAddress);
         }
       } catch (_) {}
+
+      if (window.UsernodeUsernames) {
+        try {
+          await UsernodeUsernames.init();
+          if (myAddress) {
+            const globalName = UsernodeUsernames.getUsernameSync(myAddress);
+            if (globalName && globalName !== defaultUsername(myAddress)) {
+              myUsername = globalName;
+              setUsernameUi(myUsername);
+            }
+          }
+        } catch (_) {}
+      }
 
       // Wire up bridge's getTransactions to explorer if available
       // (skip in mock/local-dev mode so reads use mock endpoints)

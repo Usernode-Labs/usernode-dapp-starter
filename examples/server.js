@@ -10,6 +10,7 @@
  *
  * Also provides:
  *   /usernode-bridge.js   — shared bridge
+ *   /usernode-usernames.js — shared global usernames module
  *   /__mock/*             — mock transaction endpoints (--local-dev)
  *   /__game/state         — Last One Wins game state API
  *   /explorer-api/*       — explorer proxy
@@ -34,6 +35,7 @@ const SANDS_APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77m
 
 // ── Static file paths (with fallbacks for local dev vs Docker) ───────────────
 const BRIDGE_PATH = resolvePath(path.join(__dirname, "usernode-bridge.js"), path.join(__dirname, "..", "usernode-bridge.js"));
+const USERNAMES_PATH = resolvePath(path.join(__dirname, "usernode-usernames.js"), path.join(__dirname, "..", "usernode-usernames.js"));
 const INDEX_HTML = resolvePath(path.join(__dirname, "index.html"), path.join(__dirname, "..", "index.html"));
 const HIM_HTML = path.join(__dirname, "him", "him.html");
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
@@ -107,6 +109,16 @@ const server = http.createServer((req, res) => {
       return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-bridge.js: " + e.message);
+    }
+  }
+
+  // Shared usernames module
+  if (pathname === "/usernode-usernames.js") {
+    try {
+      const buf = fs.readFileSync(USERNAMES_PATH);
+      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-usernames.js: " + e.message);
     }
   }
 
