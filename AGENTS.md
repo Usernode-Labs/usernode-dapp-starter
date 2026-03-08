@@ -687,7 +687,7 @@ if (canOverwriteStatus()) {
 
 ### Rubber-Band Scroll
 
-For a native-feeling pull gesture at the edges of the scroll area, implement a pointer-event-based rubber-band effect. See the `attachRubberBand()` function in `examples/him/him.html` for the full implementation.
+For a native-feeling pull gesture at the edges of the scroll area, implement a pointer-event-based rubber-band effect. See the `attachRubberBand()` function in `examples/opinion-market/opinion-market.html` for the full implementation.
 
 ### Building DOM Safely (No innerHTML for User Content)
 
@@ -824,7 +824,7 @@ await UsernodeUsernames.refresh();
 
 ### Legacy Fallback
 
-Existing dapps (HIM, Last One Wins) previously used per-app `set_username` transactions. The usernames module supports a fallback: if no global username exists for a pubkey, per-app names are used. Use `UsernodeUsernames.importLegacy(nameMap)` to register legacy names as fallbacks.
+Existing dapps (Opinion Market, Last One Wins) previously used per-app `set_username` transactions. The usernames module supports a fallback: if no global username exists for a pubkey, per-app names are used. Use `UsernodeUsernames.importLegacy(nameMap)` to register legacy names as fallbacks.
 
 ### UI Pattern
 
@@ -845,9 +845,9 @@ When saving, call `UsernodeUsernames.setUsername(inputValue)` instead of sending
 
 ## 9. Survey / Voting Pattern (One Example — Not the Only One)
 
-The HIM example (`examples/him/him.html`) implements a complete survey/voting system with prediction markets as a reference. This is just one type of app — users will want to build all kinds of things: games, chat apps, marketplaces, collaborative tools, etc. Study this example for the patterns, then adapt to whatever the user wants to build.
+The Opinion Market example (`examples/opinion-market/opinion-market.html`) implements a complete survey/voting system with prediction markets as a reference. This is just one type of app — users will want to build all kinds of things: games, chat apps, marketplaces, collaborative tools, etc. Study this example for the patterns, then adapt to whatever the user wants to build.
 
-Key transaction types in the HIM example:
+Key transaction types in the Opinion Market example:
 
 | `type` | Payload | Rule |
 |--------|---------|------|
@@ -1275,7 +1275,7 @@ This means:
 All example dapps are deployed together from a single `examples/server.js` and a single Docker container. This combined server hosts:
 
 - `/` — dapp-starter demo (`index.html`)
-- `/him` — Human Input Market (`him/him.html`; also `/cis` for backward compat)
+- `/opinion-market` — Opinion Market (`opinion-market/opinion-market.html`)
 - `/falling-sands` — Falling Sands (`falling-sands/index.html`)
 - `/last-one-wins` — Last One Wins token game (`last-one-wins/index.html`)
 - `/__game/state` — Last One Wins game state API (JSON)
@@ -1371,9 +1371,9 @@ const BRIDGE_PATH = (() => {
     ├── package.json               # Dependencies (ws)
     ├── lib/
     │   └── dapp-server.js         # Shared server utilities (mock API, explorer proxy, chain poller)
-    ├── him/
-    │   ├── him.html               # Human Input Market (prediction-market-powered surveys)
-    │   ├── HUMAN_INPUT_MARKET_SPEC.md
+    ├── opinion-market/
+    │   ├── opinion-market.html    # Opinion Market (prediction-market-powered surveys)
+    │   ├── OPINION_MARKET_SPEC.md
     │   └── README.md
     ├── last-one-wins/
     │   ├── index.html             # Client UI (token game)
@@ -1519,7 +1519,7 @@ cp ../index.html .
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 ```
 
-Then open `http://localhost:8000/`, `http://localhost:8000/cis`, or `http://localhost:8000/falling-sands`.
+Then open `http://localhost:8000/`, `http://localhost:8000/opinion-market`, or `http://localhost:8000/falling-sands`.
 
 Stop with `Ctrl+C`, then `docker compose -f docker-compose.yml -f docker-compose.local.yml down`.
 

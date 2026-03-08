@@ -28,7 +28,7 @@ COPY usernode-usernames.js ./
 
 # HTML files for all apps
 COPY index.html ./
-COPY him/him.html him/
+COPY opinion-market/opinion-market.html opinion-market/
 COPY falling-sands/index.html falling-sands/
 COPY last-one-wins/index.html last-one-wins/
 COPY last-one-wins/game-logic.js last-one-wins/

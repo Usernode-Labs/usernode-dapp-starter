@@ -4,7 +4,7 @@
  *
  * Hosts all dapp examples from a single process:
  *   /               — dapp-starter demo (index.html)
- *   /him            — Human Input Market (also /cis for backward compat)
+ *   /opinion-market — Opinion Market
  *   /falling-sands  — Falling Sands (with server-side WASM + WebSocket streaming)
  *   /last-one-wins  — Last One Wins token game (with server-side payouts)
  *
@@ -37,7 +37,7 @@ const SANDS_APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77m
 const BRIDGE_PATH = resolvePath(path.join(__dirname, "usernode-bridge.js"), path.join(__dirname, "..", "usernode-bridge.js"));
 const USERNAMES_PATH = resolvePath(path.join(__dirname, "usernode-usernames.js"), path.join(__dirname, "..", "usernode-usernames.js"));
 const INDEX_HTML = resolvePath(path.join(__dirname, "index.html"), path.join(__dirname, "..", "index.html"));
-const HIM_HTML = path.join(__dirname, "him", "him.html");
+const OPINION_MARKET_HTML = path.join(__dirname, "opinion-market", "opinion-market.html");
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
 const LASTWIN_HTML = path.join(__dirname, "last-one-wins", "index.html");
 
@@ -135,10 +135,8 @@ const server = http.createServer((req, res) => {
   const staticRoutes = {
     "/":                 INDEX_HTML,
     "/index.html":       INDEX_HTML,
-    "/him":              HIM_HTML,
-    "/him/":             HIM_HTML,
-    "/cis":              HIM_HTML,
-    "/cis/":             HIM_HTML,
+    "/opinion-market":   OPINION_MARKET_HTML,
+    "/opinion-market/":  OPINION_MARKET_HTML,
     "/falling-sands":    SANDS_HTML,
     "/falling-sands/":   SANDS_HTML,
     "/last-one-wins":    LASTWIN_HTML,
@@ -167,7 +165,7 @@ server.listen(PORT, "0.0.0.0", () => {
   const { width, height, tickHz } = engine.config;
   console.log(`\nCombined examples server running at http://localhost:${PORT}`);
   console.log(`  /               — dapp-starter demo`);
-  console.log(`  /him            — Human Input Market (also /cis)`);
+  console.log(`  /opinion-market — Opinion Market`);
   console.log(`  /falling-sands  — Falling Sands (WASM + WebSocket)`);
   console.log(`  /last-one-wins  — Last One Wins token game`);
   console.log(`  Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);

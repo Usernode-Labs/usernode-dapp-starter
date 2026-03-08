@@ -1,19 +1,19 @@
-# Human Input Market (HIM)
+# Opinion Market
 
 A prediction-market-powered survey platform where users **vote** (expressing
 genuine belief) and **bet credits** (predicting what the crowd will choose) —
 all stored on-chain as transaction memos.
 
-See [HUMAN_INPUT_MARKET_SPEC.md](HUMAN_INPUT_MARKET_SPEC.md) for the full
+See [OPINION_MARKET_SPEC.md](OPINION_MARKET_SPEC.md) for the full
 product spec.
 
 ## What's in this folder
 
 ```
-examples/him/
-├── him.html                       # The dapp UI (single HTML file)
-├── HUMAN_INPUT_MARKET_SPEC.md     # Product spec
-└── README.md                      # This file
+examples/opinion-market/
+├── opinion-market.html           # The dapp UI (single HTML file)
+├── OPINION_MARKET_SPEC.md        # Product spec
+└── README.md                     # This file
 ```
 
 ## Running locally
@@ -24,7 +24,7 @@ From the **repo root** (`usernode-dapp-starter/`):
 node server.js --local-dev
 ```
 
-Open http://localhost:8000/him in your browser (also available at `/cis` for backward compat).
+Open http://localhost:8000/opinion-market in your browser.
 
 You can:
 - **Join** — first visit grants 1000 credits.

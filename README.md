@@ -105,7 +105,7 @@ The `examples/` directory contains reference dapps:
 
 | Example | Description |
 |---|---|
-| [`examples/him/`](examples/him/) | Human Input Market — prediction-market-powered surveys and voting |
+| [`examples/opinion-market/`](examples/opinion-market/) | Opinion Market — prediction-market-powered surveys and voting |
 | [`examples/last-one-wins/`](examples/last-one-wins/) | Token game — last sender before the timer expires wins the pot |
 | [`examples/falling-sands/`](examples/falling-sands/) | Multiplayer falling-sands simulation with WASM + WebSocket |
 

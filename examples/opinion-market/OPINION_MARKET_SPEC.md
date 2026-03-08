@@ -1,8 +1,8 @@
-# Human Input Market — Product Spec
+# Opinion Market — Product Spec
 
 ## Core Concept
 
-The Collective Intelligence Service is renamed to **Human Input Market** (HIM). Each question is a single object where users **vote** (expressing their genuine belief) and **bet credits** (predicting what the crowd will choose). Voting and betting are separate actions — you can vote for option A but bet on option B. The delta between vote share and market share is itself a signal about collective intelligence.
+**Opinion Market** is a prediction-market-powered survey platform. Each question is a single object where users **vote** (expressing their genuine belief) and **bet credits** (predicting what the crowd will choose). Voting and betting are separate actions — you can vote for option A but bet on option B. The delta between vote share and market share is itself a signal about collective intelligence.
 
 Questions gain a **reveal mechanism**: votes are submitted on-chain but hidden in the UI until periodic reveal checkpoints. The prediction market settles at question expiry based on which option received the most votes.
 
@@ -127,15 +127,14 @@ The `create_survey` memo gains new fields:
 
 | Type            | Memo                                                                                                                                            | Notes                                                                   |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `join`          | `{ app: "him", type: "join" }`                                                                                                                  | First per pubkey grants 1000 credits                                    |
-| `create_survey` | `{ app: "him", type: "create_survey", survey: { id, title, question, options, active_duration_ms, reveal_interval_ms, allow_custom_options } }` | Enhanced config                                                         |
-| `vote`          | `{ app: "him", type: "vote", survey: "id", choice: "key" }`                                                                                     | Hidden until reveal; earns voter dividend at settlement                 |
-| `add_option`    | `{ app: "him", type: "add_option", survey: "id", option: { key, label } }`                                                                      | Only when `allow_custom_options: true`                                  |
-| `place_bet`     | `{ app: "him", type: "place_bet", survey: "id", option: "key", credits: N }`                                                                    | Buy shares: 5% fee to voter pool, remainder buys shares at current odds |
-| `sell_shares`   | `{ app: "him", type: "sell_shares", survey: "id", option: "key", shares: N }`                                                                   | Sell shares at market rate; 5% fee to voter pool; exit cap              |
-| `set_username`  | `{ app: "him", type: "set_username", username: "name_suffix" }`                                                                                 | Unchanged                                                               |
+| `join`          | `{ app: "opinion-market", type: "join" }`                                                                                                                  | First per pubkey grants 1000 credits                                    |
+| `create_survey` | `{ app: "opinion-market", type: "create_survey", survey: { id, title, question, options, active_duration_ms, reveal_interval_ms, allow_custom_options } }` | Enhanced config                                                         |
+| `vote`          | `{ app: "opinion-market", type: "vote", survey: "id", choice: "key" }`                                                                                     | Hidden until reveal; earns voter dividend at settlement                 |
+| `add_option`    | `{ app: "opinion-market", type: "add_option", survey: "id", option: { key, label } }`                                                                      | Only when `allow_custom_options: true`                                  |
+| `place_bet`     | `{ app: "opinion-market", type: "place_bet", survey: "id", option: "key", credits: N }`                                                                    | Buy shares: 5% fee to voter pool, remainder buys shares at current odds |
+| `sell_shares`   | `{ app: "opinion-market", type: "sell_shares", survey: "id", option: "key", shares: N }`                                                                   | Sell shares at market rate; 5% fee to voter pool; exit cap              |
+| `set_username`  | `{ app: "opinion-market", type: "set_username", username: "name_suffix" }`                                                                                 | Unchanged                                                               |
 
-**Backward compatibility**: `app: "cis"` and `app: "exocortex"` are still accepted during parsing for legacy transactions.
 
 ## State Derivation (All Client-Side)
 
@@ -240,14 +239,14 @@ Questions fall into a few natural categories. Each category exercises different 
 
 **"[Whatever CT poll is trending today] — same question, verified humans only."**
 
-Take the exact question from a trending Crypto Twitter poll, run the identical question on Human Input Market, and post the comparison: *"Twitter says X. Here's what verified humans say."*
+Take the exact question from a trending Crypto Twitter poll, run the identical question on Opinion Market, and post the comparison: "Twitter says X. Here's what verified humans say."
 
 - Mirror the original poll's options exactly (usually `allow_custom_options: false`)
 - Short duration matching the CT poll's energy: 2-3 days
 - `reveal_interval_ms: null` (single reveal at end) to maximize the "big reveal" moment for the comparison post
-- The contrast between bot-polluted CT results and verified-human HIM results IS the launch content
+- The contrast between bot-polluted CT results and verified-human Opinion Market results IS the launch content
 - Every CT mirror question is a marketing event: post the result comparison back to CT with the surprise metric ("CT said 72% Yes. Verified humans said 41% Yes. The market predicted 55%.")
-- Repeatable: new trending poll = new mirror question = new comparison content = new reason to visit HIM
+- Repeatable: new trending poll = new mirror question = new comparison content = new reason to visit Opinion Market
 
 ## Open Design Questions (Can Decide During Implementation)
 
@@ -310,7 +309,7 @@ Drawing from Bayesian Truth Serum (Prelec, 2004), an alternative settlement mode
 
 ## Naming
 
-**Human Input Market** (HIM). Captures the fusion of surveys (human input) and prediction markets. The app identifier in memos is `"him"` (with `"cis"` and `"exocortex"` accepted for backward compatibility). Each question is a "Human Input" — simultaneously a survey and a market.
+**Opinion Market**. Captures the fusion of surveys (human input) and prediction markets. The app identifier in memos is `"opinion-market"`. Each question is simultaneously a survey and a market.
 
 ## Implementation Todos
 

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-    <title>Human Input Market</title>
+    <title>Opinion Market</title>
     <script src="/usernode-bridge.js"></script>
     <script src="/usernode-usernames.js"></script>
     <style>
@@ -408,7 +408,7 @@
       <div class="shell">
         <div class="appCard">
           <div class="header row" style="justify-content: space-between; align-items: flex-start;">
-            <h1 style="margin: 0;">Human Input Market</h1>
+            <h1 style="margin: 0;">Opinion Market</h1>
             <div class="row">
               <span class="pill hide" id="creditsDisplay" title="Your credits">
                 &#x1FA99; <code id="creditsAmount">0</code>
@@ -422,10 +422,10 @@
             </div>
           </div>
 
-          <div class="content" id="himScrollRoot">
+          <div class="content" id="scrollRoot">
             <!-- Onboarding -->
             <div class="panel onboarding hide" id="onboardingPanel">
-              <h2>Welcome to Human Input Market</h2>
+              <h2>Welcome to Opinion Market</h2>
               <p>Vote on questions to express your genuine belief. Bet credits to predict what the crowd will choose. The gap between votes and bets reveals collective intelligence.</p>
               <p>Join to receive <strong>1,000 credits</strong>.</p>
               <button class="btn primary" id="joinBtn" type="button" style="margin-top:12px;">Join &amp; Get 1,000 Credits</button>
@@ -611,7 +611,7 @@
 
               <h3 style="margin: 16px 0 6px; font-size: 15px;">The idea</h3>
               <p style="font-size: 13px; line-height: 1.5; margin: 0 0 12px;">
-                Human Input Market lets you <strong>vote</strong> on questions and <strong>bet</strong> on what the crowd will choose.
+                Opinion Market lets you <strong>vote</strong> on questions and <strong>bet</strong> on what the crowd will choose.
                 The gap between votes (what people genuinely believe) and bets (what people think others believe) reveals collective intelligence.
               </p>
 
@@ -731,10 +731,8 @@
          *  CONFIG
          * ================================================================ */
         const APP_PUBKEY =
-          (window.HIM_APP_PUBKEY && String(window.HIM_APP_PUBKEY)) ||
-          window.localStorage.getItem("him:app_pubkey") ||
-          window.localStorage.getItem("cis:app_pubkey") ||
-          window.localStorage.getItem("exocortex:app_pubkey") ||
+          (window.OPINION_MARKET_APP_PUBKEY && String(window.OPINION_MARKET_APP_PUBKEY)) ||
+          window.localStorage.getItem("opinion-market:app_pubkey") ||
           "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
 
         const EXPLORER_BASE = window.location.origin + "/explorer-api";
@@ -797,13 +795,13 @@
 
         function last6(s) { const v = String(s || ""); return v.length >= 6 ? v.slice(-6) : v; }
 
-        function parseHimTx(rawTx) {
+        function parseAppTx(rawTx) {
           const tx = normalizeTx(rawTx);
           if (!tx || !tx.from || !tx.to || tx.to !== APP_PUBKEY) return null;
           const memoObj = parseMemo(tx.memo);
           if (!memoObj) return null;
           const app = memoObj.app ? String(memoObj.app) : null;
-          if (app !== "him" && app !== "cis" && app !== "exocortex") return null;
+          if (app !== "opinion-market") return null;
           return { tx, memo: memoObj };
         }
 
@@ -948,7 +946,7 @@
 
         function rebuildState(rawTxs) {
           const parsed = [];
-          for (const raw of rawTxs) { const p = parseHimTx(raw); if (p) parsed.push(p); }
+          for (const raw of rawTxs) { const p = parseAppTx(raw); if (p) parsed.push(p); }
           parsed.sort((a, b) => a.tx.ts - b.tx.ts);
 
           // Reset state
@@ -1320,7 +1318,7 @@
           const oldestOptionBySender = new Map();
 
           for (const rawTx of txs) {
-            const p = parseHimTx(rawTx);
+            const p = parseAppTx(rawTx);
             if (!p) continue;
             const { tx, memo } = p;
 
@@ -1392,7 +1390,7 @@
         function countUniqueVoters(txs, surveyId) {
           const voters = new Set();
           for (const rawTx of txs) {
-            const p = parseHimTx(rawTx);
+            const p = parseAppTx(rawTx);
             if (!p || p.memo.type !== "vote") continue;
             if (String(p.memo.survey) !== surveyId) continue;
             voters.add(p.tx.from);
@@ -1423,7 +1421,7 @@
           });
         }
 
-        async function getHimTransactions(limit) {
+        async function getAppTransactions(limit) {
           const l = typeof limit === "number" ? limit : 400;
           try {
             const r = await fetch("/__mock/getTransactions", {
@@ -1536,7 +1534,7 @@
         }
 
         function attachRubberBand() {
-          const scroller = $("himScrollRoot");
+          const scroller = $("scrollRoot");
           if (!scroller) return;
           let startY = 0, activePointerId = null, dragging = false;
           function apply(offset) {
@@ -1731,7 +1729,7 @@
           const windowStart = Date.now() - SURVEY_COOLDOWN_MS;
           const times = [];
           for (const raw of txs) {
-            const p = parseHimTx(raw);
+            const p = parseAppTx(raw);
             if (!p || p.tx.from !== address || p.memo.type !== "create_survey") continue;
             if (p.tx.ts > windowStart) times.push(p.tx.ts);
           }
@@ -1776,7 +1774,7 @@
         async function joinFlow() {
           setSending(true);
           showPending("joinPending", "Joining...");
-          const memo = makeMemo({ app: "him", type: "join" });
+          const memo = makeMemo({ app: "opinion-market", type: "join" });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -1787,7 +1785,7 @@
           if (s.archived) throw new Error("Archived questions are read-only");
           setSending(true);
           showPending("votePending", "Registering vote...");
-          const memo = makeMemo({ app: "him", type: "vote", survey: s.id, choice: optionKey });
+          const memo = makeMemo({ app: "opinion-market", type: "vote", survey: s.id, choice: optionKey });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -1803,7 +1801,7 @@
           setSending(true);
           showPending("votePending", "Adding option...");
           const key = slugify(label) || `opt_${Date.now().toString(36)}`;
-          const memo = makeMemo({ app: "him", type: "add_option", survey: s.id, option: { key, label } });
+          const memo = makeMemo({ app: "opinion-market", type: "add_option", survey: s.id, option: { key, label } });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -1827,7 +1825,7 @@
           if (credits > myCredits()) throw new Error("Insufficient credits");
           setSending(true);
           showPending("betPending", "Placing bet...");
-          const memo = makeMemo({ app: "him", type: "place_bet", survey: surveyId, option: optionKey, credits });
+          const memo = makeMemo({ app: "opinion-market", type: "place_bet", survey: surveyId, option: optionKey, credits });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -1839,7 +1837,7 @@
           if (shares <= 0) throw new Error("Must sell at least 1 share");
           setSending(true);
           showPending("betPending", "Selling shares...");
-          const memo = makeMemo({ app: "him", type: "sell_shares", survey: surveyId, option: optionKey, shares });
+          const memo = makeMemo({ app: "opinion-market", type: "sell_shares", survey: surveyId, option: optionKey, shares });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -1850,7 +1848,7 @@
           if (myCredits() < MARKET_ANTE) throw new Error(`You need at least ${MARKET_ANTE} credits to create a question (${MARKET_ANTE} goes to seed the betting pool).`);
           const survey = createSurveyFromForm();
           const memo = makeMemo({
-            app: "him",
+            app: "opinion-market",
             type: "create_survey",
             survey: {
               id: survey.id, title: survey.title, question: survey.question,
@@ -1871,7 +1869,7 @@
           if (s.archived) throw new Error("Question already ended");
           setSending(true);
           showPending("votePending", "Resolving...");
-          const memo = makeMemo({ app: "him", type: "resolve_early", survey: surveyId });
+          const memo = makeMemo({ app: "opinion-market", type: "resolve_early", survey: surveyId });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -2603,7 +2601,7 @@
           // Fall back to legacy per-app usernames
           let latest = null, latestTs = -1;
           for (const raw of txs) {
-            const p = parseHimTx(raw);
+            const p = parseAppTx(raw);
             if (!p || p.tx.from !== address || p.memo.type !== "set_username") continue;
             const u = normalizeUsername(p.memo.username, deriveDefaultUsername(address), address);
             if (p.tx.ts >= latestTs) { latestTs = p.tx.ts; latest = u; }
@@ -2614,7 +2612,7 @@
         async function refreshLoopOnce() {
           try {
             if (window.UsernodeUsernames) await UsernodeUsernames.refresh();
-            const txs = await getHimTransactions(400);
+            const txs = await getAppTransactions(400);
             latestTxs = txs;
 
             const latestUsername = getMyLatestUsername(txs, me);
