@@ -806,6 +806,84 @@
         }
 
         /* ================================================================
+         *  VOTE ENCRYPTION HELPERS (ECDH P-256 + AES-GCM)
+         * ================================================================ */
+        function _b64ToBuf(b64) {
+          const s = b64.replace(/-/g, "+").replace(/_/g, "/");
+          const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+          const bin = atob(s + pad);
+          const buf = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+          return buf;
+        }
+        function _bufToB64(buf) {
+          let s = "";
+          const a = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+          for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+          return btoa(s);
+        }
+        function _bufToB64Url(buf) {
+          return _bufToB64(buf).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        }
+
+        function getIntervalIndex(survey, t) {
+          const cps = getRevealCheckpoints(survey);
+          for (let i = 0; i < cps.length; i++) { if (t <= cps[i]) return i; }
+          return cps.length - 1;
+        }
+
+        async function encryptVote(serverPubKeyBase64, choice) {
+          const serverPubBuf = _b64ToBuf(serverPubKeyBase64);
+          const ephemeral = await crypto.subtle.generateKey(
+            { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]
+          );
+          const serverKey = await crypto.subtle.importKey(
+            "raw", serverPubBuf, { name: "ECDH", namedCurve: "P-256" }, false, []
+          );
+          const shared = await crypto.subtle.deriveBits(
+            { name: "ECDH", public: serverKey }, ephemeral.privateKey, 256
+          );
+          const aesKey = await crypto.subtle.importKey(
+            "raw", shared, { name: "AES-GCM" }, false, ["encrypt"]
+          );
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const ct = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(choice)
+          );
+          const ephPub = new Uint8Array(await crypto.subtle.exportKey("raw", ephemeral.publicKey));
+          const combined = new Uint8Array(12 + ephPub.length + ct.byteLength);
+          combined.set(iv, 0);
+          combined.set(ephPub, 12);
+          combined.set(new Uint8Array(ct), 12 + ephPub.length);
+          return _bufToB64(combined);
+        }
+
+        async function decryptVote(dBase64Url, pubKeyBase64, evBase64) {
+          const combined = _b64ToBuf(evBase64);
+          const iv = combined.slice(0, 12);
+          const ephPub = combined.slice(12, 77);
+          const ct = combined.slice(77);
+          const serverPubBuf = _b64ToBuf(pubKeyBase64);
+          const x = _bufToB64Url(serverPubBuf.slice(1, 33));
+          const y = _bufToB64Url(serverPubBuf.slice(33, 65));
+          const privKey = await crypto.subtle.importKey(
+            "jwk", { kty: "EC", crv: "P-256", x, y, d: dBase64Url },
+            { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]
+          );
+          const ephKey = await crypto.subtle.importKey(
+            "raw", ephPub, { name: "ECDH", namedCurve: "P-256" }, false, []
+          );
+          const shared = await crypto.subtle.deriveBits(
+            { name: "ECDH", public: ephKey }, privKey, 256
+          );
+          const aesKey = await crypto.subtle.importKey(
+            "raw", shared, { name: "AES-GCM" }, false, ["decrypt"]
+          );
+          const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ct);
+          return new TextDecoder().decode(plain);
+        }
+
+        /* ================================================================
          *  USERNAME HELPERS
          * ================================================================ */
         function usernameSuffix(address) { const c = last6(address); return c ? `_${c}` : "_unknown"; }
@@ -916,6 +994,8 @@
         let currentOptionByKey = new Map();
         let myAddedOptionBySurvey = {};
         let mySurveyCreationTimes = [];
+        let PUBKEY_MAP = new Map();
+        let PRIVKEY_MAP = new Map();
 
         function currentSurvey() { return SURVEYS.find(s => s.id === currentSurveyId) || null; }
         function myCredits() {
@@ -1785,7 +1865,15 @@
           if (s.archived) throw new Error("Archived questions are read-only");
           setSending(true);
           showPending("votePending", "Registering vote...");
-          const memo = makeMemo({ app: "opinion-market", type: "vote", survey: s.id, choice: optionKey });
+          const ki = getIntervalIndex(s, Date.now());
+          const pubkey = await fetchPubkey(s.id, ki, s);
+          let memo;
+          if (pubkey) {
+            const ev = await encryptVote(pubkey, optionKey);
+            memo = makeMemo({ app: "opinion-market", type: "vote", survey: s.id, ev, ki });
+          } else {
+            memo = makeMemo({ app: "opinion-market", type: "vote", survey: s.id, choice: optionKey });
+          }
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           await refreshLoopOnce();
         }
@@ -2589,6 +2677,64 @@
         }
 
         /* ================================================================
+         *  VOTE DECRYPTION PIPELINE
+         * ================================================================ */
+        async function decryptVoteMemos(txs) {
+          PUBKEY_MAP = new Map();
+          PRIVKEY_MAP = new Map();
+          for (const raw of txs) {
+            const p = parseAppTx(raw);
+            if (!p) continue;
+            if (p.memo.type === "publish_pubkeys" && p.memo.keys && p.memo.survey) {
+              const m = PUBKEY_MAP.get(p.memo.survey) || new Map();
+              for (const [ki, pub] of Object.entries(p.memo.keys)) m.set(Number(ki), pub);
+              PUBKEY_MAP.set(p.memo.survey, m);
+            }
+            if (p.memo.type === "reveal_key" && p.memo.survey != null && p.memo.ki != null && p.memo.d) {
+              const m = PRIVKEY_MAP.get(p.memo.survey) || new Map();
+              m.set(Number(p.memo.ki), p.memo.d);
+              PRIVKEY_MAP.set(p.memo.survey, m);
+            }
+          }
+          const result = [];
+          for (const raw of txs) {
+            const p = parseAppTx(raw);
+            if (!p || p.memo.type !== "vote" || !p.memo.ev || p.memo.ki == null) { result.push(raw); continue; }
+            const surveyKeys = PRIVKEY_MAP.get(p.memo.survey);
+            const dScalar = surveyKeys ? surveyKeys.get(Number(p.memo.ki)) : null;
+            const pubMap = PUBKEY_MAP.get(p.memo.survey);
+            const pub = pubMap ? pubMap.get(Number(p.memo.ki)) : null;
+            if (!dScalar || !pub) { result.push(raw); continue; }
+            try {
+              const choice = await decryptVote(dScalar, pub, p.memo.ev);
+              const newMemo = Object.assign({}, p.memo, { choice });
+              delete newMemo.ev;
+              const newRaw = Object.assign({}, raw, { memo: JSON.stringify(newMemo) });
+              result.push(newRaw);
+            } catch (e) {
+              console.warn("Vote decryption failed:", e.message);
+              result.push(raw);
+            }
+          }
+          return result;
+        }
+
+        async function fetchPubkey(surveyId, ki, survey) {
+          const m = PUBKEY_MAP.get(surveyId);
+          if (m && m.has(ki)) return m.get(ki);
+          try {
+            const params = `createdAtMs=${survey.createdAtMs}&expiresAtMs=${survey.expiresAtMs}` +
+              (survey.revealIntervalMs ? `&revealIntervalMs=${survey.revealIntervalMs}` : "");
+            const resp = await fetch(`/__om/pubkeys/${encodeURIComponent(surveyId)}?${params}`);
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data.pubkeys && data.pubkeys[String(ki)]) return data.pubkeys[String(ki)];
+            }
+          } catch (_) {}
+          return null;
+        }
+
+        /* ================================================================
          *  REFRESH LOOP
          * ================================================================ */
         function getMyLatestUsername(txs, address) {
@@ -2612,7 +2758,8 @@
         async function refreshLoopOnce() {
           try {
             if (window.UsernodeUsernames) await UsernodeUsernames.refresh();
-            const txs = await getAppTransactions(400);
+            const rawTxs = await getAppTransactions(400);
+            const txs = await decryptVoteMemos(rawTxs);
             latestTxs = txs;
 
             const latestUsername = getMyLatestUsername(txs, me);

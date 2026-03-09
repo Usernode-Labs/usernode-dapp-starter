@@ -109,11 +109,27 @@ balance = 1000 (if joined)
 ## Reveal Mechanism
 
 - Survey creator configures `reveal_interval_ms`: none (single reveal at end), 1 day, 2 days, 3 days, or 7 days
-- **Between reveals**: Votes are accepted and recorded on-chain, but the UI does not display tallies. A "vote submitted" confirmation is shown instead of live results.
-- **At each reveal checkpoint** (`createTs + i * revealInterval`): cumulative vote tallies become visible in the UI for all votes submitted before that checkpoint.
-- **Vote changes**: Users can change their vote at any time during the active period. Only the most recent vote before each checkpoint counts for that checkpoint's tally. Only the most recent vote before expiry counts for final settlement.
+- **Between reveals**: Votes are encrypted on-chain (ECDH P-256 + AES-GCM). Neither the UI nor chain scrapers can see vote choices until the server publishes the decryption key.
+- **At each reveal checkpoint** (`createTs + i * revealInterval`): the server publishes the private key for that interval as an on-chain `reveal_key` transaction. Clients decrypt votes and display cumulative tallies.
+- **Vote changes**: Users can change their vote at any time during the active period. Only the most recent decryptable vote counts for each checkpoint's tally. Only the most recent decryptable vote before expiry counts for final settlement.
 - **Bets**: Can be placed (bought) or sold anytime during the active period. DPM share pricing naturally rewards early, correct bets (more shares per credit when the option is cheap).
-- **Soft hide for v1**: Votes are visible in raw chain data. The UI simply doesn't render them until the reveal checkpoint passes. True cryptographic commit-reveal is a future enhancement.
+- **Legacy plaintext fallback**: If encryption keys are unavailable (server down, misconfigured), votes fall back to plaintext `choice` field for backward compatibility.
+
+### Encryption Architecture
+
+Each survey interval gets a unique P-256 ECDH key pair derived deterministically from a master seed (`VOTE_ENCRYPT_SEED`). The server:
+1. Watches for `create_survey` transactions on-chain
+2. Publishes all public keys for the survey in a `publish_pubkeys` transaction (batched if >10 intervals)
+3. At each reveal checkpoint, publishes the private key scalar in a `reveal_key` transaction
+
+The client:
+1. Reads public keys from on-chain `publish_pubkeys` txs (falls back to `GET /__om/pubkeys/:id`)
+2. Encrypts the vote choice with an ephemeral ECDH key pair + AES-GCM, producing an opaque `ev` blob
+3. At reveal time, reads `reveal_key` txs and decrypts votes locally using Web Crypto
+
+### Trust Model
+
+The encryption server holds the master seed and can decrypt votes at any time. This prevents casual chain scraping but does not provide cryptographic guarantees against a malicious server operator. True commit-reveal (where the server cannot see votes) is a future enhancement pending device-scheduled task APIs.
 
 ## Survey Configuration
 
@@ -129,7 +145,9 @@ The `create_survey` memo gains new fields:
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `join`          | `{ app: "opinion-market", type: "join" }`                                                                                                                  | First per pubkey grants 1000 credits                                    |
 | `create_survey` | `{ app: "opinion-market", type: "create_survey", survey: { id, title, question, options, active_duration_ms, reveal_interval_ms, allow_custom_options } }` | Enhanced config                                                         |
-| `vote`          | `{ app: "opinion-market", type: "vote", survey: "id", choice: "key" }`                                                                                     | Hidden until reveal; earns voter dividend at settlement                 |
+| `vote`          | `{ app: "opinion-market", type: "vote", survey: "id", ev: "base64", ki: N }` (or legacy: `{ ..., choice: "key" }`)                                         | Encrypted until reveal; earns voter dividend at settlement              |
+| `publish_pubkeys` | `{ app: "opinion-market", type: "publish_pubkeys", survey: "id", keys: { "0": "base64pub", ... } }`                                                      | Server publishes ECDH public keys for each interval                     |
+| `reveal_key`    | `{ app: "opinion-market", type: "reveal_key", survey: "id", ki: N, d: "base64url_scalar" }`                                                                | Server reveals private key at checkpoint; clients decrypt votes          |
 | `add_option`    | `{ app: "opinion-market", type: "add_option", survey: "id", option: { key, label } }`                                                                      | Only when `allow_custom_options: true`                                  |
 | `place_bet`     | `{ app: "opinion-market", type: "place_bet", survey: "id", option: "key", credits: N }`                                                                    | Buy shares: 5% fee to voter pool, remainder buys shares at current odds |
 | `sell_shares`   | `{ app: "opinion-market", type: "sell_shares", survey: "id", option: "key", shares: N }`                                                                   | Sell shares at market rate; 5% fee to voter pool; exit cap              |

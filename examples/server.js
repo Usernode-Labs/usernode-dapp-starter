@@ -25,6 +25,7 @@ const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, http
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
 const createLastOneWins = require("./last-one-wins/game-logic");
+const createVoteEncryption = require("./opinion-market/vote-encryption");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const LOCAL_DEV = process.argv.includes("--local-dev");
@@ -46,6 +47,10 @@ const LASTWIN_APP_PUBKEY = process.env.APP_PUBKEY || "ut1_lastwin_default_pubkey
 const LASTWIN_APP_SECRET_KEY = process.env.APP_SECRET_KEY || "";
 const LASTWIN_NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha2.usernodelabs.org";
 const LASTWIN_TIMER_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000;
+
+// ── Opinion Market config ────────────────────────────────────────────────────
+const OM_APP_PUBKEY = "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
+const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({ localDev: LOCAL_DEV });
@@ -70,6 +75,25 @@ const sandsPoller = createChainPoller({
   },
 });
 if (!LOCAL_DEV) sandsPoller.start();
+
+// ── Opinion Market vote encryption ───────────────────────────────────────────
+const voteEncryption = createVoteEncryption({
+  seed: OM_VOTE_ENCRYPT_SEED,
+  appPubkey: OM_APP_PUBKEY,
+  senderPubkey: LASTWIN_APP_PUBKEY,
+  senderSecretKey: LASTWIN_APP_SECRET_KEY,
+  nodeRpcUrl: LASTWIN_NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+voteEncryption.start();
+
+const omPoller = createChainPoller({
+  appPubkey: OM_APP_PUBKEY,
+  queryField: "recipient",
+  onTransaction: voteEncryption.processTransaction,
+});
+if (!LOCAL_DEV) omPoller.start();
 
 // ── Last One Wins game ──────────────────────────────────────────────────────
 const lastOneWins = createLastOneWins({
@@ -124,6 +148,9 @@ const server = http.createServer((req, res) => {
 
   // Last One Wins game state API
   if (lastOneWins.handleRequest(req, res, pathname)) return;
+
+  // Opinion Market vote encryption pubkey fallback
+  if (voteEncryption.handleRequest(req, res, pathname)) return;
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;

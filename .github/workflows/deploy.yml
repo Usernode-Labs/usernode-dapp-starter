@@ -27,6 +27,7 @@ jobs:
             cat > .env <<'ENVEOF'
             APP_PUBKEY=${{ secrets.APP_PUBKEY }}
             APP_SECRET_KEY=${{ secrets.APP_SECRET_KEY }}
+            VOTE_ENCRYPT_SEED=${{ secrets.VOTE_ENCRYPT_SEED }}
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
             echo "==> .env written ($(wc -l < .env) lines)"
