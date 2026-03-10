@@ -548,6 +548,7 @@
     /* ── Game state polling ─────────────────────────────────── */
     async function pollGameState() {
       try {
+        if (window.UsernodeUsernames) await UsernodeUsernames.refresh();
         const resp = await fetch("/__game/state");
         if (!resp.ok) throw new Error("status " + resp.status);
         gameData = await resp.json();
@@ -666,21 +667,6 @@
         }
       } catch (_) {}
 
-      if (window.UsernodeUsernames) {
-        try {
-          await UsernodeUsernames.init();
-          if (myAddress) {
-            const globalName = UsernodeUsernames.getUsernameSync(myAddress);
-            if (globalName && globalName !== defaultUsername(myAddress)) {
-              myUsername = globalName;
-              setUsernameUi(myUsername);
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Wire up bridge's getTransactions to explorer if available
-      // (skip in mock/local-dev mode so reads use mock endpoints)
       const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
         ? await window.usernode.isMockEnabled()
         : false;
@@ -693,6 +679,19 @@
             if (data && data.chain_id) {
               window.usernode = window.usernode || {};
               window.usernode.transactionsBaseUrl = EXPLORER_BASE + "/" + data.chain_id;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (window.UsernodeUsernames) {
+        try {
+          await UsernodeUsernames.init();
+          if (myAddress) {
+            const globalName = UsernodeUsernames.getUsernameSync(myAddress);
+            if (globalName && globalName !== defaultUsername(myAddress)) {
+              myUsername = globalName;
+              setUsernameUi(myUsername);
             }
           }
         } catch (_) {}

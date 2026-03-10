@@ -2800,7 +2800,16 @@
           myUsername = deriveDefaultUsername(me);
           setText($("headerUsername"), myUsername);
 
-          // Initialize global identity system
+          const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
+            ? await window.usernode.isMockEnabled() : false;
+          if (!mockEnabled) {
+            try {
+              chainId = await discoverChainId();
+              window.usernode = window.usernode || {};
+              window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${chainId}`;
+            } catch (e) { console.warn("Could not discover chain ID:", e); }
+          }
+
           if (window.UsernodeUsernames) {
             try {
               await UsernodeUsernames.init();
@@ -2810,16 +2819,6 @@
                 setText($("headerUsername"), myUsername);
               }
             } catch (_) {}
-          }
-
-          const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
-            ? await window.usernode.isMockEnabled() : false;
-          if (!mockEnabled) {
-            try {
-              chainId = await discoverChainId();
-              window.usernode = window.usernode || {};
-              window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${chainId}`;
-            } catch (e) { console.warn("Could not discover chain ID:", e); }
           }
 
           const initialHash = location.hash || "";
