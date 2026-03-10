@@ -743,6 +743,7 @@
         const MARKET_ANTE = 50;
         const CREATOR_REWARD_RATE = 0.005;
         const CREATOR_REWARD_CAP = 100;
+        const ENABLE_RESOLVE_EARLY = window.localStorage.getItem("opinion-market:resolve_early") === "true";
         let chainId = null;
 
         /* ================================================================
@@ -2021,8 +2022,8 @@
           // Countdown
           updateSurveyCountdown(s);
 
-          // Resolve early button (testing)
-          show($("resolveEarlyBtn"), !s.archived);
+          // Resolve early button (testing — opt-in via localStorage)
+          show($("resolveEarlyBtn"), ENABLE_RESOLVE_EARLY && !s.archived);
 
           // Add option button
           const addOptBtn = $("addOptionToggleBtn");
