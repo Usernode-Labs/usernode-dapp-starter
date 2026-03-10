@@ -306,7 +306,7 @@ const server = http.createServer((req, res) => {
   const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
   const EXPLORER_UPSTREAM_BASE = process.env.EXPLORER_UPSTREAM_BASE != null
     ? process.env.EXPLORER_UPSTREAM_BASE
-    : "/explorer/api";
+    : "/api";
 
   if (pathname.startsWith(EXPLORER_PROXY_PREFIX)) {
     const upstreamPath =

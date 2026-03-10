@@ -46,7 +46,7 @@ function getExplorerUpstream() {
 function getExplorerUpstreamBase() {
   return process.env.EXPLORER_UPSTREAM_BASE != null
     ? process.env.EXPLORER_UPSTREAM_BASE
-    : "/explorer/api";
+    : "/api";
 }
 
 // ── JSON body parser ─────────────────────────────────────────────────────────
