@@ -467,7 +467,12 @@ const SPECIES = [
   { id: 17, name: "Rocket",color: "#ff1744" },
   { id: 15, name: "Mite",  color: "#ce93d8" },
   { id: 1,  name: "Wall",  color: "#555555" },
+  { id: 20, name: "Spout", color: "#2266aa", source: true },
+  { id: 21, name: "Sand Src", color: "#8a7a50", source: true },
+  { id: 22, name: "Torch", color: "#cc4400", source: true },
+  { id: 23, name: "Oil Well", color: "#1a1a2a", source: true },
 ];
+let sourcesEnabled = false;
 
 let selectedSpecies = 2; // start with Sand
 let brushSize = 4;
@@ -548,26 +553,30 @@ function selectSpecies(id) {
 }
 
 // ── Build the full picker grid (all elements with names) ────────────────
-SPECIES.forEach(sp => {
-  if (sp.id === 0) return; // eraser is in the quick-bar, not the picker
-  const item = document.createElement("div");
-  item.className = "picker-item";
-  item.innerHTML =
-    `<div class="picker-swatch" style="background:${sp.color}"></div>` +
-    `<div class="picker-label">${sp.name}</div>`;
-  item.addEventListener("click", () => {
-    selectSpecies(sp.id);
-    closePicker();
+function rebuildPicker() {
+  pickerGrid.innerHTML = "";
+  SPECIES.forEach(sp => {
+    if (sp.id === 0) return;
+    if (sp.source && !sourcesEnabled) return;
+    const item = document.createElement("div");
+    item.className = "picker-item";
+    item.innerHTML =
+      `<div class="picker-swatch" style="background:${sp.color}"></div>` +
+      `<div class="picker-label">${sp.name}</div>`;
+    item.addEventListener("click", () => {
+      selectSpecies(sp.id);
+      closePicker();
+    });
+    pickerGrid.appendChild(item);
   });
-  pickerGrid.appendChild(item);
-});
+}
+rebuildPicker();
 
 function openPicker() {
-  // Highlight the currently selected element in the grid
   const items = pickerGrid.querySelectorAll(".picker-item");
-  const nonEraseSpecies = SPECIES.filter(s => s.id !== 0);
+  const visible = SPECIES.filter(s => s.id !== 0 && (!s.source || sourcesEnabled));
   items.forEach((el, i) => {
-    el.classList.toggle("active", nonEraseSpecies[i] && nonEraseSpecies[i].id === selectedSpecies);
+    el.classList.toggle("active", visible[i] && visible[i].id === selectedSpecies);
   });
   pickerOverlay.classList.add("open");
 }
@@ -836,6 +845,15 @@ void main() {
     hue = fract(fract(d.b * 2.0) * 0.5) - 0.3;
     saturation = 0.7 * (d.g + 0.4) + d.b * 0.2;
     lightness = 0.9 * (d.g + 0.9);
+  } else if (type == 20) { // Spout (water source)
+    hue = 0.6; saturation = 0.5; lightness = 0.35 + d.g * 0.15;
+  } else if (type == 21) { // Sand Source
+    hue = 0.1; saturation = 0.35; lightness = 0.35 + d.g * 0.15;
+  } else if (type == 22) { // Torch (fire source)
+    hue = 0.05; saturation = 0.6;
+    lightness = 0.4 + d.g * 0.15 + noise * 0.08;
+  } else if (type == 23) { // Oil Well
+    hue = 0.7; saturation = 0.15; lightness = 0.15 + d.g * 0.1;
   }
 
   lightness *= (0.975 + snoise2(floor(uv * resolution / dpi)) * 0.025);
@@ -943,6 +961,10 @@ function handleMessage(event) {
         HEIGHT = msg.height;
         cellData = new Uint8Array(WIDTH * HEIGHT * CELL_BYTES);
         maxBudget = BUDGET_FRACTION * WIDTH * HEIGHT;
+        if (msg.sources != null) {
+          sourcesEnabled = !!msg.sources;
+          rebuildPicker();
+        }
         sizeCanvas();
       }
     } catch (_) {}

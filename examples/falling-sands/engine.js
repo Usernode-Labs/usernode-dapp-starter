@@ -25,11 +25,24 @@ const MSG_KEYFRAME = 0x01;
 const MSG_DELTA = 0x02;
 const PING_INTERVAL = 20_000;
 
+const FLAG_OPEN_BOTTOM = 1;
+const FLAG_SOURCES = 2;
+const FLAG_PLANT_ABSORBS = 4;
+
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
   const { Universe, Species, memory } = require(wasmLoaderPath);
 
   const universe = Universe.new(WIDTH, HEIGHT);
+
+  const openBottom = process.env.FALLING_SANDS_OPEN_BOTTOM !== "false";
+  const sourcesEnabled = process.env.FALLING_SANDS_SOURCES !== "false";
+  const plantAbsorbs = process.env.FALLING_SANDS_PLANT_ABSORBS !== "false";
+  let flags = 0;
+  if (openBottom) flags |= FLAG_OPEN_BOTTOM;
+  if (sourcesEnabled) flags |= FLAG_SOURCES;
+  if (plantAbsorbs) flags |= FLAG_PLANT_ABSORBS;
+  if (flags) universe.set_flags(flags);
 
   // Neutralise the wind field
   const windsPtr = universe.winds();
@@ -42,11 +55,36 @@ function createEngine(opts) {
   }
 
   // Seed initial content
-  universe.paint(150, 40, 8, Species.Sand);
-  universe.paint(100, 40, 6, Species.Sand);
-  universe.paint(200, 40, 6, Species.Sand);
-  universe.paint(150, 100, 6, Species.Water);
-  universe.paint(100, 120, 5, Species.Water);
+  if (sourcesEnabled) {
+    const srcY = Math.round(HEIGHT / 8);
+    const gap = WIDTH / 5;
+    universe.paint(Math.round(gap * 1), srcY, 5, Species.Spout);
+    universe.paint(Math.round(gap * 2), srcY, 5, Species.SandSource);
+    universe.paint(Math.round(gap * 3), srcY, 5, Species.Torch);
+    universe.paint(Math.round(gap * 4), srcY, 5, Species.OilWell);
+
+    // Small wall cups under the water, sand, and oil sources
+    const cupBottom = Math.round(HEIGHT * 7 / 8);
+    const cupW = 18;
+    const cupH = 14;
+    const cupSources = [1, 2, 4]; // indices into gap multiplier (skip torch at 3)
+    for (const si of cupSources) {
+      const cx = Math.round(gap * si);
+      for (let dy = 0; dy <= cupH; dy++) {
+        universe.paint(cx - cupW, cupBottom - dy, 2, Species.Wall);
+        universe.paint(cx + cupW, cupBottom - dy, 2, Species.Wall);
+      }
+      for (let dx = -cupW; dx <= cupW; dx += 2) {
+        universe.paint(cx + dx, cupBottom, 2, Species.Wall);
+      }
+    }
+  } else {
+    universe.paint(150, 40, 8, Species.Sand);
+    universe.paint(100, 40, 6, Species.Sand);
+    universe.paint(200, 40, 6, Species.Sand);
+    universe.paint(150, 100, 6, Species.Water);
+    universe.paint(100, 120, 5, Species.Water);
+  }
 
   // ── Draw helpers ─────────────────────────────────────────────────────────
 
@@ -142,7 +180,7 @@ function createEngine(opts) {
           const cmd = JSON.parse(msg);
           if (cmd.type === "ready") {
             if (ws.readyState !== WebSocket.OPEN) return;
-            safeSend(ws, JSON.stringify({ type: "config", width: WIDTH, height: HEIGHT }));
+            safeSend(ws, JSON.stringify({ type: "config", width: WIDTH, height: HEIGHT, sources: sourcesEnabled }));
             needsKeyframe.add(ws);
             readyClients.add(ws);
             const total = [...wss.clients].filter(c => readyClients.has(c)).length;

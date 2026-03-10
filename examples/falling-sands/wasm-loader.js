@@ -85,6 +85,10 @@ const Species = Object.freeze({
   Rocket: 17,
   Fungus: 18,
   Seed: 19,
+  Spout: 20,
+  SandSource: 21,
+  Torch: 22,
+  OilWell: 23,
 });
 
 // ── Thin wrapper around the raw WASM exports ────────────────────────────────
@@ -121,6 +125,9 @@ class Universe {
   }
   paint(x, y, size, species) {
     wasm.universe_paint(this._ptr, x, y, size, species);
+  }
+  set_flags(flags) {
+    wasm.universe_set_flags(this._ptr, flags);
   }
 }
 
