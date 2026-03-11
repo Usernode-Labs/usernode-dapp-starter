@@ -52,7 +52,11 @@ jobs:
             docker compose down || true
             docker compose build --no-cache 2>&1
             docker compose up -d 2>&1
+            echo "==> Waiting 5s for container to stabilize..."
+            sleep 5
             docker compose ps
+            echo "==> Container logs (last 60 lines):"
+            docker compose logs --tail=60 2>&1
             echo "==> Combined examples server started."
 
             echo "==> All running containers:"
