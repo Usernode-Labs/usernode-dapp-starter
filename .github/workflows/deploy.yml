@@ -50,7 +50,8 @@ jobs:
             cp "$REPO_DIR/index.html" .
             ls -la usernode-bridge.js usernode-usernames.js index.html
             docker compose down || true
-            docker compose up -d --build 2>&1
+            docker compose build --no-cache 2>&1
+            docker compose up -d 2>&1
             docker compose ps
             echo "==> Combined examples server started."
 
