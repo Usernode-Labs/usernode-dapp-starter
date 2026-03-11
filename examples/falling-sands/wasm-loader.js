@@ -38,26 +38,47 @@ function getStringFromWasm(ptr, len) {
   );
 }
 
-// Imports expected by the wasm-bindgen glue
-const imports = {
-  "./sandtable_bg.js": {
-    __wbg___wbindgen_throw_be289d5034ed271b(arg0, arg1) {
-      throw new Error(getStringFromWasm(arg0, arg1));
-    },
-    __wbg_random_912284dbf636f269() {
-      return Math.random();
-    },
-    __wbindgen_init_externref_table() {
-      const table = wasm.__wbindgen_externrefs;
-      const offset = table.grow(4);
-      table.set(0, undefined);
-      table.set(offset + 0, undefined);
-      table.set(offset + 1, null);
-      table.set(offset + 2, true);
-      table.set(offset + 3, false);
-    },
+// Imports expected by the wasm-bindgen glue.
+// Hash suffixes change on every wasm-pack rebuild, so we use a Proxy to match
+// by prefix instead of exact name — no manual updates needed after recompiles.
+const knownImports = {
+  __wbindgen_init_externref_table() {
+    const table = wasm.__wbindgen_externrefs;
+    const offset = table.grow(4);
+    table.set(0, undefined);
+    table.set(offset + 0, undefined);
+    table.set(offset + 1, null);
+    table.set(offset + 2, true);
+    table.set(offset + 3, false);
   },
 };
+
+const importProxy = new Proxy(knownImports, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    if (typeof prop === "string") {
+      if (prop.startsWith("__wbg_random_"))
+        return () => Math.random();
+      if (prop.startsWith("__wbg___wbindgen_throw_"))
+        return (arg0, arg1) => {
+          throw new Error(getStringFromWasm(arg0, arg1));
+        };
+    }
+    return undefined;
+  },
+  has(target, prop) {
+    if (prop in target) return true;
+    if (typeof prop === "string") {
+      return (
+        prop.startsWith("__wbg_random_") ||
+        prop.startsWith("__wbg___wbindgen_throw_")
+      );
+    }
+    return false;
+  },
+});
+
+const imports = { "./sandtable_bg.js": importProxy };
 
 const wasmModule = new WebAssembly.Module(wasmBytes);
 wasm = new WebAssembly.Instance(wasmModule, imports).exports;
