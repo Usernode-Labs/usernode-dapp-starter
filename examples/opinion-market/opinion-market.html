@@ -426,9 +426,16 @@
             <!-- Onboarding -->
             <div class="panel onboarding hide" id="onboardingPanel">
               <h2>Welcome to Opinion Market</h2>
-              <p>Vote on questions to express your genuine belief. Bet credits to predict what the crowd will choose. The gap between votes and bets reveals collective intelligence.</p>
-              <p>Join to receive <strong>1,000 credits</strong>.</p>
-              <button class="btn primary" id="joinBtn" type="button" style="margin-top:12px;">Join &amp; Get 1,000 Credits</button>
+              <p>Answer questions, predict the crowd, and earn credits for being right.</p>
+              <div style="text-align:left;max-width:420px;margin:16px auto;">
+                <p style="font-size:13px;line-height:1.6;margin:0 0 8px;"><strong>How it works:</strong></p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Vote</strong> on questions for free &mdash; express your honest opinion.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Bet credits</strong> on which option you think will get the most votes.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Who wins?</strong> When a question ends, votes are counted. The option with the most votes wins. Everyone who bet on the winner splits the entire betting pool &mdash; proportional to how much they bet.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Voter dividends:</strong> A small fee from every bet goes to a dividend pool, split equally among everyone who voted &mdash; so you earn credits just for participating.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 0;"><strong>Getting credits:</strong> Join now to receive <strong>1,000 credits</strong>. Spend them betting on outcomes, earn more by predicting correctly or voting. Create questions for 50 credits (you earn a share of trading fees back).</p>
+              </div>
+              <button class="btn primary" id="joinBtn" type="button" style="margin-top:16px;">Join &amp; Get 1,000 Credits</button>
               <div id="joinPending" class="tx-progress hide" role="status" aria-live="polite">
                 <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
                 <div class="tx-progress-label">Joining...</div>
@@ -509,7 +516,7 @@
                 <div class="toggleRow" style="margin-top: 10px;">
                   <span class="muted" style="font-size: 13px;">Allow custom options</span>
                   <label class="toggle">
-                    <input type="checkbox" id="newSurveyAllowCustom" checked />
+                    <input type="checkbox" id="newSurveyAllowCustom" />
                     <span class="slider"></span>
                   </label>
                 </div>
@@ -910,6 +917,19 @@
         }
 
         function deriveDefaultUsername(address) { return `user${usernameSuffix(address)}`; }
+
+        /* ================================================================
+         *  LOCAL VOTE MEMORY (encrypted votes aren't visible until reveal)
+         * ================================================================ */
+        function storeMyVote(surveyId, optionKey) {
+          if (!me) return;
+          try { localStorage.setItem(`om:vote:${me}:${surveyId}`, optionKey); } catch (_) {}
+        }
+
+        function getStoredVote(surveyId) {
+          if (!me) return null;
+          try { return localStorage.getItem(`om:vote:${me}:${surveyId}`) || null; } catch (_) { return null; }
+        }
 
         /* ================================================================
          *  SURVEY DEFINITION
@@ -1773,7 +1793,7 @@
           initSurveyOptionFields();
           const d = $("newSurveyDuration"); if (d) d.value = String(DEFAULT_SURVEY_DURATION_MS);
           const r = $("newSurveyRevealInterval"); if (r) r.value = "";
-          const c = $("newSurveyAllowCustom"); if (c) c.checked = true;
+          const c = $("newSurveyAllowCustom"); if (c) c.checked = false;
         }
 
         function clearUsernameForm() {
@@ -1876,6 +1896,7 @@
             memo = makeMemo({ app: "opinion-market", type: "vote", survey: s.id, choice: optionKey });
           }
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+          storeMyVote(s.id, optionKey);
           await refreshLoopOnce();
         }
 
@@ -1975,8 +1996,9 @@
 
         function navigateToList() {
           currentSurveyId = null;
-          show($("screenActiveList"), true);
-          show($("screenArchivedList"), SURVEYS.some(s => s.archived));
+          const joined = me && JOINED.has(me);
+          show($("screenActiveList"), joined);
+          show($("screenArchivedList"), joined && SURVEYS.some(s => s.archived));
           show($("screenSurvey"), false);
           show($("screenLeaderboard"), false);
           show($("screenInfo"), false);
@@ -2102,10 +2124,11 @@
 
           const active = SURVEYS.filter(s => !s.archived);
           const archived = SURVEYS.filter(s => s.archived);
+          const _joined = me && JOINED.has(me);
           const onList = !currentSurveyId
             && (!$("screenLeaderboard") || $("screenLeaderboard").classList.contains("hide"))
             && (!$("screenInfo") || $("screenInfo").classList.contains("hide"));
-          if (onList) show($("screenArchivedList"), archived.length > 0);
+          if (onList) show($("screenArchivedList"), _joined && archived.length > 0);
 
           if (!active.length) {
             const e = document.createElement("div");
@@ -2201,6 +2224,21 @@
           const voteList = $("voteOptionsList");
           if (voteList && !(_isFocusedInput && voteList.contains(_focusEl))) {
             voteList.textContent = "";
+
+            const myPreviousVote = (res.meEntry && res.meEntry.voteKey) || getStoredVote(s.id);
+
+            if (myPreviousVote && !s.archived) {
+              const prevOpt = s.options.find(o => o.key === myPreviousVote);
+              if (prevOpt) {
+                const notice = document.createElement("div");
+                notice.className = "muted";
+                notice.style.cssText = "font-size:12px;margin-bottom:8px;padding:8px 10px;border-radius:8px;background:color-mix(in oklab, var(--accent) 8%, transparent);border:1px solid color-mix(in oklab, var(--accent) 20%, var(--border));";
+                const parsed = parseOptionLabel(prevOpt.label);
+                notice.textContent = `You voted for \u201C${parsed.text || prevOpt.key}\u201D. Tap a different option to change your vote.`;
+                voteList.appendChild(notice);
+              }
+            }
+
             if (s.options.length === 0) {
               const e = document.createElement("p");
               e.className = "muted";
@@ -2214,7 +2252,7 @@
               btn.style.width = "100%";
               btn.setAttribute("data-choice", opt.key);
               btn.disabled = sending || s.archived;
-              if (res.meEntry && res.meEntry.voteKey === opt.key) btn.classList.add("selected");
+              if (myPreviousVote === opt.key) btn.classList.add("selected");
 
               const parsed = parseOptionLabel(opt.label);
               const header = document.createElement("div");
@@ -2769,9 +2807,16 @@
             rebuildState(txs);
             updateCreditsDisplay();
 
-            // Onboarding
+            // Onboarding — show join screen and hide surveys until joined
             const joined = me && JOINED.has(me);
             show($("onboardingPanel"), me && !joined);
+            const onList = !currentSurveyId
+              && (!$("screenLeaderboard") || $("screenLeaderboard").classList.contains("hide"))
+              && (!$("screenInfo") || $("screenInfo").classList.contains("hide"));
+            if (onList) {
+              show($("screenActiveList"), joined);
+              show($("screenArchivedList"), joined && SURVEYS.some(s => s.archived));
+            }
 
             renderSurveyList();
 
