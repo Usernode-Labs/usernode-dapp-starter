@@ -90,10 +90,14 @@ const voteEncryption = createVoteEncryption({
 });
 voteEncryption.start();
 
+const omTxCache = [];
 const omPoller = createChainPoller({
   appPubkey: OM_APP_PUBKEY,
   queryField: "recipient",
-  onTransaction: voteEncryption.processTransaction,
+  onTransaction(tx) {
+    omTxCache.push(tx);
+    voteEncryption.processTransaction(tx);
+  },
 });
 if (!LOCAL_DEV) omPoller.start();
 
@@ -158,6 +162,16 @@ const server = http.createServer((req, res) => {
 
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;
+
+  // Opinion Market cached transactions
+  if (pathname === "/opinion-market/api/transactions" && (req.method === "GET" || req.method === "HEAD")) {
+    const body = JSON.stringify({ items: omTxCache });
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), "Cache-Control": "no-store" });
+      return res.end();
+    }
+    return send(res, 200, { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body);
+  }
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;

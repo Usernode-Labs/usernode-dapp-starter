@@ -1021,8 +1021,11 @@
         let mySurveyCreationTimes = [];
         let PUBKEY_MAP = new Map();
         let PRIVKEY_MAP = new Map();
+        let SURVEYS_BY_ID = new Map();
+        let _lastRebuildTxCount = -1;
+        const _decryptCache = new Map();
 
-        function currentSurvey() { return SURVEYS.find(s => s.id === currentSurveyId) || null; }
+        function currentSurvey() { return SURVEYS_BY_ID.get(currentSurveyId) || null; }
         function myCredits() {
           if (!me || !JOINED.has(me)) return 0;
           const f = CREDIT_FLOWS.get(me);
@@ -1131,13 +1134,15 @@
                 archived: now >= expiresAtMs,
               };
             });
+          SURVEYS_BY_ID = new Map();
+          for (const s of SURVEYS) SURVEYS_BY_ID.set(s.id, s);
 
           // --- Phase 4: Custom options per survey ---
           const optionsBySurvey = new Map();
           for (const { tx, memo } of parsed) {
             if (memo.type !== "add_option") continue;
             const sv = memo.survey == null ? null : String(memo.survey);
-            const survey = SURVEYS.find(s => s.id === sv);
+            const survey = SURVEYS_BY_ID.get(sv);
             if (!survey || !survey.allowCustomOptions) continue;
             if (survey.archived && tx.ts >= survey.expiresAtMs) continue;
             const optObj = memo.option && typeof memo.option === "object" ? memo.option : null;
@@ -1170,7 +1175,7 @@
           for (const { tx, memo } of parsed) {
             if (memo.type !== "vote") continue;
             const sv = memo.survey == null ? null : String(memo.survey);
-            const survey = SURVEYS.find(s => s.id === sv);
+            const survey = SURVEYS_BY_ID.get(sv);
             if (!survey) continue;
             const ch = memo.choice != null ? String(memo.choice) : memo.vote != null ? String(memo.vote) : null;
             if (!ch || !survey.options.some(o => o.key === ch)) continue;
@@ -1202,7 +1207,7 @@
           for (const { tx, memo } of parsed) {
             if (memo.type !== "place_bet" && memo.type !== "sell_shares") continue;
             const sv = memo.survey == null ? null : String(memo.survey);
-            const survey = SURVEYS.find(s => s.id === sv);
+            const survey = SURVEYS_BY_ID.get(sv);
             if (!survey) continue;
             if (tx.ts >= survey.expiresAtMs) continue;
             const optKey = memo.option == null ? null : String(memo.option);
@@ -1416,7 +1421,7 @@
          *  VOTE/RESULTS COMPUTATION (for display)
          * ================================================================ */
         function computeResults(txs, myAddress, surveyId) {
-          const s = SURVEYS.find(x => x.id === surveyId);
+          const s = SURVEYS_BY_ID.get(surveyId);
           if (!s) return { counts: {}, voters: [], meEntry: null, survey: null };
 
           const users = new Map();
@@ -1527,7 +1532,7 @@
         }
 
         async function getAppTransactions(limit) {
-          const l = typeof limit === "number" ? limit : 400;
+          const l = typeof limit === "number" ? limit : 2000;
           try {
             const r = await fetch("/__mock/getTransactions", {
               method: "POST",
@@ -1536,11 +1541,19 @@
             });
             if (r.ok) return normalizeTransactionsResponse(await r.json());
           } catch (_) {}
+          try {
+            const r = await fetch("/opinion-market/api/transactions");
+            if (r.ok) {
+              const data = await r.json();
+              if (data.items && data.items.length > 0)
+                return normalizeTransactionsResponse(data);
+            }
+          } catch (_) {}
           if (chainId) {
             try {
               const allItems = [];
               let cursor = null;
-              const MAX_PAGES = 20;
+              const MAX_PAGES = 40;
               for (let page = 0; page < MAX_PAGES; page++) {
                 const body = { recipient: APP_PUBKEY, limit: 50 };
                 if (cursor) body.cursor = cursor;
@@ -1944,7 +1957,7 @@
         }
 
         async function placeBetFlow(surveyId, optionKey, credits) {
-          const s = SURVEYS.find(x => x.id === surveyId);
+          const s = SURVEYS_BY_ID.get(surveyId);
           if (!s) throw new Error("Question not found");
           if (s.archived) throw new Error("Question has ended");
           if (!JOINED.has(me)) throw new Error("Join first to get credits");
@@ -1958,7 +1971,7 @@
         }
 
         async function sellSharesFlow(surveyId, optionKey, shares) {
-          const s = SURVEYS.find(x => x.id === surveyId);
+          const s = SURVEYS_BY_ID.get(surveyId);
           if (!s) throw new Error("Question not found");
           if (s.archived) throw new Error("Question has ended");
           if (shares <= 0) throw new Error("Must sell at least 1 share");
@@ -1991,7 +2004,7 @@
         }
 
         async function resolveEarlyFlow(surveyId) {
-          const s = SURVEYS.find(x => x.id === surveyId);
+          const s = SURVEYS_BY_ID.get(surveyId);
           if (!s) throw new Error("Question not found");
           if (s.archived) throw new Error("Question already ended");
           setSending(true);
@@ -2759,18 +2772,26 @@
           }
           const result = [];
           for (const raw of txs) {
+            const txId = raw.tx_id || raw.id || raw.txid || raw.hash || null;
+            if (txId && _decryptCache.has(txId)) { result.push(_decryptCache.get(txId)); continue; }
             const p = parseAppTx(raw);
-            if (!p || p.memo.type !== "vote" || !p.memo.ev || p.memo.ki == null) { result.push(raw); continue; }
+            if (!p || p.memo.type !== "vote" || !p.memo.ev || p.memo.ki == null) {
+              if (txId) _decryptCache.set(txId, raw);
+              result.push(raw); continue;
+            }
             const surveyKeys = PRIVKEY_MAP.get(p.memo.survey);
             const dScalar = surveyKeys ? surveyKeys.get(Number(p.memo.ki)) : null;
             const pubMap = PUBKEY_MAP.get(p.memo.survey);
             const pub = pubMap ? pubMap.get(Number(p.memo.ki)) : null;
-            if (!dScalar || !pub) { result.push(raw); continue; }
+            if (!dScalar || !pub) {
+              result.push(raw); continue;
+            }
             try {
               const choice = await decryptVote(dScalar, pub, p.memo.ev);
               const newMemo = Object.assign({}, p.memo, { choice });
               delete newMemo.ev;
               const newRaw = Object.assign({}, raw, { memo: JSON.stringify(newMemo) });
+              if (txId) _decryptCache.set(txId, newRaw);
               result.push(newRaw);
             } catch (e) {
               console.warn("Vote decryption failed:", e.message);
@@ -2819,9 +2840,11 @@
         async function refreshLoopOnce() {
           try {
             if (window.UsernodeUsernames) await UsernodeUsernames.refresh();
-            const rawTxs = await getAppTransactions(400);
+            const rawTxs = await getAppTransactions(2000);
+            if (rawTxs.length === _lastRebuildTxCount) return;
             const txs = await decryptVoteMemos(rawTxs);
             latestTxs = txs;
+            _lastRebuildTxCount = rawTxs.length;
 
             const latestUsername = getMyLatestUsername(txs, me);
             if (latestUsername) { myUsername = latestUsername; setText($("headerUsername"), myUsername); }
@@ -2845,7 +2868,7 @@
             mySurveyCreationTimes = getMySurveyCreationsInWindow(txs, me);
             updateSurveyCooldownUi();
 
-            if (currentSurveyId && !SURVEYS.some(s => s.id === currentSurveyId)) navigateToList();
+            if (currentSurveyId && !SURVEYS_BY_ID.has(currentSurveyId)) navigateToList();
 
             if (currentSurveyId) {
               const res = computeResults(txs, me, currentSurveyId);
@@ -2916,7 +2939,7 @@
             const m = h.match(/^#survey\/(.+)$/);
             if (m) {
               const id = decodeURIComponent(m[1]);
-              if (SURVEYS.some(s => s.id === id)) { navigateToSurvey(id); refreshLoopOnce(); return; }
+              if (SURVEYS_BY_ID.has(id)) { navigateToSurvey(id); refreshLoopOnce(); return; }
             }
             navigateToList();
           }
