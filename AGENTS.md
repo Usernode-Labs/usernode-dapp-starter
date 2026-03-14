@@ -45,7 +45,7 @@ Your new `index.html` should:
 
 ### Step 3: Decide whether `server.js` needs changes
 
-- **Client-only dapps** (chat, surveys, voting, identity, simple games): **Leave `server.js` as-is.** It already handles static file serving, mock transaction endpoints (`--local-dev`), and the explorer API proxy — everything a client-side dapp needs.
+- **Client-only dapps** (chat, surveys, voting, identity, simple games): Add a **server-side transaction cache** to `server.js` — a chain poller that caches raw transactions in memory and serves them from a local endpoint. Without this, every connected client independently paginates the explorer for the same data, which doesn't scale. See Section 7 for details.
 - **Dapps with server-side logic** (automated payouts, game timers, server-driven state): Add your custom routes and logic to `server.js`, or create a standalone sub-app server under `examples/` following the pattern in Section 15.
 
 **Never modify `usernode-bridge.js`** — it is shared infrastructure used by all dapps.
@@ -750,6 +750,39 @@ await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
 await refreshLoop(); // Immediate update
 ```
 
+### Scaling: Server-Side Transaction Cache
+
+Every dapp should include a **server-side transaction cache**. Without it, every connected client independently paginates the explorer API for the same transactions — at 10 users that's 10x the API calls, all returning identical data.
+
+The pattern: run a `createChainPoller` on the server that caches raw transactions for your app's pubkey in memory, then serve them from a local endpoint (e.g., `GET /api/transactions`). Clients read from the cache instead of paginating the explorer directly. The server fetches once; all clients benefit.
+
+```js
+// Server: cache transactions and serve them
+const cachedTxs = [];
+const poller = createChainPoller({
+  appPubkey: APP_PUBKEY,
+  queryField: "recipient",
+  onTransaction: (tx) => { cachedTxs.push(tx); },
+});
+poller.start();
+
+// Endpoint for clients
+// GET /api/transactions → { items: cachedTxs }
+```
+
+```js
+// Client: read from server cache instead of explorer
+async function refreshLoop() {
+  const resp = await fetch("/api/transactions");
+  const data = await resp.json();
+  const txs = (data.items || []).map(parseAppTx).filter(Boolean);
+  rebuildState(txs);
+  renderUI();
+}
+```
+
+See the Opinion Market and Last One Wins examples for full implementations of this pattern.
+
 ### Client-Side Pagination
 
 For most dapps, a single `getTransactions({ limit: 200, account: APP_PUBKEY })` call is sufficient. But if your app accumulates more transactions than a single page can return, you'll need cursor-based pagination.
@@ -997,6 +1030,16 @@ For dapps with a backend server that needs to react to on-chain transactions (e.
 - **Transaction ID field**: the explorer API returns `tx_id` (see normalization in Section 3)
 - **Cursor-based pagination**: the API response includes `next_cursor` (opaque string or null) and `has_more` (boolean); loop up to N pages to catch all relevant transactions past reward transactions
 - **`APP_PUBKEY` must match** between server and client
+
+### Incremental Fetches with `from_height`
+
+The explorer API supports `from_height` (inclusive block height) and `from_timestamp` (inclusive epoch ms) filters on `POST /:chain_id/transactions`. Use these for efficient incremental polling instead of re-scanning the full history every cycle:
+
+1. Track the highest `block_height` seen from processed transactions
+2. On each poll, pass `from_height: lastSeenBlockHeight` to only fetch new/recent blocks
+3. Keep a bounded `seenTxIds` set (~5,000 entries) as a safety net for reorgs and the overlap from inclusive `from_height`
+
+This reduces steady-state polling from potentially dozens of pages to typically 0-1 pages. The first poll after a server start still requires a full backfill, but all subsequent polls are minimal.
 
 ### Using `createChainPoller`
 
@@ -1637,6 +1680,12 @@ This is a starting-point checklist based on the patterns above. Not every item a
 - [ ] Use `textContent` / `createElement` for user-generated content (no `innerHTML`)
 - [ ] Support dark/light themes via CSS custom properties
 - [ ] Implement sticky error display if you have periodic status updates
+
+**Scaling:**
+- [ ] Add a server-side transaction cache — all dapps need this (see Section 7)
+- [ ] Use `from_height` in chain pollers for incremental fetches (see Section 12)
+- [ ] Bound `seenTxIds` in chain pollers (~5,000 entries) to prevent unbounded memory growth
+- [ ] For client-side state rebuilds, consider incremental updates (track last-seen tx, only process new ones) instead of full rebuilds every poll cycle
 
 **Server (if your app has its own backend):**
 - [ ] Include the explorer API proxy (`/explorer-api/*`)

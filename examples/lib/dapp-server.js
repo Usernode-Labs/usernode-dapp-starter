@@ -225,11 +225,35 @@ function createMockApi(opts) {
         const filterOptions = body.filterOptions || {};
         const owner = String(body.owner_pubkey || filterOptions.account || "").trim();
         const limit = typeof filterOptions.limit === "number" ? filterOptions.limit : 50;
-        const items = transactions
-          .filter((tx) => !owner || tx.from_pubkey === owner || tx.destination_pubkey === owner)
-          .slice(-limit).reverse();
+        const cursor = filterOptions.cursor || body.cursor || null;
+
+        const filtered = transactions
+          .filter((tx) => !owner || tx.from_pubkey === owner || tx.destination_pubkey === owner);
+
+        // Cursor is a 0-based index into the filtered array (descending).
+        // Reverse so newest is first (index 0 = newest).
+        const reversed = filtered.slice().reverse();
+        let startIdx = 0;
+        if (cursor != null) {
+          try {
+            startIdx = parseInt(Buffer.from(String(cursor), "base64").toString("utf8"), 10);
+            if (!Number.isFinite(startIdx) || startIdx < 0) startIdx = 0;
+          } catch (_) { startIdx = 0; }
+        }
+
+        const page = reversed.slice(startIdx, startIdx + limit);
+        const nextIdx = startIdx + limit;
+        const hasMore = nextIdx < reversed.length;
+        const nextCursor = hasMore
+          ? Buffer.from(String(nextIdx)).toString("base64")
+          : null;
+
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ items }));
+        res.end(JSON.stringify({
+          items: page,
+          has_more: hasMore,
+          next_cursor: nextCursor,
+        }));
       }).catch((e) => {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
@@ -256,9 +280,11 @@ function createChainPoller(opts) {
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const queryField = opts.queryField || "account";
   const maxPages = opts.maxPages || 200;
+  const seenIdsCap = opts.seenIdsCap || 5000;
 
   let chainId = null;
   const seenTxIds = new Set();
+  let lastHeight = null;
   let pollCount = 0;
 
   async function discoverChainId() {
@@ -300,6 +326,7 @@ function createChainPoller(opts) {
       for (let page = 0; page < MAX_PAGES; page++) {
         const body = { [queryField]: appPubkey, limit: 50 };
         if (cursor) body.cursor = cursor;
+        if (lastHeight != null) body.from_height = lastHeight;
         const resp = await httpsJson("POST", url, body);
 
         if (pollCount <= 2 && page === 0) {
@@ -326,6 +353,11 @@ function createChainPoller(opts) {
           allSeen = false;
           seenTxIds.add(txId);
           newTxs.push(tx);
+
+          const bh = tx.block_height;
+          if (typeof bh === "number" && (lastHeight == null || bh > lastHeight)) {
+            lastHeight = bh;
+          }
         }
 
         if (allSeen) break;
@@ -333,6 +365,15 @@ function createChainPoller(opts) {
         const nextCursor = resp && resp.next_cursor;
         if (!hasMore || !nextCursor) break;
         cursor = nextCursor;
+      }
+
+      // Bound seenTxIds to prevent unbounded memory growth.
+      if (seenTxIds.size > seenIdsCap) {
+        const arr = Array.from(seenTxIds);
+        seenTxIds.clear();
+        for (let i = arr.length - seenIdsCap; i < arr.length; i++) {
+          seenTxIds.add(arr[i]);
+        }
       }
 
       // Process in chronological order so stateful consumers (game logic,
@@ -343,7 +384,7 @@ function createChainPoller(opts) {
       }
 
       if (newTxs.length > 0 || pollCount <= 3) {
-        console.log(`[chain] poll #${pollCount}: ${totalItems} tx(s) scanned, ${newTxs.length} new`);
+        console.log(`[chain] poll #${pollCount}: ${totalItems} tx(s) scanned, ${newTxs.length} new (lastHeight=${lastHeight ?? "none"})`);
       }
     } catch (e) {
       console.warn(`[chain] poll #${pollCount} error: ${e.message}`);

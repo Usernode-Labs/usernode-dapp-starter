@@ -273,20 +273,34 @@ const server = http.createServer((req, res) => {
         const owner_pubkey = String(body.owner_pubkey || filterOptions.account || "").trim();
         const limit =
           typeof filterOptions.limit === "number" ? filterOptions.limit : 50;
+        const cursor = filterOptions.cursor || body.cursor || null;
 
-        const items = mockTransactions
-          .filter((tx) => {
-            if (!owner_pubkey) return true;
-            return tx.from_pubkey === owner_pubkey || tx.destination_pubkey === owner_pubkey;
-          })
-          .slice(-limit)
-          .reverse();
+        const filtered = mockTransactions.filter((tx) => {
+          if (!owner_pubkey) return true;
+          return tx.from_pubkey === owner_pubkey || tx.destination_pubkey === owner_pubkey;
+        });
+
+        const reversed = filtered.slice().reverse();
+        let startIdx = 0;
+        if (cursor != null) {
+          try {
+            startIdx = parseInt(Buffer.from(String(cursor), "base64").toString("utf8"), 10);
+            if (!Number.isFinite(startIdx) || startIdx < 0) startIdx = 0;
+          } catch (_) { startIdx = 0; }
+        }
+
+        const page = reversed.slice(startIdx, startIdx + limit);
+        const nextIdx = startIdx + limit;
+        const hasMore = nextIdx < reversed.length;
+        const nextCursor = hasMore
+          ? Buffer.from(String(nextIdx)).toString("base64")
+          : null;
 
         return send(
           res,
           200,
           { "content-type": "application/json" },
-          JSON.stringify({ items })
+          JSON.stringify({ items: page, has_more: hasMore, next_cursor: nextCursor })
         );
       })
       .catch((e) => {
