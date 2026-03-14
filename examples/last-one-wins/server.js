@@ -57,12 +57,16 @@ game.start();
 
 // ── Chain polling (production) ───────────────────────────────────────────────
 if (!LOCAL_DEV) {
-  const poller = createChainPoller({
+  createChainPoller({
     appPubkey: APP_PUBKEY,
     queryField: "recipient",
     onTransaction: game.processTransaction,
-  });
-  poller.start();
+  }).start();
+  createChainPoller({
+    appPubkey: APP_PUBKEY,
+    queryField: "sender",
+    onTransaction: game.processTransaction,
+  }).start();
 }
 
 // ── HTTP server ──────────────────────────────────────────────────────────────

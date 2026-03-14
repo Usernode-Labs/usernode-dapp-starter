@@ -125,8 +125,10 @@ function createLastOneWins(opts) {
       const amount = tx.amount || 0;
       if (amount <= 0) return;
       state.potBalance += amount;
-      state.lastSender = tx.from;
-      state.lastEntryTs = tx.ts;
+      if (!state.lastEntryTs || tx.ts >= state.lastEntryTs) {
+        state.lastSender = tx.from;
+        state.lastEntryTs = tx.ts;
+      }
       state.entries.push({ from: tx.from, amount, ts: tx.ts, txId: tx.id });
       console.log(`[game] entry: ${tx.from.slice(0, 16)}… sent ${amount}, pot=${state.potBalance}, round=${state.roundNumber}`);
     } else if (memo.type === "payout" && tx.from === appPubkey) {

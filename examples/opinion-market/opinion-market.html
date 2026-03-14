@@ -1011,6 +1011,7 @@
         let me = null;
         let myUsername = null;
         let sending = false;
+        let isAdmin = true;
         let currentSurveyId = null;
         let currentOptionByKey = new Map();
         let myAddedOptionBySurvey = {};
@@ -1534,7 +1535,19 @@
           } catch (_) {}
           if (chainId) {
             try {
-              return normalizeTransactionsResponse(await queryTransactions({ recipient: APP_PUBKEY, limit: l }));
+              const allItems = [];
+              let cursor = null;
+              const MAX_PAGES = 20;
+              for (let page = 0; page < MAX_PAGES; page++) {
+                const body = { recipient: APP_PUBKEY, limit: 50 };
+                if (cursor) body.cursor = cursor;
+                const data = await queryTransactions(body);
+                const items = normalizeTransactionsResponse(data);
+                allItems.push(...items);
+                if (!data.has_more || !data.next_cursor) break;
+                cursor = data.next_cursor;
+              }
+              return allItems;
             } catch (e) { console.warn("Explorer fetch failed:", e); }
           }
           if (typeof window.getTransactions === "function") {
@@ -1740,6 +1753,7 @@
             });
           }
           document.querySelectorAll("button, input, select").forEach(el => { if (!el.closest("#screenLeaderboard")) el.disabled = !!v; });
+          if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) btn.disabled = true; }
         }
 
         /* ================================================================
@@ -2865,6 +2879,20 @@
                 setText($("headerUsername"), myUsername);
               }
             } catch (_) {}
+          }
+
+          try {
+            const cfgResp = await fetch("/__config/opinion-market");
+            if (cfgResp.ok) {
+              const cfg = await cfgResp.json();
+              if (cfg.admin_pubkey) {
+                isAdmin = !!me && me === cfg.admin_pubkey;
+              }
+            }
+          } catch (_) {}
+          if (!isAdmin) {
+            const btn = $("addSurveyBtn");
+            if (btn) { btn.disabled = true; btn.title = "Only the admin can create questions"; }
           }
 
           const initialHash = location.hash || "";

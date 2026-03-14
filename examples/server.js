@@ -50,6 +50,7 @@ const LASTWIN_TIMER_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000
 
 // ── Opinion Market config ────────────────────────────────────────────────────
 const OM_APP_PUBKEY = "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
+const OM_ADMIN_PUBKEY = process.env.OM_ADMIN_PUBKEY || "";
 const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
 // ── Chain polling for falling-sands ──────────────────────────────────────────
 const sandsPoller = createChainPoller({
   appPubkey: SANDS_APP_PUBKEY,
+  queryField: "recipient",
   onTransaction(tx) {
     if (!tx.memo) return;
     try {
@@ -71,7 +73,7 @@ const sandsPoller = createChainPoller({
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
       const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
       engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
-    } catch (_) {}
+    } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
 if (!LOCAL_DEV) sandsPoller.start();
@@ -106,12 +108,17 @@ const lastOneWins = createLastOneWins({
 });
 lastOneWins.start();
 
-const lastwinPoller = createChainPoller({
+const lastwinEntryPoller = createChainPoller({
   appPubkey: LASTWIN_APP_PUBKEY,
   queryField: "recipient",
   onTransaction: lastOneWins.processTransaction,
 });
-if (!LOCAL_DEV) lastwinPoller.start();
+const lastwinPayoutPoller = createChainPoller({
+  appPubkey: LASTWIN_APP_PUBKEY,
+  queryField: "sender",
+  onTransaction: lastOneWins.processTransaction,
+});
+if (!LOCAL_DEV) { lastwinEntryPoller.start(); lastwinPayoutPoller.start(); }
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -154,6 +161,12 @@ const server = http.createServer((req, res) => {
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;
+
+  // Opinion Market config (exposes non-secret settings to the client)
+  if (pathname === "/__config/opinion-market") {
+    return send(res, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      JSON.stringify({ admin_pubkey: OM_ADMIN_PUBKEY || null }));
+  }
 
   // Explorer proxy
   if (handleExplorerProxy(req, res, pathname)) return;

@@ -255,6 +255,7 @@ function createChainPoller(opts) {
   const upstream = opts.upstream || getExplorerUpstream();
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const queryField = opts.queryField || "account";
+  const maxPages = opts.maxPages || 200;
 
   let chainId = null;
   const seenTxIds = new Set();
@@ -272,14 +273,28 @@ function createChainPoller(opts) {
     }
   }
 
+  function extractTxTimestamp(tx) {
+    const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+    for (const v of candidates) {
+      if (typeof v === "number" && Number.isFinite(v))
+        return v < 10_000_000_000 ? v * 1000 : v;
+      if (typeof v === "string" && v.trim()) {
+        const t = Date.parse(v);
+        if (!Number.isNaN(t)) return t;
+      }
+    }
+    return 0;
+  }
+
   async function poll() {
     if (!chainId) { await discoverChainId(); if (!chainId) return; }
 
     pollCount++;
     const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
     const url = `${baseUrl}/transactions`;
-    const MAX_PAGES = 10;
-    let cursor = null, totalItems = 0, totalNew = 0;
+    const MAX_PAGES = maxPages;
+    let cursor = null, totalItems = 0;
+    const newTxs = [];
 
     try {
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -310,8 +325,7 @@ function createChainPoller(opts) {
           if (seenTxIds.has(txId)) continue;
           allSeen = false;
           seenTxIds.add(txId);
-          totalNew++;
-          if (onTransaction) onTransaction(tx);
+          newTxs.push(tx);
         }
 
         if (allSeen) break;
@@ -321,8 +335,15 @@ function createChainPoller(opts) {
         cursor = nextCursor;
       }
 
-      if (totalNew > 0 || pollCount <= 3) {
-        console.log(`[chain] poll #${pollCount}: ${totalItems} tx(s) scanned, ${totalNew} new`);
+      // Process in chronological order so stateful consumers (game logic,
+      // vote resolution) see events oldest-first.
+      newTxs.sort((a, b) => extractTxTimestamp(a) - extractTxTimestamp(b));
+      for (const tx of newTxs) {
+        if (onTransaction) onTransaction(tx);
+      }
+
+      if (newTxs.length > 0 || pollCount <= 3) {
+        console.log(`[chain] poll #${pollCount}: ${totalItems} tx(s) scanned, ${newTxs.length} new`);
       }
     } catch (e) {
       console.warn(`[chain] poll #${pollCount} error: ${e.message}`);
@@ -330,7 +351,7 @@ function createChainPoller(opts) {
   }
 
   function start() {
-    discoverChainId();
+    poll();
     setInterval(poll, intervalMs);
   }
 

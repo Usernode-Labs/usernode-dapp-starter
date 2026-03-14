@@ -40,6 +40,7 @@ setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
 // ── Chain polling ────────────────────────────────────────────────────────────
 const poller = createChainPoller({
   appPubkey: APP_PUBKEY,
+  queryField: "recipient",
   onTransaction(tx) {
     if (!tx.memo) return;
     try {
@@ -47,10 +48,10 @@ const poller = createChainPoller({
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
       const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
       engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
-    } catch (_) {}
+    } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
-poller.start();
+if (!LOCAL_DEV) poller.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
