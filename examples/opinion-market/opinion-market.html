@@ -547,7 +547,10 @@
                 </div>
               </div>
               <p style="margin-top: 0;" id="surveyQuestion"></p>
-              <div id="surveyCreatedBy" class="muted" style="font-size: 11px; margin: 6px 0;"></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0;">
+                <div id="surveyCreatedBy" class="muted" style="font-size: 11px;"></div>
+                <div id="surveyVoterCount" class="muted" style="font-size: 11px;"></div>
+              </div>
               <div id="surveyRevealInfo" class="revealNotice hide" style="margin: 8px 0;"></div>
               <button class="btn small hide" id="resolveEarlyBtn" type="button" style="margin-top: 8px; color: var(--warn); border-color: var(--warn);">&#x23F1; Resolve early (testing)</button>
 
@@ -2035,6 +2038,8 @@
           setText($("surveyQuestion"), s.question);
           const creatorName = (s.createdBy && GLOBAL_USERNAMES.get(s.createdBy)) || (s.createdBy ? deriveDefaultUsername(s.createdBy) : "unknown");
           setText($("surveyCreatedBy"), "Created by " + creatorName);
+          const vc = countUniqueVoters(latestTxs, s.id);
+          setText($("surveyVoterCount"), vc === 1 ? "1 vote" : `${vc} votes`);
 
           // Reveal info
           const revealEl = $("surveyRevealInfo");
@@ -2230,6 +2235,9 @@
           const s = res.survey;
           const mkt = MARKETS.get(s.id);
           const settlement = SETTLEMENTS.get(s.id);
+
+          const vc = countUniqueVoters(latestTxs, s.id);
+          setText($("surveyVoterCount"), vc === 1 ? "1 vote" : `${vc} votes`);
 
           const _focusEl = document.activeElement;
           const _isFocusedInput = _focusEl && (_focusEl.tagName === "INPUT" || _focusEl.tagName === "TEXTAREA");
