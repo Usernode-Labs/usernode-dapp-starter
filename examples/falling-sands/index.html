@@ -1171,25 +1171,30 @@ function handleMessage(event) {
         pendingTxs.sort((a, b) => a.tick - b.tick);
       }
 
-      // Fast-forward to current time (minus delay)
-      const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
+      // Fast-forward to current time (minus delay), keeping loader until caught up
       setLoading(70, "Synchronizing...");
       statusEl.textContent = "Catching up...";
-      requestAnimationFrame(() => {
-        fastForwardTo(targetTick);
-        // Copy final state to cellData for rendering
+      function catchUpLoop() {
+        const target = timestampToTick(Date.now() - RENDER_DELAY_MS);
+        if (simTick < target) fastForwardTo(target);
         if (universe && wasmMemory) {
           const cellPtr = universe.cells();
           const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
           cellData.set(cells);
         }
+        const gap = timestampToTick(Date.now() - RENDER_DELAY_MS) - simTick;
+        if (gap > 1) {
+          setLoading(70 + Math.min(29, 29 * (1 - gap / 300)), "Synchronizing...");
+          requestAnimationFrame(catchUpLoop);
+          return;
+        }
         setLoading(100, "Ready!");
         statusEl.className = "ok";
         statusEl.textContent = "Running locally";
         dismissLoader();
-        // Start the tick loop
         simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
-      });
+      }
+      requestAnimationFrame(catchUpLoop);
 
     } else if (msg.type === "tx") {
       addPendingTx(msg);
