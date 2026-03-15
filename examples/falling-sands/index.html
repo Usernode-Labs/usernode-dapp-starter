@@ -309,9 +309,57 @@
     #info-content ul { margin: 0 0 8px; padding-left: 18px; }
     #info-content li { margin-bottom: 4px; }
     #info-content .muted { color: #5a6a80; }
+
+    /* ── Loading overlay ──────────────────────────── */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 500;
+      background: #0b0e14;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      transition: opacity 0.4s ease;
+    }
+    #loading-overlay.fade-out {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #loading-overlay .loader-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #e7edf7;
+      letter-spacing: 0.5px;
+    }
+    #loading-overlay .loader-status {
+      font-size: 13px;
+      color: #8896ab;
+    }
+    #loading-overlay .loader-track {
+      width: 200px;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.1);
+      overflow: hidden;
+    }
+    #loading-overlay .loader-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 2px;
+      background: #5dd39e;
+      transition: width 0.3s ease-out;
+    }
   </style>
 </head>
 <body>
+
+<div id="loading-overlay">
+  <div class="loader-title">Falling Sands</div>
+  <div class="loader-track"><div class="loader-fill" id="loader-fill"></div></div>
+  <div class="loader-status" id="loader-status">Loading...</div>
+</div>
 
 <div id="status-bar">
   <span id="status">Loading WASM...</span>
@@ -387,6 +435,26 @@ window.onerror = function(msg, src, line) {
     errorStickyUntil = performance.now() + ERROR_HOLD_MS;
   }
 };
+
+// =============================================================================
+// LOADING OVERLAY
+// =============================================================================
+
+const _loaderOverlay = document.getElementById("loading-overlay");
+const _loaderFill = document.getElementById("loader-fill");
+const _loaderStatus = document.getElementById("loader-status");
+
+function setLoading(pct, msg) {
+  if (_loaderFill) _loaderFill.style.width = pct + "%";
+  if (_loaderStatus) _loaderStatus.textContent = msg;
+}
+
+function dismissLoader() {
+  if (_loaderOverlay) {
+    _loaderOverlay.classList.add("fade-out");
+    setTimeout(() => { _loaderOverlay.style.display = "none"; }, 500);
+  }
+}
 
 // =============================================================================
 // CONFIGURATION
@@ -1087,6 +1155,8 @@ function handleMessage(event) {
         }
       }
 
+      setLoading(50, "Loading snapshot...");
+
       // Load snapshot
       if (msg.snapshot) {
         loadSnapshot(msg.snapshot);
@@ -1103,6 +1173,7 @@ function handleMessage(event) {
 
       // Fast-forward to current time (minus delay)
       const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
+      setLoading(70, "Synchronizing...");
       statusEl.textContent = "Catching up...";
       requestAnimationFrame(() => {
         fastForwardTo(targetTick);
@@ -1112,8 +1183,10 @@ function handleMessage(event) {
           const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
           cellData.set(cells);
         }
+        setLoading(100, "Ready!");
         statusEl.className = "ok";
         statusEl.textContent = "Running locally";
+        dismissLoader();
         // Start the tick loop
         simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
       });
@@ -1214,6 +1287,7 @@ function startRound() {
 
 (async function initWasm() {
   try {
+    setLoading(10, "Loading simulation engine...");
     statusEl.textContent = "Loading WASM...";
     const wasm = await window.loadSandspielWasm("/sandtable_bg.wasm");
     universe = wasm.Universe.new(WIDTH, HEIGHT);
@@ -1231,10 +1305,11 @@ function startRound() {
     if (plantAbsorbs) flags |= 4;  // FLAG_PLANT_ABSORBS
     if (flags) universe.set_flags(flags);
 
+    setLoading(30, "Connecting to server...");
     statusEl.textContent = "Connecting...";
-    // Connect to server for snapshot + transaction relay
     scheduleConnect();
   } catch (e) {
+    setLoading(0, "Failed to load — tap to retry");
     showError("WASM load failed: " + e.message);
     console.error(e);
   }
