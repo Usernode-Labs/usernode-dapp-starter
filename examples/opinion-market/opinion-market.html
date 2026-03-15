@@ -1170,12 +1170,14 @@
             const numOpts = survey.options.length;
             if (numOpts < 2) continue;
             const perOpt = MARKET_ANTE / numOpts;
-            const mkt = { pools: {}, totalShares: {}, userShares: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: survey.createdBy };
+            const mkt = { pools: {}, totalShares: {}, userShares: {}, netContribByUser: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: survey.createdBy };
             mkt.userShares[survey.createdBy] = {};
+            mkt.netContribByUser[survey.createdBy] = {};
             for (const opt of survey.options) {
               mkt.pools[opt.key] = perOpt;
               mkt.totalShares[opt.key] = perOpt;
               mkt.userShares[survey.createdBy][opt.key] = perOpt;
+              mkt.netContribByUser[survey.createdBy][opt.key] = perOpt;
             }
             mkt.totalPool = MARKET_ANTE;
             MARKETS.set(survey.id, mkt);
@@ -1195,7 +1197,7 @@
 
             let mkt = MARKETS.get(sv);
             if (!mkt) {
-              mkt = { pools: {}, totalShares: {}, userShares: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: null };
+              mkt = { pools: {}, totalShares: {}, userShares: {}, netContribByUser: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: null };
               MARKETS.set(sv, mkt);
             }
 
@@ -1231,6 +1233,8 @@
 
               mkt.grossBetsByUser[tx.from] = (mkt.grossBetsByUser[tx.from] || 0) + credits;
               getCreditFlow(tx.from).grossBets += credits;
+              if (!mkt.netContribByUser[tx.from]) mkt.netContribByUser[tx.from] = {};
+              mkt.netContribByUser[tx.from][optKey] = (mkt.netContribByUser[tx.from][optKey] || 0) + net;
             }
 
             if (memo.type === "sell_shares") {
@@ -1262,6 +1266,8 @@
 
               mkt.netSellsByUser[tx.from] = (mkt.netSellsByUser[tx.from] || 0) + netCredits;
               getCreditFlow(tx.from).netSells += netCredits;
+              if (!mkt.netContribByUser[tx.from]) mkt.netContribByUser[tx.from] = {};
+              mkt.netContribByUser[tx.from][optKey] = (mkt.netContribByUser[tx.from][optKey] || 0) - grossCredits;
             }
           }
 
@@ -1317,9 +1323,24 @@
                   const winnerShares = mkt.totalShares[winner] || 0;
                   if (winnerShares > 0) {
                     settlement.winner = winner;
+                    // DPM I: refund first, then distribute losers' money as profit (guarantees min ~0.95x on correct bets)
+                    let totalRefund = 0;
                     for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
                       const s = shares[winner] || 0;
-                      if (s > 0) settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + (s / winnerShares) * mkt.totalPool;
+                      if (s > 0) {
+                        const contrib = (mkt.netContribByUser && mkt.netContribByUser[pubkey] && mkt.netContribByUser[pubkey][winner]) || 0;
+                        totalRefund += Math.max(0, contrib);
+                      }
+                    }
+                    const profit = mkt.totalPool - totalRefund;
+                    for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
+                      const s = shares[winner] || 0;
+                      if (s > 0) {
+                        const contrib = (mkt.netContribByUser && mkt.netContribByUser[pubkey] && mkt.netContribByUser[pubkey][winner]) || 0;
+                        const refund = Math.max(0, contrib);
+                        const winnings = profit > 0 ? (s / winnerShares) * profit : 0;
+                        settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + refund + winnings;
+                      }
                     }
                   } else {
                     distributeRefund(mkt, settlement);
@@ -2396,7 +2417,9 @@
                 const totalSh = hasMarket ? (mkt.totalShares[opt.key] || 0) : 0;
                 const myShares = (hasMarket && mkt.userShares[me] && mkt.userShares[me][opt.key]) || 0;
                 const myValue = totalSh > 0 ? myShares * (pool / totalSh) : 0;
-                const potentialPayout = totalSh > 0 ? (myShares / totalSh) * totalPool : 0;
+                const myRefund = (hasMarket && mkt.netContribByUser && mkt.netContribByUser[me] && mkt.netContribByUser[me][opt.key]) ? Math.max(0, mkt.netContribByUser[me][opt.key]) : 0;
+                const profit = Math.max(0, totalPool - pool);
+                const potentialPayout = totalSh > 0 ? myRefund + (myShares / totalSh) * profit : myRefund;
 
                 const mRow = document.createElement("div");
                 mRow.className = "marketRow";
@@ -2454,13 +2477,14 @@
                       if (pBefore <= 0 || tBefore <= 0) { simShares = net; }
                       else { simShares = net * (tBefore / pBefore); }
                       const newTotalSh = totalSh + simShares;
-                      const newTotalPool = tBefore + net;
-                      const payout = newTotalSh > 0 ? (simShares / newTotalSh) * newTotalPool : net;
+                      const profit = Math.max(0, tBefore - pBefore);
+                      const winnings = newTotalSh > 0 ? (simShares / newTotalSh) * profit : 0;
+                      const payout = net + winnings;
                       buyPreview.innerHTML = "";
                       const payoutSpan = document.createElement("span");
                       payoutSpan.className = "ok";
                       const mult = c > 0 ? payout / c : 0;
-                      payoutSpan.textContent = `Payout if wins: ${formatCredits(payout)} (~${mult.toFixed(1)}x)`;
+                      payoutSpan.textContent = `Payout if wins: ${formatCredits(payout)} (~${mult.toFixed(1)}x, min ${formatCredits(net)})`;
                       buyPreview.appendChild(payoutSpan);
                       buyPreview.appendChild(document.createTextNode(` \u00B7 Fee: ${formatCredits(fee)}`));
                     } else {
@@ -2544,8 +2568,10 @@
                   valEl.textContent = `Cash-out value: ${formatCredits(myValue)}`;
                   const payEl = document.createElement("span");
                   payEl.className = "ok";
-                  const posMult = myValue > 0 ? potentialPayout / myValue : 0;
-                  payEl.textContent = `Payout if wins: ${formatCredits(potentialPayout)} (~${posMult.toFixed(1)}x)`;
+                  const stakeForMult = myRefund > 0 ? myRefund : myValue;
+                  const posMult = stakeForMult > 0 ? potentialPayout / stakeForMult : 0;
+                  const minText = myRefund > 0 ? `, min ${formatCredits(myRefund)}` : "";
+                  payEl.textContent = `Payout if wins: ${formatCredits(potentialPayout)} (~${posMult.toFixed(1)}x${minText})`;
                   pos.appendChild(ownEl);
                   pos.appendChild(valEl);
                   pos.appendChild(payEl);
