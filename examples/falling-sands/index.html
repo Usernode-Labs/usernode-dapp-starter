@@ -12,7 +12,7 @@
       color: #cdd6e4;
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       height: 100vh;
-      height: 100dvh;            /* dynamic viewport height — accounts for Safari chrome */
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -31,7 +31,6 @@
       flex-shrink: 0;
     }
 
-    /* Current element (left side) — tap to open picker */
     #current-el {
       display: flex;
       flex-direction: column;
@@ -58,10 +57,8 @@
       white-space: nowrap;
     }
 
-    /* Separator */
     .tb-sep { width: 1px; height: 36px; background: rgba(255,255,255,0.12); flex-shrink: 0; }
 
-    /* Quick-access buttons (recent + eraser) */
     .quick-bar {
       display: flex;
       gap: 6px;
@@ -86,17 +83,14 @@
       font-size: 18px;
       color: #aaa;
     }
-    /* Hide the 3 recent-element buttons on narrow screens */
     .quick-btn.recent { flex-shrink: 0; }
     @media (max-width: 420px) {
       .quick-btn.recent { display: none; }
     }
 
-    /* Brush */
     #brush-label { font-size: 11px; color: #8896ab; }
     #brush-size { width: 80px; accent-color: #6ea8fe; }
 
-    /* Send / Discard (right side, hidden until there are pending strokes) */
     .tb-right {
       margin-left: auto;
       display: none;
@@ -121,15 +115,8 @@
       flex-shrink: 0;
     }
     .fab:active { transform: scale(0.94); }
-    #btn-send {
-      background: #5dd39e;
-      color: #0b0e14;
-    }
-    #btn-discard {
-      background: #2a3548;
-      color: #aaa;
-    }
-    /* Transaction progress bar (replaces spinner) */
+    #btn-send { background: #5dd39e; color: #0b0e14; }
+    #btn-discard { background: #2a3548; color: #aaa; }
     .tx-progress-bar {
       display: flex;
       flex-direction: column;
@@ -245,25 +232,22 @@
       align-items: center;
       justify-content: center;
       padding: 4px;
-      min-height: 0;          /* allow flex child to shrink below content size */
+      min-height: 0;
       width: 100%;
     }
-    #canvas-container {
-      position: relative;
-      /* sized dynamically in JS to match the sand canvas */
-    }
+    #canvas-container { position: relative; }
     #sand-canvas {
       image-rendering: pixelated;
       border-radius: 8px;
       display: block;
-      pointer-events: none;   /* overlay canvas handles all input */
+      pointer-events: none;
     }
     #overlay-canvas {
       position: absolute;
       inset: 0;
       border-radius: 8px;
       cursor: crosshair;
-      pointer-events: auto;     /* overlay receives all pointer events */
+      pointer-events: auto;
     }
 
     /* ── Status bar ───────────────────────────────── */
@@ -278,8 +262,9 @@
     }
     #status-bar .ok { color: #5dd39e; }
     #status-bar .err { color: #ff6b6b; }
+    #debug-hash { color: #e6a817; display: none; }
+    #debug-hash.visible { display: inline; }
 
-    /* Info button in status bar */
     #info-btn {
       margin-left: auto;
       padding: 2px 8px;
@@ -293,7 +278,6 @@
     }
     #info-btn:hover { border-color: rgba(255,255,255,0.3); color: #cdd6e4; }
 
-    /* Info overlay */
     #info-overlay {
       display: none;
       position: fixed;
@@ -329,14 +313,13 @@
 </head>
 <body>
 
-<!-- ── Status (top, always visible) ────────────────────────────────────── -->
 <div id="status-bar">
-  <span id="status">Connecting…</span>
+  <span id="status">Loading WASM...</span>
   <span id="fps-display"></span>
+  <span id="debug-hash"></span>
   <button id="info-btn" type="button">&#x2753; Info</button>
 </div>
 
-<!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
 <div id="toolbar">
   <div id="current-el">
     <div id="current-swatch"></div>
@@ -350,8 +333,8 @@
     <div id="budget-meter">
       <div id="budget-fill"></div>
     </div>
-    <button class="fab" id="btn-discard" title="Discard">✕</button>
-    <button class="fab" id="btn-send" title="Send">✓</button>
+    <button class="fab" id="btn-discard" title="Discard">&#x2715;</button>
+    <button class="fab" id="btn-send" title="Send">&#x2713;</button>
     <div class="tx-progress-bar hide" id="send-progress">
       <div class="tx-track"><div class="tx-fill"></div></div>
       <div class="tx-label">Sending...</div>
@@ -359,28 +342,25 @@
   </div>
 </div>
 
-<!-- ── Full element picker (hidden) ─────────────────────────────────────── -->
 <div id="picker-overlay">
   <div id="picker-grid"></div>
 </div>
 
-<!-- ── Info overlay (hidden) ──────────────────────────────────────────── -->
 <div id="info-overlay">
   <div id="info-content">
     <h2>Falling Sands</h2>
     <p>A collaborative pixel sandbox on the Usernode blockchain. Draw with physics-simulated elements and watch them interact in real time.</p>
     <ul>
       <li><strong>Pick an element</strong> from the toolbar (tap the swatch to see all elements)</li>
-      <li><strong>Draw</strong> on the canvas — strokes appear locally as a preview</li>
+      <li><strong>Draw</strong> on the canvas &mdash; strokes appear locally as a preview</li>
       <li><strong>Send</strong> your strokes (tap the check mark) to commit them on-chain as a transaction</li>
-      <li>Everyone connected sees the same simulation, streamed via WebSocket</li>
+      <li>Everyone runs the same deterministic simulation locally</li>
     </ul>
-    <p>Each stroke is stored as a transaction memo on the Usernode blockchain. The server runs a WASM physics engine (based on Sandspiel) that simulates all committed elements.</p>
+    <p>Each stroke is stored as a transaction memo on the Usernode blockchain. Your device runs the physics engine (WASM) locally &mdash; no video streaming needed.</p>
     <p class="muted">Tap anywhere outside this panel to close.</p>
   </div>
 </div>
 
-<!-- ── Canvas ───────────────────────────────────────────────────────────── -->
 <div id="canvas-wrap">
   <div id="canvas-container">
     <canvas id="sand-canvas"></canvas>
@@ -388,19 +368,17 @@
   </div>
 </div>
 
-<!-- ── usernode bridge (sendTransaction / getTransactions) ──────────── -->
 <script src="/usernode-bridge.js"></script>
 <script src="/usernode-usernames.js"></script>
-<!-- ── regl from CDN (with fallback) ────────────────────────────────── -->
 <script src="https://unpkg.com/regl@2.1.0/dist/regl.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/regl@2.1.0/dist/regl.min.js"></script>
-<!-- ── pako (zlib inflate) — server sends zlib-compressed binary ────── -->
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="/wasm-browser.js"></script>
 
 <script>
-// ═══════════════════════════════════════════════════════════════════════════
-// ERROR DISPLAY — show problems visibly on the page
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// ERROR DISPLAY
+// =============================================================================
 window.onerror = function(msg, src, line) {
   var el = document.getElementById("status");
   el.className = "err";
@@ -410,26 +388,33 @@ window.onerror = function(msg, src, line) {
   }
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
 let WIDTH = 300;
 let HEIGHT = 450;
 const CELL_BYTES = 4;
+const TICK_HZ = 30;
+const TICK_INTERVAL_MS = 1000 / TICK_HZ;
+const RENDER_DELAY_MS = 5000;
+const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5; // every 5 seconds
+const MAX_CHECKPOINTS = 24;
 
-// ── Usernode transaction settings ────────────────────────────────────────
+// Must match engine.js exactly
+const TICK_EPOCH = 1767225600000;
+
+function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
+
 const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
 
-// ── Explorer API discovery (needed for bridge's waitForTransactionVisible) ──
 const EXPLORER_BASE = window.location.origin + "/explorer-api";
 (async function setupExplorer() {
   const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
     ? await window.usernode.isMockEnabled()
     : false;
   if (mockEnabled) return;
-
   try {
     const resp = await fetch(`${EXPLORER_BASE}/active_chain`);
     if (!resp.ok) return;
@@ -438,14 +423,12 @@ const EXPLORER_BASE = window.location.origin + "/explorer-api";
       window.usernode = window.usernode || {};
       window.usernode.transactionsBaseUrl = `${EXPLORER_BASE}/${data.chain_id}`;
     }
-  } catch (e) {
-    console.warn("Could not discover chain ID:", e);
-  }
+  } catch (e) { console.warn("Could not discover chain ID:", e); }
 })();
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SPECIES PALETTE  (id → { name, color })
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// SPECIES PALETTE
+// =============================================================================
 
 const SPECIES = [
   { id: 0,  name: "Erase", color: "#1e2736" },
@@ -474,22 +457,18 @@ const SPECIES = [
 ];
 let sourcesEnabled = false;
 
-let selectedSpecies = 2; // start with Sand
+let selectedSpecies = 2;
 let brushSize = 4;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ELEMENT SELECTOR — current + 3 recent + eraser + full picker
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// ELEMENT SELECTOR
+// =============================================================================
 
-// Default recent: Wall, Water, Fire  (most-recent first)
 let recentIds = [1, 3, 6];
 const MAX_RECENT = 3;
-
-// Helpers to look up species data by id
 const speciesById = {};
 SPECIES.forEach(sp => { speciesById[sp.id] = sp; });
 
-// ── DOM references ──────────────────────────────────────────────────────
 const currentSwatchEl = document.getElementById("current-swatch");
 const currentNameEl   = document.getElementById("current-name");
 const currentElBtn    = document.getElementById("current-el");
@@ -498,18 +477,14 @@ const pickerOverlay   = document.getElementById("picker-overlay");
 const pickerGrid      = document.getElementById("picker-grid");
 const brushSlider     = document.getElementById("brush-size");
 
-// ── Update the "current element" indicator ──────────────────────────────
 function refreshCurrent() {
   const sp = speciesById[selectedSpecies] || SPECIES[1];
   currentSwatchEl.style.background = sp.color;
   currentNameEl.textContent = sp.name;
 }
 
-// ── Rebuild the quick-bar (3 recent + eraser) ───────────────────────────
 function refreshQuickBar() {
   quickBar.innerHTML = "";
-
-  // Recent elements
   recentIds.forEach(id => {
     const sp = speciesById[id];
     if (!sp) return;
@@ -520,39 +495,30 @@ function refreshQuickBar() {
     btn.addEventListener("click", () => selectSpecies(id));
     quickBar.appendChild(btn);
   });
-
-  // Eraser button (🧹 eraser emoji)
   const eraser = document.createElement("div");
   eraser.className = "quick-btn eraser";
   eraser.title = "Erase";
-  eraser.textContent = "🧹";
+  eraser.textContent = "\uD83E\uDDF9";
   eraser.addEventListener("click", () => { selectedSpecies = 0; refreshCurrent(); });
   quickBar.appendChild(eraser);
 }
 
-// ── Select a species (updates recent list) ──────────────────────────────
 function selectSpecies(id) {
   if (id === 0) { selectedSpecies = 0; refreshCurrent(); return; }
-
   const prev = selectedSpecies;
   selectedSpecies = id;
-
-  // Push the previous selection into recent (if it's a real element)
   if (prev !== 0 && prev !== id) {
     recentIds = recentIds.filter(r => r !== id && r !== prev);
     recentIds.unshift(prev);
     if (recentIds.length > MAX_RECENT) recentIds.length = MAX_RECENT;
   } else {
-    // Just remove the newly-selected from recent so it's not duplicated
     recentIds = recentIds.filter(r => r !== id);
     if (recentIds.length > MAX_RECENT) recentIds.length = MAX_RECENT;
   }
-
   refreshCurrent();
   refreshQuickBar();
 }
 
-// ── Build the full picker grid (all elements with names) ────────────────
 function rebuildPicker() {
   pickerGrid.innerHTML = "";
   SPECIES.forEach(sp => {
@@ -563,10 +529,7 @@ function rebuildPicker() {
     item.innerHTML =
       `<div class="picker-swatch" style="background:${sp.color}"></div>` +
       `<div class="picker-label">${sp.name}</div>`;
-    item.addEventListener("click", () => {
-      selectSpecies(sp.id);
-      closePicker();
-    });
+    item.addEventListener("click", () => { selectSpecies(sp.id); closePicker(); });
     pickerGrid.appendChild(item);
   });
 }
@@ -582,92 +545,62 @@ function openPicker() {
 }
 function closePicker() { pickerOverlay.classList.remove("open"); }
 
-// Tap current element → open picker
 currentElBtn.addEventListener("click", openPicker);
-
-// Tap backdrop → close picker
 pickerOverlay.addEventListener("click", (e) => {
   if (e.target === pickerOverlay) closePicker();
 });
-
-// ── Brush size slider ───────────────────────────────────────────────────
-brushSlider.addEventListener("input", () => {
-  brushSize = parseInt(brushSlider.value, 10);
-});
-
-// ── Initial render ──────────────────────────────────────────────────────
+brushSlider.addEventListener("input", () => { brushSize = parseInt(brushSlider.value, 10); });
 refreshCurrent();
 refreshQuickBar();
 
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // CANVAS SETUP
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
 const canvas = document.getElementById("sand-canvas");
 const overlayCanvas = document.getElementById("overlay-canvas");
 const overlayCtx = overlayCanvas.getContext("2d");
 const canvasContainer = document.getElementById("canvas-container");
-
-// Forward-declared; real implementation is in the STAGED PAINT section.
-// Needed because sizeCanvas() calls it on startup before that section runs.
 let redrawOverlay = function() {};
 
 function sizeCanvas() {
   const wrap = document.getElementById("canvas-wrap");
-  const maxW = wrap.clientWidth - 8;   // 4px padding each side
+  const maxW = wrap.clientWidth - 8;
   const maxH = wrap.clientHeight - 8;
-  // Fit the simulation's aspect ratio into the available space
   const aspect = WIDTH / HEIGHT;
   let w, h;
-  if (maxW / maxH > aspect) {
-    h = Math.max(1, maxH);
-    w = Math.round(h * aspect);
-  } else {
-    w = Math.max(1, maxW);
-    h = Math.round(w / aspect);
-  }
-  // Container wraps both canvases at display size
+  if (maxW / maxH > aspect) { h = Math.max(1, maxH); w = Math.round(h * aspect); }
+  else { w = Math.max(1, maxW); h = Math.round(w / aspect); }
   canvasContainer.style.width = w + "px";
   canvasContainer.style.height = h + "px";
-
-  // WebGL canvas
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
-
-  // 2D overlay canvas (same pixel dimensions as simulation)
   overlayCanvas.style.width = w + "px";
   overlayCanvas.style.height = h + "px";
   overlayCanvas.width = WIDTH;
   overlayCanvas.height = HEIGHT;
-
-  // Re-draw the overlay if there are pending strokes
   redrawOverlay();
 }
 sizeCanvas();
 window.addEventListener("resize", sizeCanvas);
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WEBGL RENDERER  (regl + the sandspiel fragment shader with glslify inlined)
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// WEBGL RENDERER
+// =============================================================================
 
 let cellData = new Uint8Array(WIDTH * HEIGHT * CELL_BYTES);
 
 if (typeof createREGL === "undefined") {
   document.getElementById("status").className = "err";
-  document.getElementById("status").textContent =
-    "Error: regl library failed to load (CDN unreachable?)";
+  document.getElementById("status").textContent = "Error: regl library failed to load";
   throw new Error("regl not loaded");
 }
 
 let regl, dataTexture;
 try {
   regl = createREGL({ canvas, attributes: { preserveDrawingBuffer: false } });
-  // Texture dimensions are swapped (HEIGHT × WIDTH) because the Rust Universe
-  // stores cells column-major: index = x * height + y.  Each texture row must
-  // hold one full grid column (height entries), so texture width = HEIGHT.
-  // Explicit NPOT-safe params for mobile WebGL 1.0 compatibility.
   dataTexture = regl.texture({
     width: HEIGHT, height: WIDTH, data: cellData,
     min: 'nearest', mag: 'nearest',
@@ -676,8 +609,7 @@ try {
   });
 } catch (e) {
   document.getElementById("status").className = "err";
-  document.getElementById("status").textContent =
-    "WebGL error: " + e.message;
+  document.getElementById("status").textContent = "WebGL error: " + e.message;
   throw e;
 }
 
@@ -690,8 +622,6 @@ void main() {
   gl_Position = vec4(position, 0, 1);
 }`;
 
-// The fragment shader is sandspiel's sand.glsl with glslify dependencies
-// (hsv2rgb, simplex noise 2D/3D) inlined.
 const FRAGMENT_SHADER = `
 precision mediump float;
 uniform float t;
@@ -700,14 +630,12 @@ uniform vec2 resolution;
 uniform sampler2D data;
 varying vec2 uv;
 
-// ── hsv2rgb (glsl-hsv2rgb) ──────────────────────────────────────────────
 vec3 hsv2rgb(vec3 c) {
   vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-// ── simplex helpers ─────────────────────────────────────────────────────
 vec3 mod289_3(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
 vec2 mod289_2(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
 vec4 mod289_4(vec4 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
@@ -715,7 +643,6 @@ vec3 permute3(vec3 x) { return mod289_3(((x*34.0)+1.0)*x); }
 vec4 permute4(vec4 x) { return mod289_4(((x*34.0)+1.0)*x); }
 vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 
-// ── simplex 2D (Ashima Arts / webgl-noise) ──────────────────────────────
 float snoise2(vec2 v) {
   const vec4 C = vec4( 0.211324865405187, 0.366025403784439,
                        -0.577350269189626, 0.024390243902439);
@@ -741,7 +668,6 @@ float snoise2(vec2 v) {
   return 130.0 * dot(m, g);
 }
 
-// ── simplex 3D (Ashima Arts / webgl-noise) ──────────────────────────────
 float snoise3(vec3 v) {
   const vec2 C = vec2(1.0/6.0, 1.0/3.0);
   const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
@@ -785,7 +711,6 @@ float snoise3(vec3 v) {
   return 42.0 * dot(m*m, vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
 }
 
-// ── main (sandspiel sand.glsl) ──────────────────────────────────────────
 void main() {
   vec2 textCoord = ((uv * vec2(0.5, -0.5)) + vec2(0.5)).yx;
   vec4 d = texture2D(data, textCoord);
@@ -797,64 +722,35 @@ void main() {
   float noise = snoise3(vec3(floor(uv * resolution / dpi), t * 0.05));
   float a = 1.0;
 
-  if (type == 0) {        // Empty
-    hue = 0.0; saturation = 0.1; lightness = 0.1; a = 0.1;
-  } else if (type == 1) { // Wall
-    hue = 0.1; saturation = 0.1; lightness = 0.4;
-  } else if (type == 2) { // Sand
-    hue = 0.1; saturation = 0.5; lightness += 0.3;
-  } else if (type == 3) { // Water
+  if (type == 0) { hue = 0.0; saturation = 0.1; lightness = 0.1; a = 0.1; }
+  else if (type == 1) { hue = 0.1; saturation = 0.1; lightness = 0.4; }
+  else if (type == 2) { hue = 0.1; saturation = 0.5; lightness += 0.3; }
+  else if (type == 3) {
     hue = 0.6;
     lightness = 0.7 + d.g * 0.25 + noise * 0.1;
     int polarity = int(mod(d.g * 255.0, 2.0) + 0.1);
     if (polarity == 0) lightness += 0.01;
-  } else if (type == 4) { // Gas
-    hue = 0.0; lightness += 0.4; saturation = 0.2 + (d.b * 1.5);
-  } else if (type == 5) { // Cloner
-    hue = 0.9; saturation = 0.3;
-  } else if (type == 6) { // Fire
-    hue = d.g * 0.1; saturation = 0.7;
-    lightness = 0.7 + (d.g * 0.3) + ((noise + 0.8) * 0.5);
-  } else if (type == 7) { // Wood
-    hue = d.g * 0.1; saturation = 0.3; lightness = 0.3 + d.g * 0.3;
-  } else if (type == 8) { // Lava
-    hue = d.g * 0.1; lightness = 0.7 + d.g * 0.25 + noise * 0.1;
-  } else if (type == 9) { // Ice
-    hue = 0.6; saturation = 0.4; lightness = 0.7 + d.g * 0.5;
-  } else if (type == 10) { // Sink
-    hue = 0.9; saturation = 0.4; lightness = 1.0;
-  } else if (type == 11) { // Plant
-    hue = 0.4; saturation = 0.4;
-  } else if (type == 12) { // Acid
-    hue = 0.18; saturation = 0.9; lightness = 0.8 + d.g * 0.2 + noise * 0.05;
-  } else if (type == 13) { // Stone
-    hue = -0.4 + (d.g * 0.5); saturation = 0.1;
-  } else if (type == 14) { // Dust
-    hue = (d.g * 2.0) + t * 0.0008; saturation = 0.4; lightness = 0.8;
-  } else if (type == 15) { // Mite
-    hue = 0.8; saturation = 0.9; lightness = 0.8;
-  } else if (type == 16) { // Oil
-    hue = (d.g * 5.0) + t * 0.008; saturation = 0.2; lightness = 0.3;
-  } else if (type == 17) { // Rocket
-    hue = 0.0; saturation = 0.4 + d.b; lightness = 0.9;
-  } else if (type == 18) { // Fungus
-    hue = (d.g * 0.15) - 0.1;
-    saturation = (d.g * 0.8) - 0.05;
-    lightness = 1.5 - (d.g * 0.2);
-  } else if (type == 19) { // Seed / flower
-    hue = fract(fract(d.b * 2.0) * 0.5) - 0.3;
-    saturation = 0.7 * (d.g + 0.4) + d.b * 0.2;
-    lightness = 0.9 * (d.g + 0.9);
-  } else if (type == 20) { // Spout (water source)
-    hue = 0.6; saturation = 0.5; lightness = 0.35 + d.g * 0.15;
-  } else if (type == 21) { // Sand Source
-    hue = 0.1; saturation = 0.35; lightness = 0.35 + d.g * 0.15;
-  } else if (type == 22) { // Torch (fire source)
-    hue = 0.05; saturation = 0.6;
-    lightness = 0.4 + d.g * 0.15 + noise * 0.08;
-  } else if (type == 23) { // Oil Well
-    hue = 0.7; saturation = 0.15; lightness = 0.15 + d.g * 0.1;
   }
+  else if (type == 4) { hue = 0.0; lightness += 0.4; saturation = 0.2 + (d.b * 1.5); }
+  else if (type == 5) { hue = 0.9; saturation = 0.3; }
+  else if (type == 6) { hue = d.g * 0.1; saturation = 0.7; lightness = 0.7 + (d.g * 0.3) + ((noise + 0.8) * 0.5); }
+  else if (type == 7) { hue = d.g * 0.1; saturation = 0.3; lightness = 0.3 + d.g * 0.3; }
+  else if (type == 8) { hue = d.g * 0.1; lightness = 0.7 + d.g * 0.25 + noise * 0.1; }
+  else if (type == 9) { hue = 0.6; saturation = 0.4; lightness = 0.7 + d.g * 0.5; }
+  else if (type == 10) { hue = 0.9; saturation = 0.4; lightness = 1.0; }
+  else if (type == 11) { hue = 0.4; saturation = 0.4; }
+  else if (type == 12) { hue = 0.18; saturation = 0.9; lightness = 0.8 + d.g * 0.2 + noise * 0.05; }
+  else if (type == 13) { hue = -0.4 + (d.g * 0.5); saturation = 0.1; }
+  else if (type == 14) { hue = (d.g * 2.0) + t * 0.0008; saturation = 0.4; lightness = 0.8; }
+  else if (type == 15) { hue = 0.8; saturation = 0.9; lightness = 0.8; }
+  else if (type == 16) { hue = (d.g * 5.0) + t * 0.008; saturation = 0.2; lightness = 0.3; }
+  else if (type == 17) { hue = 0.0; saturation = 0.4 + d.b; lightness = 0.9; }
+  else if (type == 18) { hue = (d.g * 0.15) - 0.1; saturation = (d.g * 0.8) - 0.05; lightness = 1.5 - (d.g * 0.2); }
+  else if (type == 19) { hue = fract(fract(d.b * 2.0) * 0.5) - 0.3; saturation = 0.7 * (d.g + 0.4) + d.b * 0.2; lightness = 0.9 * (d.g + 0.9); }
+  else if (type == 20) { hue = 0.6; saturation = 0.5; lightness = 0.35 + d.g * 0.15; }
+  else if (type == 21) { hue = 0.1; saturation = 0.35; lightness = 0.35 + d.g * 0.15; }
+  else if (type == 22) { hue = 0.05; saturation = 0.6; lightness = 0.4 + d.g * 0.15 + noise * 0.08; }
+  else if (type == 23) { hue = 0.7; saturation = 0.15; lightness = 0.15 + d.g * 0.1; }
 
   lightness *= (0.975 + snoise2(floor(uv * resolution / dpi)) * 0.025);
   gl_FragColor = vec4(hsv2rgb(vec3(hue, saturation, lightness)), a);
@@ -873,45 +769,24 @@ const drawSand = regl({
     resolution: ({ viewportWidth, viewportHeight }) => [viewportWidth, viewportHeight],
     dpi: window.devicePixelRatio * 2,
   },
-  attributes: {
-    position: [[-1, 4], [-1, -1], [4, -1]],
-  },
+  attributes: { position: [[-1, 4], [-1, -1], [4, -1]] },
   count: 3,
 });
 
-// Render loop (runs at display refresh rate; data arrives at server tick rate)
-function renderLoop() {
+function renderFrame() {
   regl.poll();
   drawSand();
-  requestAnimationFrame(renderLoop);
+  requestAnimationFrame(renderFrame);
 }
-renderLoop();
+renderFrame();
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WEBSOCKET — Parallel-Racing Strategy
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Safari iOS has a bug where some WebSocket objects never fire onopen.
-// Instead of retrying sequentially (slow), we open MULTIPLE sockets in a
-// staggered burst.  Whichever fires onopen first wins; the rest are closed.
-//
-// Timeline of a single "round":
-//   0ms   → create socket A
-//   200ms → if no winner yet, create socket B
-//   400ms → if no winner yet, create socket C
-//   800ms → if no winner yet, give up this round and start a new one
-//
-// Typical result: winner in < 200ms.  Worst case: ~900ms per round.
+// =============================================================================
+// LOCAL WASM SIMULATION ENGINE
+// =============================================================================
 
 const statusEl = document.getElementById("status");
 const fpsEl = document.getElementById("fps-display");
-let ws = null;              // the winning / active socket
-let frameCount = 0;
-let lastFpsTime = performance.now();
-let bytesReceived = 0;
-let lastBwTime = performance.now();
 
-// Sticky error: prevent the FPS update from overwriting error messages too soon
 let errorStickyUntil = 0;
 const ERROR_HOLD_MS = 8000;
 
@@ -925,21 +800,266 @@ function canOverwriteStatus() {
   return performance.now() >= errorStickyUntil;
 }
 
-// Binary message types (must match server)
-const MSG_KEYFRAME = 0x01;
-const MSG_DELTA = 0x02;
+// ── Simulation state (populated after WASM loads) ───────────────────────────
+let universe = null;
+let wasmMemory = null;
+let wasmPrng = null;
+let FRAME_SIZE = 0;
 
-// Racing parameters (matching the test server that works on Safari)
-const WS_STAGGER       = 200;   // ms between parallel socket creations
-const WS_POOL_SIZE     = 3;     // max sockets per round
-const WS_ROUND_TIMEOUT = 800;   // ms before we give up a round
-const WS_ROUND_GAP     = 100;   // ms between rounds
-const WS_MAX_ROUNDS    = 20;    // safety limit
+let simTick = 0;              // current simulation tick number
+let pendingTxs = [];          // transactions buffered for future ticks, sorted by tick
+let appliedTxCount = 0;
+
+// Checkpoints for rewind: [{tick, cells: Uint8Array}]
+let checkpoints = [];
+let lastCheckpointTick = 0;
+
+let ticksThisSecond = 0;
+let lastFpsTime = performance.now();
+
+// ── Draw helpers (same as server engine.js) ─────────────────────────────────
+
+function segmentToPoints(seg) {
+  const [x1, y1, x2, y2, size] = seg;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const step = Math.max(1, Math.floor(size * 0.6));
+  const steps = Math.max(1, Math.ceil(dist / step));
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i / steps;
+    points.push({ x: Math.round(x1 + dx * t), y: Math.round(y1 + dy * t) });
+  }
+  return points;
+}
+
+function applyDrawMemo(memo) {
+  if (!universe) return;
+  if (memo.app !== "falling-sands" || memo.type !== "draw" || !Array.isArray(memo.s)) return;
+  for (const seg of memo.s) {
+    if (!Array.isArray(seg) || seg.length < 6) continue;
+    const species = seg[5] | 0;
+    const size = Math.max(1, Math.min(20, seg[4] | 0));
+    const pts = segmentToPoints(seg);
+    for (const pt of pts) {
+      const x = Math.max(0, Math.min(WIDTH - 1, pt.x | 0));
+      const y = Math.max(0, Math.min(HEIGHT - 1, pt.y | 0));
+      universe.paint(x, y, size, species);
+    }
+  }
+}
+
+// ── Checkpoint system ───────────────────────────────────────────────────────
+
+function saveCheckpoint() {
+  if (!universe || !wasmMemory) return;
+  checkpoints.push({
+    tick: simTick,
+    cells: new Uint8Array(new Uint8Array(wasmMemory.buffer, universe.cells(), FRAME_SIZE)),
+    winds: new Uint8Array(new Uint8Array(wasmMemory.buffer, universe.winds(), FRAME_SIZE)),
+    burns: new Uint8Array(new Uint8Array(wasmMemory.buffer, universe.burns(), FRAME_SIZE)),
+    prngState: wasmPrng ? wasmPrng.getState() : 0,
+    generation: universe.generation ? universe.generation() : 0,
+    rngState: universe.rng_state ? universe.rng_state() : BigInt(0),
+  });
+  if (checkpoints.length > MAX_CHECKPOINTS) checkpoints.shift();
+  lastCheckpointTick = simTick;
+}
+
+function restoreCheckpoint(cp) {
+  if (!universe || !wasmMemory) return;
+  new Uint8Array(wasmMemory.buffer, universe.cells(), FRAME_SIZE).set(cp.cells);
+  new Uint8Array(wasmMemory.buffer, universe.winds(), FRAME_SIZE).set(cp.winds);
+  new Uint8Array(wasmMemory.buffer, universe.burns(), FRAME_SIZE).set(cp.burns);
+  if (wasmPrng && cp.prngState !== undefined) wasmPrng.setState(cp.prngState);
+  if (universe.set_generation && cp.generation !== undefined) universe.set_generation(cp.generation);
+  if (universe.set_rng_state && cp.rngState !== undefined) universe.set_rng_state(cp.rngState);
+  simTick = cp.tick;
+}
+
+function rewindToTick(targetTick) {
+  let best = null;
+  for (const cp of checkpoints) {
+    if (cp.tick <= targetTick && (!best || cp.tick > best.tick)) {
+      best = cp;
+    }
+  }
+  if (!best) return false;
+  restoreCheckpoint(best);
+  return true;
+}
+
+// ── Transaction buffering ───────────────────────────────────────────────────
+
+function addPendingTx(tx) {
+  const tick = timestampToTick(tx.timestamp_ms);
+  const nowMs = Date.now();
+  const ageS = ((nowMs - tx.timestamp_ms) / 1000).toFixed(1);
+  const renderTick = timestampToTick(nowMs - RENDER_DELAY_MS);
+  const delta = tick - simTick;
+  const label = delta > 0 ? `future(+${delta})` : delta === 0 ? "exact" : `late(${delta})`;
+  console.log(`[sands-tx] rx: age=${ageS}s  txTick=${tick}  simTick=${simTick}  renderTick=${renderTick}  ${label}`);
+
+  const entry = { tick, memo: tx.memo, from: tx.from };
+
+  if (tick <= simTick) {
+    // Late transaction — need to rewind
+    if (rewindToTick(tick)) {
+      console.log(`[sands-tx] rewind: restored to tick ${simTick}, replaying to ${renderTick}`);
+      // Re-insert all pending txs that are after the rewind point
+      const allPending = pendingTxs.filter(t => t.tick >= simTick);
+      allPending.push(entry);
+      allPending.sort((a, b) => a.tick - b.tick);
+      pendingTxs = allPending;
+      // Fast-forward back to where we were
+      fastForwardTo(timestampToTick(Date.now() - RENDER_DELAY_MS));
+    } else {
+      console.warn(`[sands-tx] no checkpoint for rewind — applying immediately (best effort)`);
+      if (entry.memo) applyDrawMemo(entry.memo);
+    }
+  } else {
+    // Future transaction — insert sorted
+    let idx = pendingTxs.length;
+    while (idx > 0 && pendingTxs[idx - 1].tick > tick) idx--;
+    pendingTxs.splice(idx, 0, entry);
+  }
+  appliedTxCount++;
+}
+
+// ── Fast-forward (for catch-up and rewind replay) ───────────────────────────
+
+function fastForwardTo(targetTick) {
+  if (!universe) return;
+  while (simTick < targetTick) {
+    // Apply any transactions scheduled for this tick
+    while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
+      const tx = pendingTxs.shift();
+      if (tx.memo) applyDrawMemo(tx.memo);
+    }
+    universe.tick();
+    simTick++;
+
+    if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
+      saveCheckpoint();
+    }
+  }
+}
+
+// ── Simulation tick (called at 30Hz) ────────────────────────────────────────
+
+const MAX_TICKS_PER_FRAME = 5;
+
+function simTick30Hz() {
+  if (!universe) return;
+
+  const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
+  if (simTick >= targetTick) return;
+
+  const ticksToDo = Math.min(targetTick - simTick, MAX_TICKS_PER_FRAME);
+  for (let i = 0; i < ticksToDo; i++) {
+    while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
+      const tx = pendingTxs.shift();
+      if (tx.memo) applyDrawMemo(tx.memo);
+    }
+
+    universe.tick();
+    simTick++;
+    ticksThisSecond++;
+
+    if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
+      saveCheckpoint();
+    }
+  }
+
+  // Update cellData from WASM memory (once after all ticks)
+  const cellPtr = universe.cells();
+  const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
+  cellData.set(cells);
+
+  // FPS counter
+  const now = performance.now();
+  if (now - lastFpsTime >= 1000) {
+    fpsEl.textContent = `${ticksThisSecond} tps`;
+    if (canOverwriteStatus()) {
+      statusEl.className = "ok";
+      statusEl.textContent = "Running locally";
+    }
+    ticksThisSecond = 0;
+    lastFpsTime = now;
+  }
+}
+
+// ── Debug hash display (?debug query param) ────────────────────────────────
+
+const DEBUG_MODE = new URLSearchParams(window.location.search).has("debug");
+const debugHashEl = document.getElementById("debug-hash");
+if (DEBUG_MODE && debugHashEl) debugHashEl.classList.add("visible");
+
+async function computeCellHash() {
+  if (!universe || !wasmMemory || !FRAME_SIZE) return null;
+  const cellPtr = universe.cells();
+  const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
+  const digest = await crypto.subtle.digest("SHA-256", cells);
+  const arr = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < arr.length; i++) hex += arr[i].toString(16).padStart(2, "0");
+  return hex;
+}
+
+if (DEBUG_MODE) {
+  setInterval(async () => {
+    const hash = await computeCellHash();
+    if (hash && debugHashEl) {
+      debugHashEl.textContent = `t:${simTick} #${hash.slice(0, 12)}`;
+    }
+  }, 5000);
+}
+
+// ── Load snapshot into WASM memory ──────────────────────────────────────────
+
+function loadSnapshot(snapshot) {
+  if (!universe || !wasmMemory || !snapshot) return;
+
+  const compressed = Uint8Array.from(atob(snapshot.cells_b64), c => c.charCodeAt(0));
+  const raw = pako.inflate(compressed);
+
+  if (snapshot.buffers === 3 && raw.length === FRAME_SIZE * 3) {
+    new Uint8Array(wasmMemory.buffer, universe.cells(), FRAME_SIZE).set(raw.subarray(0, FRAME_SIZE));
+    new Uint8Array(wasmMemory.buffer, universe.winds(), FRAME_SIZE).set(raw.subarray(FRAME_SIZE, FRAME_SIZE * 2));
+    new Uint8Array(wasmMemory.buffer, universe.burns(), FRAME_SIZE).set(raw.subarray(FRAME_SIZE * 2, FRAME_SIZE * 3));
+    cellData.set(raw.subarray(0, FRAME_SIZE));
+  } else {
+    new Uint8Array(wasmMemory.buffer, universe.cells(), FRAME_SIZE).set(raw);
+    cellData.set(raw);
+  }
+
+  if (wasmPrng && snapshot.prng_state !== undefined) wasmPrng.setState(snapshot.prng_state);
+  if (universe.set_generation && snapshot.generation !== undefined) universe.set_generation(snapshot.generation);
+  if (universe.set_rng_state && snapshot.wasm_rng_state !== undefined) {
+    universe.set_rng_state(BigInt(snapshot.wasm_rng_state));
+  }
+  simTick = snapshot.tick;
+  checkpoints = [];
+  lastCheckpointTick = simTick;
+  saveCheckpoint();
+}
+
+// =============================================================================
+// WEBSOCKET — Transaction Relay
+// =============================================================================
+
+let ws = null;
+
+const WS_STAGGER       = 200;
+const WS_POOL_SIZE     = 3;
+const WS_ROUND_TIMEOUT = 800;
+const WS_ROUND_GAP     = 100;
+const WS_MAX_ROUNDS    = 20;
 
 let wsRound = 0;
 let wsTotalAttempts = 0;
 
-// ── Debug log (visible on mobile) ─────────────────────────────────────
 const debugLines = [];
 function dbg(msg) {
   const t = (performance.now() / 1000).toFixed(2);
@@ -950,79 +1070,66 @@ function dbg(msg) {
   statusEl.textContent = debugLines.join(" | ");
 }
 
-// ── Handle incoming messages (shared by all sockets) ─────────────────
 function handleMessage(event) {
-  if (typeof event.data === "string") {
-    // JSON control message (e.g. config)
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "config") {
-        WIDTH = msg.width;
-        HEIGHT = msg.height;
-        cellData = new Uint8Array(WIDTH * HEIGHT * CELL_BYTES);
-        maxBudget = BUDGET_FRACTION * WIDTH * HEIGHT;
-        if (msg.sources != null) {
-          sourcesEnabled = !!msg.sources;
+  if (typeof event.data !== "string") return; // only JSON messages now
+
+  try {
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === "init") {
+      // Config
+      if (msg.config) {
+        WIDTH = msg.config.width || WIDTH;
+        HEIGHT = msg.config.height || HEIGHT;
+        if (msg.config.sources != null) {
+          sourcesEnabled = !!msg.config.sources;
           rebuildPicker();
         }
-        sizeCanvas();
       }
-    } catch (_) {}
-    return;
-  }
 
-  // Server sends zlib-compressed binary; inflate it first
-  const compressed = new Uint8Array(event.data);
-  bytesReceived += compressed.byteLength;
-  let buf;
-  if (typeof pako === "undefined") {
-    statusEl.className = "err";
-    statusEl.textContent = "Error: pako library not loaded";
-    return;
-  }
-  try {
-    buf = pako.inflate(compressed);
+      // Load snapshot
+      if (msg.snapshot) {
+        loadSnapshot(msg.snapshot);
+      }
+
+      // Buffer transactions since snapshot
+      if (msg.transactions && Array.isArray(msg.transactions)) {
+        for (const tx of msg.transactions) {
+          const tick = timestampToTick(tx.timestamp_ms);
+          pendingTxs.push({ tick, memo: tx.memo, from: tx.from });
+        }
+        pendingTxs.sort((a, b) => a.tick - b.tick);
+      }
+
+      // Fast-forward to current time (minus delay)
+      const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
+      statusEl.textContent = "Catching up...";
+      requestAnimationFrame(() => {
+        fastForwardTo(targetTick);
+        // Copy final state to cellData for rendering
+        if (universe && wasmMemory) {
+          const cellPtr = universe.cells();
+          const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
+          cellData.set(cells);
+        }
+        statusEl.className = "ok";
+        statusEl.textContent = "Running locally";
+        // Start the tick loop
+        simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
+      });
+
+    } else if (msg.type === "tx") {
+      addPendingTx(msg);
+    }
   } catch (e) {
-    console.warn("inflate error:", e.message);
-    return;
-  }
-  const msgType = buf[0];
-
-  if (msgType === MSG_KEYFRAME) {
-    cellData.set(buf.subarray(1));
-  } else if (msgType === MSG_DELTA) {
-    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const numChanges = view.getUint32(1);
-    let pos = 5;
-    for (let i = 0; i < numChanges; i++) {
-      const offset = view.getUint32(pos); pos += 4;
-      cellData[offset]     = buf[pos++];
-      cellData[offset + 1] = buf[pos++];
-      cellData[offset + 2] = buf[pos++];
-      cellData[offset + 3] = buf[pos++];
-    }
-  }
-
-  frameCount++;
-  const now = performance.now();
-  if (now - lastFpsTime >= 1000) {
-    const kbps = (bytesReceived / 1024 / ((now - lastBwTime) / 1000)).toFixed(1);
-    fpsEl.textContent = `${frameCount} fps · ${kbps} KB/s`;
-    if (canOverwriteStatus()) {
-      statusEl.className = "ok";
-      statusEl.textContent = "Connected";
-    }
-    frameCount = 0;
-    bytesReceived = 0;
-    lastFpsTime = now;
-    lastBwTime = now;
+    console.warn("WS message parse error:", e);
   }
 }
 
-// ── Start a new "round" of parallel socket racing ────────────────────
+let simInterval = null;
+
 function startRound() {
   if (document.visibilityState === "hidden") return;
-
   wsRound++;
   const rid = wsRound;
   dbg(`round ${rid}`);
@@ -1044,9 +1151,7 @@ function startRound() {
   function createSocket() {
     if (won) return;
     wsTotalAttempts++;
-    const aid = wsTotalAttempts;
     const idx = sockets.length + 1;
-
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}`;
     dbg(`R${rid}.${idx} new WS`);
@@ -1057,7 +1162,6 @@ function startRound() {
 
     sock.onopen = () => {
       if (won) {
-        // Another socket already won — close this one
         sock.onopen = sock.onclose = sock.onerror = sock.onmessage = null;
         try { sock.close(); } catch (_) {}
         return;
@@ -1065,49 +1169,33 @@ function startRound() {
       won = true;
       cleanup(sock);
       ws = sock;
-      dbg(`R${rid}.${idx} ✅ onopen`);
+      dbg(`R${rid}.${idx} connected`);
       if (canOverwriteStatus()) statusEl.className = "ok";
-
-      // Tell the server we're ready to receive data
-      try {
-        sock.send(JSON.stringify({ type: "ready" }));
-      } catch (e) {
-        dbg(`send-ready err: ${e.message}`);
-      }
+      try { sock.send(JSON.stringify({ type: "ready" })); }
+      catch (e) { dbg(`send-ready err: ${e.message}`); }
     };
 
     sock.onmessage = handleMessage;
-
-    sock.onerror = () => {
-      dbg(`R${rid}.${idx} onerror`);
-    };
-
+    sock.onerror = () => { dbg(`R${rid}.${idx} onerror`); };
     sock.onclose = (ev) => {
       if (won && sock === ws) {
-        // Our active connection died — reconnect
         dbg(`close code=${ev.code}`);
         ws = null;
+        if (simInterval) { clearInterval(simInterval); simInterval = null; }
         statusEl.className = "err";
         setTimeout(startRound, WS_ROUND_GAP);
-      } else if (!won) {
-        dbg(`R${rid}.${idx} close code=${ev.code} (pre-open)`);
       }
-      // If won && sock !== ws → leftover, ignore
     };
   }
 
-  // Stagger socket creation
-  createSocket(); // immediately
+  createSocket();
   for (let i = 1; i < WS_POOL_SIZE; i++) {
-    timers.push(setTimeout(() => {
-      if (!won) createSocket();
-    }, WS_STAGGER * i));
+    timers.push(setTimeout(() => { if (!won) createSocket(); }, WS_STAGGER * i));
   }
 
-  // Round timeout — if no winner, close everything and start fresh
   timers.push(setTimeout(() => {
     if (won) return;
-    dbg(`R${rid} ⏰ TIMEOUT`);
+    dbg(`R${rid} TIMEOUT`);
     cleanup(null);
     if (wsRound < WS_MAX_ROUNDS) {
       setTimeout(startRound, WS_ROUND_GAP);
@@ -1115,26 +1203,47 @@ function startRound() {
       dbg("Gave up after " + WS_MAX_ROUNDS + " rounds");
       statusEl.className = "err";
       statusEl.textContent = "Connection failed — tap to retry";
-      document.body.addEventListener("click", () => {
-        wsRound = 0;
-        startRound();
-      }, { once: true });
+      document.body.addEventListener("click", () => { wsRound = 0; startRound(); }, { once: true });
     }
   }, WS_ROUND_TIMEOUT));
 }
 
-// Connect after load + 1 rAF + 50ms (same pattern that works in the test server)
+// =============================================================================
+// WASM INITIALIZATION
+// =============================================================================
+
+(async function initWasm() {
+  try {
+    statusEl.textContent = "Loading WASM...";
+    const wasm = await window.loadSandspielWasm("/sandtable_bg.wasm");
+    universe = wasm.Universe.new(WIDTH, HEIGHT);
+    wasmMemory = wasm.memory;
+    wasmPrng = wasm.prng || null;
+    FRAME_SIZE = WIDTH * HEIGHT * CELL_BYTES;
+
+    // Apply initial flags (same as server)
+    const openBottom = true;
+    const sourcesEnabledInit = true;
+    const plantAbsorbs = true;
+    let flags = 0;
+    if (openBottom) flags |= 1;    // FLAG_OPEN_BOTTOM
+    if (sourcesEnabledInit) flags |= 2; // FLAG_SOURCES
+    if (plantAbsorbs) flags |= 4;  // FLAG_PLANT_ABSORBS
+    if (flags) universe.set_flags(flags);
+
+    statusEl.textContent = "Connecting...";
+    // Connect to server for snapshot + transaction relay
+    scheduleConnect();
+  } catch (e) {
+    showError("WASM load failed: " + e.message);
+    console.error(e);
+  }
+})();
+
 function scheduleConnect() {
   requestAnimationFrame(() => setTimeout(startRound, 50));
 }
-if (document.readyState === "complete") {
-  scheduleConnect();
-} else {
-  window.addEventListener("load", scheduleConnect);
-}
 
-// Reconnect when the page becomes visible again (e.g. user switches back
-// to Safari tab, or unlocks phone).  Safari kills WS in background.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && (!ws || ws.readyState !== WebSocket.OPEN)) {
     wsRound = 0;
@@ -1142,47 +1251,38 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// STAGED PAINT — draw locally, preview as overlay, send on button press
-// ═══════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// STAGED PAINT
+// =============================================================================
 
-// Each pending stroke is a line segment: {x1,y1, x2,y2, size, species, area}
-// A single tap produces a degenerate segment where (x1,y1)==(x2,y2).
 let pendingStrokes = [];
 let painting = false;
-let lastPaintPos = null;            // {x, y} — last position during drag
-let dragStartIdx = 0;               // index into pendingStrokes where current drag began
+let lastPaintPos = null;
+let dragStartIdx = 0;
 
 const fabBar       = document.getElementById("fab-bar");
 const btnSend      = document.getElementById("btn-send");
 const btnDiscard   = document.getElementById("btn-discard");
 const budgetFill   = document.getElementById("budget-fill");
 
-// ── Drawing budget (min of 2% screen area AND 1024-char memo limit) ─────
 const BUDGET_FRACTION = 0.02;
 const MEMO_MAX_CHARS = 1024;
-let maxBudget = BUDGET_FRACTION * WIDTH * HEIGHT;  // recalculated on config
+let maxBudget = BUDGET_FRACTION * WIDTH * HEIGHT;
 let usedBudget = 0;
 
-// Estimate the pixel area of a capsule-shaped segment
 function segmentArea(seg) {
   const r = Math.max(seg.size, 1);
   const dx = seg.x2 - seg.x1;
   const dy = seg.y2 - seg.y1;
   const len = Math.sqrt(dx * dx + dy * dy);
-  // Capsule area = rectangle + circle at each end (combined = one full circle)
   return len * r * 2 + Math.PI * r * r;
 }
 
-// Compute the memo JSON length for the current pending strokes
 function currentMemoLength() {
-  const strokes = pendingStrokes.map(s =>
-    [s.x1, s.y1, s.x2, s.y2, s.size, s.species]
-  );
+  const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
   return JSON.stringify({ app: "falling-sands", type: "draw", s: strokes }).length;
 }
 
-// Remaining fraction, taking the min of area budget and memo budget
 function budgetRemaining() {
   const areaRemaining = Math.max(0, 1 - usedBudget / maxBudget);
   const memoRemaining = Math.max(0, 1 - currentMemoLength() / MEMO_MAX_CHARS);
@@ -1193,11 +1293,9 @@ function budgetExhausted() {
   return usedBudget >= maxBudget || currentMemoLength() >= MEMO_MAX_CHARS;
 }
 
-// Would adding this segment exceed either budget?
 function wouldExceedBudget(seg) {
   const area = segmentArea(seg);
   if (usedBudget + area > maxBudget) return true;
-  // Estimate memo growth: one stroke adds ~"[x1,y1,x2,y2,size,species]," ≈ 20-30 chars
   const estExtra = JSON.stringify([seg.x1, seg.y1, seg.x2, seg.y2, seg.size, seg.species]).length + 1;
   if (currentMemoLength() + estExtra > MEMO_MAX_CHARS) return true;
   return false;
@@ -1206,21 +1304,12 @@ function wouldExceedBudget(seg) {
 function refreshBudget() {
   const remaining = budgetRemaining();
   budgetFill.style.width = (remaining * 100) + "%";
-  // Color shifts from green → yellow → red as budget depletes
-  if (remaining > 0.4) {
-    budgetFill.style.background = "#5dd39e";
-  } else if (remaining > 0.15) {
-    budgetFill.style.background = "#f0c040";
-  } else {
-    budgetFill.style.background = "#ff6b6b";
-  }
+  if (remaining > 0.4) budgetFill.style.background = "#5dd39e";
+  else if (remaining > 0.15) budgetFill.style.background = "#f0c040";
+  else budgetFill.style.background = "#ff6b6b";
 }
 
-// ── Simplify a run of nearly-collinear segments into fewer segments ─────
-// Uses a greedy approach: extend the current merged segment as long as all
-// intermediate points are within TOLERANCE pixels of the straight line
-// between the merge start and the candidate endpoint.
-const SIMPLIFY_TOLERANCE = 0.8;     // pixels — max perpendicular deviation
+const SIMPLIFY_TOLERANCE = 0.8;
 
 function perpendicularDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
@@ -1229,22 +1318,13 @@ function perpendicularDist(px, py, ax, ay, bx, by) {
   return Math.abs(dy * px - dx * py + bx * ay - by * ax) / Math.sqrt(lenSq);
 }
 
-// Simplify segments from pendingStrokes[startIdx..endIdx) in-place.
-// All segments in the range must share the same size & species and form a
-// connected chain (seg[i].x2,y2 == seg[i+1].x1,y1).
 function simplifyDragSegments(startIdx, endIdx) {
-  if (endIdx - startIdx < 2) return;            // nothing to simplify
-
+  if (endIdx - startIdx < 2) return;
   const segs = pendingStrokes.slice(startIdx, endIdx);
-  // Extract the polyline of points from the chain
   const pts = [{ x: segs[0].x1, y: segs[0].y1 }];
   for (const s of segs) pts.push({ x: s.x2, y: s.y2 });
-
   const size = segs[0].size;
   const species = segs[0].species;
-
-  // Greedy merge: walk through pts, extending the current segment as far as
-  // possible while all intermediate points stay within tolerance.
   const merged = [];
   let anchor = 0;
   while (anchor < pts.length - 1) {
@@ -1252,43 +1332,26 @@ function simplifyDragSegments(startIdx, endIdx) {
     for (let cand = anchor + 2; cand < pts.length; cand++) {
       let ok = true;
       for (let mid = anchor + 1; mid < cand; mid++) {
-        const d = perpendicularDist(
-          pts[mid].x, pts[mid].y,
-          pts[anchor].x, pts[anchor].y,
-          pts[cand].x, pts[cand].y
-        );
+        const d = perpendicularDist(pts[mid].x, pts[mid].y, pts[anchor].x, pts[anchor].y, pts[cand].x, pts[cand].y);
         if (d > SIMPLIFY_TOLERANCE) { ok = false; break; }
       }
       if (ok) farthest = cand; else break;
     }
-    const seg = {
-      x1: pts[anchor].x, y1: pts[anchor].y,
-      x2: pts[farthest].x, y2: pts[farthest].y,
-      size, species,
-    };
+    const seg = { x1: pts[anchor].x, y1: pts[anchor].y, x2: pts[farthest].x, y2: pts[farthest].y, size, species };
     seg.area = segmentArea(seg);
     merged.push(seg);
     anchor = farthest;
   }
-
-  // Splice the simplified segments back into pendingStrokes
-  const removed = endIdx - startIdx;
-  pendingStrokes.splice(startIdx, removed, ...merged);
-
-  // Recalculate usedBudget from scratch (simplification changes areas)
+  pendingStrokes.splice(startIdx, endIdx - startIdx, ...merged);
   usedBudget = 0;
   for (const s of pendingStrokes) usedBudget += s.area || segmentArea(s);
-
-  // Redraw overlay with the simplified strokes
   redrawOverlay();
   refreshFabs();
 }
 
-// ── Draw a single line segment onto the overlay canvas ──────────────────
 function drawOverlaySegment(seg) {
-  const d = Math.max(seg.size * 2, 2);      // stroke width = brush diameter
+  const d = Math.max(seg.size * 2, 2);
   if (seg.species === 0) {
-    // Eraser: dashed red line
     overlayCtx.strokeStyle = "rgba(255,100,100,0.7)";
     overlayCtx.lineWidth = d;
     overlayCtx.lineCap = "round";
@@ -1302,8 +1365,6 @@ function drawOverlaySegment(seg) {
   }
   const sp = speciesById[seg.species];
   const color = sp ? sp.color : "#fff";
-
-  // Filled stroke
   overlayCtx.strokeStyle = color;
   overlayCtx.lineWidth = d;
   overlayCtx.lineCap = "round";
@@ -1313,8 +1374,6 @@ function drawOverlaySegment(seg) {
   overlayCtx.lineTo(seg.x2, seg.y2);
   overlayCtx.stroke();
   overlayCtx.globalAlpha = 1.0;
-
-  // White border for visibility
   overlayCtx.strokeStyle = "rgba(255,255,255,0.45)";
   overlayCtx.lineWidth = d + 1.5;
   overlayCtx.lineCap = "round";
@@ -1326,26 +1385,17 @@ function drawOverlaySegment(seg) {
   overlayCtx.globalAlpha = 1.0;
 }
 
-// ── Redraw the entire overlay from the pending strokes list ─────────────
-// (replaces the forward-declared stub from CANVAS SETUP)
 redrawOverlay = function() {
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  for (const s of pendingStrokes) {
-    drawOverlaySegment(s);
-  }
+  for (const s of pendingStrokes) drawOverlaySegment(s);
 };
 
-// ── Update the FAB bar visibility + budget meter ────────────────────────
 function refreshFabs() {
-  if (pendingStrokes.length > 0) {
-    fabBar.classList.add("visible");
-  } else {
-    fabBar.classList.remove("visible");
-  }
+  if (pendingStrokes.length > 0) fabBar.classList.add("visible");
+  else fabBar.classList.remove("visible");
   refreshBudget();
 }
 
-// ── Convert event coords to simulation coords ──────────────────────────
 function eventToSim(e) {
   const rect = overlayCanvas.getBoundingClientRect();
   const x = Math.floor((e.clientX - rect.left) / rect.width * WIDTH);
@@ -1354,78 +1404,59 @@ function eventToSim(e) {
   return { x, y };
 }
 
-// ── Record a local paint segment ────────────────────────────────────────
 let liveSimplifyTimer = null;
-
 function liveSimplify() {
   liveSimplifyTimer = null;
   if (!painting) return;
   const n = pendingStrokes.length;
-  if (n - dragStartIdx < 4) return;             // not enough to bother
+  if (n - dragStartIdx < 4) return;
   simplifyDragSegments(dragStartIdx, n);
 }
 
 function localPaint(e) {
-  if (budgetExhausted()) return;                // budget exhausted
+  if (budgetExhausted()) return;
   const pos = eventToSim(e);
   if (!pos) return;
   const from = lastPaintPos || pos;
-  const seg = { x1: from.x, y1: from.y, x2: pos.x, y2: pos.y,
-                size: brushSize, species: selectedSpecies };
-  if (wouldExceedBudget(seg)) return;           // would exceed budget
-  const area = segmentArea(seg);
-  seg.area = area;
-  usedBudget += area;
+  const seg = { x1: from.x, y1: from.y, x2: pos.x, y2: pos.y, size: brushSize, species: selectedSpecies };
+  if (wouldExceedBudget(seg)) return;
+  seg.area = segmentArea(seg);
+  usedBudget += seg.area;
   pendingStrokes.push(seg);
   drawOverlaySegment(seg);
   lastPaintPos = pos;
   refreshFabs();
-
-  // Schedule live simplification (throttled to every 120ms during drag)
-  if (!liveSimplifyTimer) {
-    liveSimplifyTimer = setTimeout(liveSimplify, 120);
-  }
+  if (!liveSimplifyTimer) liveSimplifyTimer = setTimeout(liveSimplify, 120);
 }
 
-// ── Sending state (progress bar + disable UI) ───────────────────────────
+// ── Sending state ────────────────────────────────────────────────────────────
 let sending = false;
 const sendProgressEl = document.getElementById("send-progress");
-
 const TX_PROGRESS_EXPECTED_S = 30;
 const TX_PROGRESS_WARN_S    = 45;
 const TX_PROGRESS_ERR_S     = 90;
 let _txRaf = null;
 let _txStart = 0;
 
-function txProgressPct(elapsedS) {
-  if (elapsedS <= TX_PROGRESS_EXPECTED_S) {
-    const t = elapsedS / TX_PROGRESS_EXPECTED_S;
-    return 95 * (1 - Math.pow(1 - t, 3));
-  }
-  return 95 + 5 * (1 - Math.exp(-(elapsedS - TX_PROGRESS_EXPECTED_S) / 120));
+function txProgressPct(s) {
+  if (s <= TX_PROGRESS_EXPECTED_S) { const t = s / TX_PROGRESS_EXPECTED_S; return 95 * (1 - Math.pow(1 - t, 3)); }
+  return 95 + 5 * (1 - Math.exp(-(s - TX_PROGRESS_EXPECTED_S) / 120));
 }
 
-function txProgressUpdate(pct, elapsedS) {
+function txProgressUpdate(pct, s) {
   if (!sendProgressEl) return;
-  const fill  = sendProgressEl.querySelector(".tx-fill");
+  const fill = sendProgressEl.querySelector(".tx-fill");
   const label = sendProgressEl.querySelector(".tx-label");
   if (fill) {
     fill.style.width = pct + "%";
-    if (elapsedS >= TX_PROGRESS_ERR_S) fill.className = "tx-fill err";
-    else if (elapsedS >= TX_PROGRESS_WARN_S) fill.className = "tx-fill warn";
+    if (s >= TX_PROGRESS_ERR_S) fill.className = "tx-fill err";
+    else if (s >= TX_PROGRESS_WARN_S) fill.className = "tx-fill warn";
     else fill.className = "tx-fill";
   }
   if (label) {
-    if (elapsedS >= TX_PROGRESS_ERR_S) {
-      label.textContent = "Taking longer than it should; check Discord";
-      label.className = "tx-label err";
-    } else if (elapsedS >= TX_PROGRESS_WARN_S) {
-      label.textContent = "Taking longer than expected";
-      label.className = "tx-label warn";
-    } else {
-      label.textContent = "Sending...";
-      label.className = "tx-label";
-    }
+    if (s >= TX_PROGRESS_ERR_S) { label.textContent = "Taking longer than it should; check Discord"; label.className = "tx-label err"; }
+    else if (s >= TX_PROGRESS_WARN_S) { label.textContent = "Taking longer than expected"; label.className = "tx-label warn"; }
+    else { label.textContent = "Sending..."; label.className = "tx-label"; }
   }
 }
 
@@ -1436,27 +1467,19 @@ function startTxProgress() {
   const label = sendProgressEl && sendProgressEl.querySelector(".tx-label");
   if (fill) { fill.style.width = "0%"; fill.className = "tx-fill"; }
   if (label) { label.textContent = "Sending..."; label.className = "tx-label"; }
-  function tick() {
-    const s = (performance.now() - _txStart) / 1000;
-    txProgressUpdate(txProgressPct(s), s);
-    _txRaf = requestAnimationFrame(tick);
-  }
+  function tick() { const s = (performance.now() - _txStart) / 1000; txProgressUpdate(txProgressPct(s), s); _txRaf = requestAnimationFrame(tick); }
   _txRaf = requestAnimationFrame(tick);
 }
-
 function completeTxProgress() {
   stopTxProgress();
   if (!sendProgressEl) return;
-  const fill  = sendProgressEl.querySelector(".tx-fill");
+  const fill = sendProgressEl.querySelector(".tx-fill");
   const label = sendProgressEl.querySelector(".tx-label");
   if (fill) { fill.className = "tx-fill ok"; fill.style.width = "100%"; }
   if (label) { label.textContent = "Confirmed!"; label.className = "tx-label"; }
   setTimeout(() => sendProgressEl.classList.add("hide"), 1200);
 }
-
-function stopTxProgress() {
-  if (_txRaf) { cancelAnimationFrame(_txRaf); _txRaf = null; }
-}
+function stopTxProgress() { if (_txRaf) { cancelAnimationFrame(_txRaf); _txRaf = null; } }
 
 function setSending(v, txSucceeded) {
   sending = !!v;
@@ -1475,27 +1498,13 @@ function setSending(v, txSucceeded) {
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
 
-// ── Send all pending strokes as a transaction via usernode-bridge ────────
 btnSend.addEventListener("click", async () => {
   if (sending || !pendingStrokes.length) return;
-
   try {
     setSending(true);
-
-    // Convert strokes to compact array format: [x1, y1, x2, y2, size, species]
-    const strokes = pendingStrokes.map(s =>
-      [s.x1, s.y1, s.x2, s.y2, s.size, s.species]
-    );
-
-    const memo = JSON.stringify({
-      app: "falling-sands",
-      type: "draw",
-      s: strokes,
-    });
-
+    const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
+    const memo = JSON.stringify({ app: "falling-sands", type: "draw", s: strokes });
     await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-
-    // Success — clear the overlay
     pendingStrokes = [];
     usedBudget = 0;
     overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
@@ -1508,7 +1517,6 @@ btnSend.addEventListener("click", async () => {
   }
 });
 
-// ── Discard all pending strokes ─────────────────────────────────────────
 btnDiscard.addEventListener("click", () => {
   pendingStrokes = [];
   usedBudget = 0;
@@ -1516,20 +1524,16 @@ btnDiscard.addEventListener("click", () => {
   refreshFabs();
 });
 
-// ── Pointer events on the overlay canvas ────────────────────────────────
 function startPaint(e) {
   painting = true;
-  lastPaintPos = null;               // new stroke — no previous point
-  dragStartIdx = pendingStrokes.length;   // mark where this drag's segments begin
+  lastPaintPos = null;
+  dragStartIdx = pendingStrokes.length;
   localPaint(e);
 }
-function movePaint(e) {
-  if (painting) localPaint(e);
-}
+function movePaint(e) { if (painting) localPaint(e); }
 function endPaint() {
   if (painting) {
     if (liveSimplifyTimer) { clearTimeout(liveSimplifyTimer); liveSimplifyTimer = null; }
-    // Final simplify pass on this drag
     simplifyDragSegments(dragStartIdx, pendingStrokes.length);
   }
   painting = false;
@@ -1539,19 +1543,11 @@ function endPaint() {
 overlayCanvas.addEventListener("mousedown", startPaint);
 overlayCanvas.addEventListener("mousemove", movePaint);
 window.addEventListener("mouseup", endPaint);
-
-// Touch support
-overlayCanvas.addEventListener("touchstart", (e) => {
-  e.preventDefault();
-  for (const touch of e.touches) startPaint(touch);
-}, { passive: false });
-overlayCanvas.addEventListener("touchmove", (e) => {
-  e.preventDefault();
-  if (painting) for (const touch of e.touches) movePaint(touch);
-}, { passive: false });
+overlayCanvas.addEventListener("touchstart", (e) => { e.preventDefault(); for (const touch of e.touches) startPaint(touch); }, { passive: false });
+overlayCanvas.addEventListener("touchmove", (e) => { e.preventDefault(); if (painting) for (const touch of e.touches) movePaint(touch); }, { passive: false });
 window.addEventListener("touchend", endPaint);
 
-// ── Info overlay toggle ─────────────────────────────────────────────────
+// ── Info overlay toggle ─────────────────────────────────────────────────────
 (function () {
   const btn = document.getElementById("info-btn");
   const overlay = document.getElementById("info-overlay");

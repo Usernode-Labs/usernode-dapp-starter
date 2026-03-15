@@ -5,7 +5,7 @@
  * Hosts all dapp examples from a single process:
  *   /               — dapp-starter demo (index.html)
  *   /opinion-market — Opinion Market
- *   /falling-sands  — Falling Sands (with server-side WASM + WebSocket streaming)
+ *   /falling-sands  — Falling Sands (client-side WASM + server snapshot/relay)
  *   /last-one-wins  — Last One Wins token game (with server-side payouts)
  *
  * Also provides:
@@ -14,7 +14,7 @@
  *   /__mock/*             — mock transaction endpoints (--local-dev)
  *   /__game/state         — Last One Wins game state API
  *   /explorer-api/*       — explorer proxy
- *   WebSocket             — falling-sands simulation stream
+ *   WebSocket             — falling-sands transaction relay
  */
 
 const http = require("http");
@@ -54,7 +54,10 @@ const OM_ADMIN_PUBKEY = process.env.OM_ADMIN_PUBKEY || "";
 const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
-const mockApi = createMockApi({ localDev: LOCAL_DEV });
+const mockApi = createMockApi({
+  localDev: LOCAL_DEV,
+  delayOverrides: { [SANDS_APP_PUBKEY]: 3000 },
+});
 
 // ── Falling-sands engine ─────────────────────────────────────────────────────
 const engine = createEngine({ wasmLoaderPath: require.resolve("./falling-sands/wasm-loader") });
@@ -73,6 +76,8 @@ const sandsPoller = createChainPoller({
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
       const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
       engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
+      const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
+      engine.addTransaction({ timestamp_ms: timestampMs, memo, from: tx.source || tx.from_pubkey || tx.from || "unknown" });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
@@ -157,6 +162,30 @@ const server = http.createServer((req, res) => {
     }
   }
 
+  // Falling-sands browser WASM loader
+  if (pathname === "/wasm-browser.js" || pathname === "/falling-sands/wasm-browser.js") {
+    try {
+      const buf = fs.readFileSync(path.join(__dirname, "falling-sands", "wasm-browser.js"));
+      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read wasm-browser.js: " + e.message);
+    }
+  }
+
+  // Falling-sands WASM binary
+  if (pathname === "/sandtable_bg.wasm" || pathname === "/falling-sands/sandtable_bg.wasm") {
+    try {
+      const buf = fs.readFileSync(path.join(__dirname, "falling-sands", "sandspiel", "crate", "pkg", "sandtable_bg.wasm"));
+      return send(res, 200, { "Content-Type": "application/wasm", "Cache-Control": "public, max-age=86400" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read WASM: " + e.message);
+    }
+  }
+
+  // Falling-sands snapshot and transactions APIs
+  if (pathname === "/__sands/snapshot") return engine.handleSnapshotRequest(req, res);
+  if (pathname === "/__sands/transactions") return engine.handleTransactionsRequest(req, res);
+
   // Last One Wins game state API
   if (lastOneWins.handleRequest(req, res, pathname)) return;
 
@@ -216,12 +245,13 @@ engine.startTickLoop();
 
 // ── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, "0.0.0.0", () => {
-  const { width, height, tickHz } = engine.config;
+  const { width, height, tickHz, epoch } = engine.config;
   console.log(`\nCombined examples server running at http://localhost:${PORT}`);
   console.log(`  /               — dapp-starter demo`);
   console.log(`  /opinion-market — Opinion Market`);
-  console.log(`  /falling-sands  — Falling Sands (WASM + WebSocket)`);
+  console.log(`  /falling-sands  — Falling Sands (client-side WASM + server relay)`);
   console.log(`  /last-one-wins  — Last One Wins token game`);
   console.log(`  Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);
+  console.log(`  Tick epoch: ${new Date(epoch).toISOString()}`);
   console.log(`  Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}\n`);
 });

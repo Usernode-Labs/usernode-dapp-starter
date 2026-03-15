@@ -1,9 +1,9 @@
 /**
  * Standalone falling-sands server.
  *
- * Runs the sandspiel simulation server-side and streams the cell state to all
- * connected browser clients over WebSocket. For independent local development
- * of the falling-sands example.
+ * Runs the sandspiel simulation server-side for snapshot generation, relays
+ * transactions to connected browser clients via WebSocket. Clients run the
+ * WASM simulation locally for rendering.
  *
  * Usage:
  *   npm install
@@ -28,6 +28,14 @@ const BRIDGE_PATH = resolvePath(
   path.join(__dirname, "..", "..", "usernode-bridge.js"),
 );
 
+const USERNAMES_PATH = resolvePath(
+  path.join(__dirname, "usernode-usernames.js"),
+  path.join(__dirname, "..", "..", "usernode-usernames.js"),
+);
+
+const WASM_PATH = path.join(__dirname, "sandspiel", "crate", "pkg", "sandtable_bg.wasm");
+const WASM_BROWSER_PATH = path.join(__dirname, "wasm-browser.js");
+
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({ localDev: LOCAL_DEV });
 
@@ -48,6 +56,12 @@ const poller = createChainPoller({
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
       const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
       engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
+      const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
+      engine.addTransaction({
+        timestamp_ms: timestampMs,
+        memo,
+        from: tx.source || tx.from_pubkey || tx.from || "unknown",
+      });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
@@ -60,6 +74,12 @@ function send(res, code, headers, body) {
   res.end(body);
 }
 
+const MIME_TYPES = {
+  ".js": "application/javascript; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".html": "text/html; charset=utf-8",
+};
+
 const server = http.createServer((req, res) => {
   const pathname = (() => {
     try { return new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname; }
@@ -70,10 +90,49 @@ const server = http.createServer((req, res) => {
   if (pathname === "/usernode-bridge.js") {
     try {
       const buf = fs.readFileSync(BRIDGE_PATH);
-      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+      return send(res, 200, { "Content-Type": MIME_TYPES[".js"], "Cache-Control": "no-store" }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-bridge.js: " + e.message);
     }
+  }
+
+  if (pathname === "/usernode-usernames.js") {
+    try {
+      const buf = fs.readFileSync(USERNAMES_PATH);
+      return send(res, 200, { "Content-Type": MIME_TYPES[".js"], "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-usernames.js: " + e.message);
+    }
+  }
+
+  // Serve the browser WASM loader
+  if (pathname === "/wasm-browser.js") {
+    try {
+      const buf = fs.readFileSync(WASM_BROWSER_PATH);
+      return send(res, 200, { "Content-Type": MIME_TYPES[".js"], "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read wasm-browser.js: " + e.message);
+    }
+  }
+
+  // Serve the WASM binary
+  if (pathname === "/sandtable_bg.wasm") {
+    try {
+      const buf = fs.readFileSync(WASM_PATH);
+      return send(res, 200, { "Content-Type": MIME_TYPES[".wasm"], "Cache-Control": "public, max-age=86400" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read WASM: " + e.message);
+    }
+  }
+
+  // Snapshot API
+  if (pathname === "/__sands/snapshot") {
+    return engine.handleSnapshotRequest(req, res);
+  }
+
+  // Transactions API
+  if (pathname === "/__sands/transactions") {
+    return engine.handleTransactionsRequest(req, res);
   }
 
   // Mock API
@@ -86,7 +145,7 @@ const server = http.createServer((req, res) => {
   if (pathname === "/" || pathname === "/index.html") {
     try {
       const buf = fs.readFileSync(path.join(__dirname, "index.html"));
-      return send(res, 200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }, buf);
+      return send(res, 200, { "Content-Type": MIME_TYPES[".html"], "Cache-Control": "no-store" }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read index.html: " + e.message);
     }
@@ -101,7 +160,7 @@ engine.startTickLoop();
 
 // ── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, "0.0.0.0", () => {
-  const { width, height, tickHz } = engine.config;
+  const { width, height, tickHz, epoch } = engine.config;
   console.log(`\nFalling Sands server running at http://localhost:${PORT}`);
 
   const nets = require("os").networkInterfaces();
@@ -114,5 +173,7 @@ server.listen(PORT, "0.0.0.0", () => {
   }
 
   console.log(`   Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);
-  console.log(`   Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}\n`);
+  console.log(`   Tick epoch: ${new Date(epoch).toISOString()}`);
+  console.log(`   Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}`);
+  console.log(`   Clients run WASM locally — server relays transactions + snapshots\n`);
 });

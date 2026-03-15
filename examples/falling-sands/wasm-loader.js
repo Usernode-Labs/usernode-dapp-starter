@@ -4,10 +4,33 @@
  * Loads the sandtable WASM module (built with wasm-pack --target nodejs)
  * and re-exports Universe, Species, and the raw WASM memory so the server
  * can read cell buffers directly.
+ *
+ * Uses a seeded PRNG (mulberry32) instead of Math.random() so that the
+ * simulation is fully deterministic given the same seed and input sequence.
  */
 
 const fs = require("fs");
 const path = require("path");
+
+// ── Seeded PRNG (mulberry32) ────────────────────────────────────────────────
+// Deterministic replacement for Math.random(). The same seed produces the same
+// sequence on every run, on every platform. Shared with wasm-browser.js.
+const PRNG_SEED = 0xDEAD_BEEF;
+
+function createSeededRandom(seed) {
+  let s = seed >>> 0;
+  function mulberry32() {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  mulberry32.getState = () => s;
+  mulberry32.setState = (v) => { s = v >>> 0; };
+  return mulberry32;
+}
+
+const seededRandom = createSeededRandom(PRNG_SEED);
 
 // ── Load & instantiate the WASM module ──────────────────────────────────────
 
@@ -58,7 +81,7 @@ const importProxy = new Proxy(knownImports, {
     if (prop in target) return target[prop];
     if (typeof prop === "string") {
       if (prop.startsWith("__wbg_random_"))
-        return () => Math.random();
+        return seededRandom;
       if (prop.startsWith("__wbg___wbindgen_throw_"))
         return (arg0, arg1) => {
           throw new Error(getStringFromWasm(arg0, arg1));
@@ -150,6 +173,18 @@ class Universe {
   set_flags(flags) {
     wasm.universe_set_flags(this._ptr, flags);
   }
+  generation() {
+    return wasm.universe_generation(this._ptr);
+  }
+  set_generation(gen) {
+    wasm.universe_set_generation(this._ptr, gen);
+  }
+  rng_state() {
+    return wasm.universe_rng_state(this._ptr);
+  }
+  set_rng_state(state) {
+    wasm.universe_set_rng_state(this._ptr, state);
+  }
 }
 
 // ── Exports ─────────────────────────────────────────────────────────────────
@@ -159,4 +194,6 @@ module.exports = {
   Species,
   /** Raw WebAssembly.Memory – use .buffer to build typed array views. */
   memory: wasm.memory,
+  /** PRNG handle — call .getState()/.setState(n) to save/restore for checkpoints. */
+  prng: seededRandom,
 };

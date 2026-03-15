@@ -176,6 +176,7 @@ function handleExplorerProxy(req, res, pathname, opts) {
 function createMockApi(opts) {
   const localDev = (opts && opts.localDev) || false;
   const delayMs = (opts && opts.delayMs) || 5000;
+  const delayOverrides = (opts && opts.delayOverrides) || {};
   const transactions = [];
 
   function handleRequest(req, res, pathname) {
@@ -206,7 +207,8 @@ function createMockApi(opts) {
         }
         console.log(`[tx] received from=${from_pubkey.slice(0, 16)}… dest=${destination_pubkey.slice(0, 16)}…`);
         const tx = { id: crypto.randomUUID(), from_pubkey, destination_pubkey, amount, memo, created_at: new Date().toISOString() };
-        setTimeout(() => { transactions.push(tx); }, delayMs);
+        const txDelay = (destination_pubkey in delayOverrides) ? delayOverrides[destination_pubkey] : delayMs;
+        setTimeout(() => { transactions.push(tx); }, txDelay);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ queued: true, tx }));
       }).catch((e) => {

@@ -21,8 +21,8 @@ RUN cd falling-sands && { [ -f package-lock.json ] && npm ci --omit=dev || npm i
 # Shared library (so require('../lib/dapp-server') resolves)
 COPY lib/ lib/
 
-# Falling-sands server, engine, loader, client
-COPY falling-sands/server.js falling-sands/engine.js falling-sands/wasm-loader.js falling-sands/index.html ./falling-sands/
+# Falling-sands server, engine, loaders (node + browser), client
+COPY falling-sands/server.js falling-sands/engine.js falling-sands/wasm-loader.js falling-sands/wasm-browser.js falling-sands/index.html ./falling-sands/
 COPY falling-sands/usernode-bridge.js ./falling-sands/
 
 # Built WASM package

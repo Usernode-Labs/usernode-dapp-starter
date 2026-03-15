@@ -1,90 +1,62 @@
 /**
  * Falling-sands simulation engine.
  *
- * Encapsulates the WASM universe, WebSocket streaming with delta compression,
- * and draw-memo processing. Used by both the standalone falling-sands server
- * and the combined examples server.
+ * Runs the WASM universe server-side for snapshot generation and relays
+ * transactions to connected clients via WebSocket. Clients run their own
+ * local WASM simulation for rendering (see wasm-browser.js + index.html).
  *
  * Usage:
  *   const createEngine = require('./engine');
  *   const engine = createEngine({ wasmLoaderPath: './wasm-loader' });
  *   engine.attachWebSocket(httpServer);
  *   engine.startTickLoop();
- *   engine.applyDrawMemo(memo, 'user123');
+ *   engine.addTransaction({ timestamp_ms, memo, from });
  */
 
 const zlib = require("zlib");
+const fs = require("fs");
+const path = require("path");
 const WebSocket = require("ws");
+const { seedUniverse, WIDTH, HEIGHT, CELL_BYTES, FRAME_SIZE } = require("./seed-content");
 
-const WIDTH = 300;
-const HEIGHT = 450;
 const TICK_HZ = 30;
-const CELL_BYTES = 4;
-const FRAME_SIZE = WIDTH * HEIGHT * CELL_BYTES;
-const MSG_KEYFRAME = 0x01;
-const MSG_DELTA = 0x02;
+const TICK_INTERVAL_MS = 1000 / TICK_HZ;
 const PING_INTERVAL = 20_000;
 
-const FLAG_OPEN_BOTTOM = 1;
-const FLAG_SOURCES = 2;
-const FLAG_PLANT_ABSORBS = 4;
+// Tick epoch: January 1, 2026 00:00:00 UTC.
+// All tick numbers are derived from (timestamp_ms - TICK_EPOCH) / TICK_INTERVAL_MS.
+// This constant must be identical in server (engine.js) and client (index.html).
+const TICK_EPOCH = 1767225600000;
+
+const SNAPSHOT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5;    // every 5 seconds
+const MAX_CHECKPOINTS = 24;
+
+function timestampToTick(timestampMs) {
+  return Math.floor((timestampMs - TICK_EPOCH) / TICK_INTERVAL_MS);
+}
+
+function tickToTimestamp(tick) {
+  return TICK_EPOCH + tick * TICK_INTERVAL_MS;
+}
 
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
-  const { Universe, Species, memory } = require(wasmLoaderPath);
+  const snapshotDir = (opts && opts.snapshotDir) || __dirname;
+  const { Universe, Species, memory, prng } = require(wasmLoaderPath);
 
   const universe = Universe.new(WIDTH, HEIGHT);
 
-  const openBottom = process.env.FALLING_SANDS_OPEN_BOTTOM !== "false";
-  const sourcesEnabled = process.env.FALLING_SANDS_SOURCES !== "false";
-  const plantAbsorbs = process.env.FALLING_SANDS_PLANT_ABSORBS !== "false";
-  let flags = 0;
-  if (openBottom) flags |= FLAG_OPEN_BOTTOM;
-  if (sourcesEnabled) flags |= FLAG_SOURCES;
-  if (plantAbsorbs) flags |= FLAG_PLANT_ABSORBS;
-  if (flags) universe.set_flags(flags);
+  const { sourcesEnabled } = seedUniverse(universe, Species, memory, {
+    openBottom: process.env.FALLING_SANDS_OPEN_BOTTOM !== "false",
+    sources: process.env.FALLING_SANDS_SOURCES !== "false",
+    plantAbsorbs: process.env.FALLING_SANDS_PLANT_ABSORBS !== "false",
+  });
 
-  // Neutralise the wind field
-  const windsPtr = universe.winds();
-  const winds = new Uint8Array(memory.buffer, windsPtr, FRAME_SIZE);
-  for (let i = 0; i < winds.length; i += 4) {
-    winds[i]     = 126;
-    winds[i + 1] = 126;
-    winds[i + 2] = 0;
-    winds[i + 3] = 0;
-  }
+  // ── Tick state ──────────────────────────────────────────────────────────
 
-  // Seed initial content
-  if (sourcesEnabled) {
-    const srcY = Math.round(HEIGHT / 8);
-    const gap = WIDTH / 5;
-    universe.paint(Math.round(gap * 1), srcY, 5, Species.Spout);
-    universe.paint(Math.round(gap * 2), srcY, 5, Species.SandSource);
-    universe.paint(Math.round(gap * 3), srcY, 5, Species.Torch);
-    universe.paint(Math.round(gap * 4), srcY, 5, Species.OilWell);
-
-    // Small wall cups under the water, sand, and oil sources
-    const cupBottom = Math.round(HEIGHT * 7 / 8);
-    const cupW = 18;
-    const cupH = 14;
-    const cupSources = [1, 2, 4]; // indices into gap multiplier (skip torch at 3)
-    for (const si of cupSources) {
-      const cx = Math.round(gap * si);
-      for (let dy = 0; dy <= cupH; dy++) {
-        universe.paint(cx - cupW, cupBottom - dy, 2, Species.Wall);
-        universe.paint(cx + cupW, cupBottom - dy, 2, Species.Wall);
-      }
-      for (let dx = -cupW; dx <= cupW; dx += 2) {
-        universe.paint(cx + dx, cupBottom, 2, Species.Wall);
-      }
-    }
-  } else {
-    universe.paint(150, 40, 8, Species.Sand);
-    universe.paint(100, 40, 6, Species.Sand);
-    universe.paint(200, 40, 6, Species.Sand);
-    universe.paint(150, 100, 6, Species.Water);
-    universe.paint(100, 120, 5, Species.Water);
-  }
+  let tickCount = timestampToTick(Date.now());
+  let ticksProcessed = 0;
 
   // ── Draw helpers ─────────────────────────────────────────────────────────
 
@@ -132,19 +104,150 @@ function createEngine(opts) {
         const memo = JSON.parse(tx.memo);
         const from = (tx.from_pubkey || "").slice(0, 16);
         applyDrawMemo(memo, `${from}… (mock)`);
+        const timestampMs = tx.created_at ? Date.parse(tx.created_at) : Date.now();
+        const ageMs = Date.now() - timestampMs;
+        const assignedTick = timestampToTick(timestampMs);
+        console.log(`[sands-tx] mock tx picked up: created_at age=${(ageMs / 1000).toFixed(1)}s  assignedTick=${assignedTick}  serverTick=${tickCount}`);
+        addTransaction({
+          timestamp_ms: timestampMs,
+          memo,
+          from: tx.from_pubkey || "mock",
+        });
       } catch (_) {}
     }
     lastProcessedTxIdx = transactions.length;
   }
 
-  // ── WebSocket streaming ────────────────────────────────────────────────
+  // ── Snapshot system ─────────────────────────────────────────────────────
+
+  let lastSnapshot = null;
+  let transactionsSinceSnapshot = [];
+  let lastSnapshotTime = Date.now();
+
+  function captureSnapshot() {
+    const cellsCopy = Buffer.from(new Uint8Array(memory.buffer, universe.cells(), FRAME_SIZE));
+    const windsCopy = Buffer.from(new Uint8Array(memory.buffer, universe.winds(), FRAME_SIZE));
+    const burnsCopy = Buffer.from(new Uint8Array(memory.buffer, universe.burns(), FRAME_SIZE));
+
+    const allBufs = Buffer.concat([cellsCopy, windsCopy, burnsCopy]);
+    const compressed = zlib.deflateSync(allBufs, { level: 1 });
+    lastSnapshot = {
+      tick: tickCount,
+      timestamp: Date.now(),
+      cells_b64: compressed.toString("base64"),
+      prng_state: prng ? prng.getState() : 0,
+      generation: universe.generation ? universe.generation() : 0,
+      wasm_rng_state: universe.rng_state ? String(universe.rng_state()) : "0",
+      buffers: 3,
+      width: WIDTH,
+      height: HEIGHT,
+    };
+    transactionsSinceSnapshot = [];
+    lastSnapshotTime = Date.now();
+    console.log(`[snapshot] created at tick ${tickCount} (${(compressed.length / 1024).toFixed(1)} KB compressed)`);
+    return lastSnapshot;
+  }
+
+  function saveSnapshotToDisk() {
+    if (!lastSnapshot) return;
+    try {
+      const filePath = path.join(snapshotDir, "snapshot.json");
+      fs.writeFileSync(filePath, JSON.stringify(lastSnapshot));
+      console.log(`[snapshot] saved to ${filePath}`);
+    } catch (e) {
+      console.warn(`[snapshot] failed to save: ${e.message}`);
+    }
+  }
+
+  function loadSnapshotFromDisk() {
+    try {
+      const filePath = path.join(snapshotDir, "snapshot.json");
+      if (!fs.existsSync(filePath)) return false;
+      const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (!data.cells_b64 || !data.tick) return false;
+
+      const compressed = Buffer.from(data.cells_b64, "base64");
+      const raw = zlib.inflateSync(compressed);
+
+      if (data.buffers === 3 && raw.length === FRAME_SIZE * 3) {
+        new Uint8Array(memory.buffer, universe.cells(), FRAME_SIZE)
+          .set(new Uint8Array(raw.buffer, raw.byteOffset, FRAME_SIZE));
+        new Uint8Array(memory.buffer, universe.winds(), FRAME_SIZE)
+          .set(new Uint8Array(raw.buffer, raw.byteOffset + FRAME_SIZE, FRAME_SIZE));
+        new Uint8Array(memory.buffer, universe.burns(), FRAME_SIZE)
+          .set(new Uint8Array(raw.buffer, raw.byteOffset + FRAME_SIZE * 2, FRAME_SIZE));
+      } else {
+        new Uint8Array(memory.buffer, universe.cells(), FRAME_SIZE)
+          .set(new Uint8Array(raw.buffer, raw.byteOffset, raw.length));
+      }
+
+      tickCount = data.tick;
+      if (prng && data.prng_state !== undefined) prng.setState(data.prng_state);
+      if (universe.set_generation && data.generation !== undefined) universe.set_generation(data.generation);
+      if (universe.set_rng_state && data.wasm_rng_state !== undefined) {
+        universe.set_rng_state(BigInt(data.wasm_rng_state));
+      }
+      lastSnapshot = data;
+      console.log(`[snapshot] loaded from disk at tick ${tickCount}`);
+      return true;
+    } catch (e) {
+      console.warn(`[snapshot] failed to load from disk: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Try to restore from disk; otherwise create initial snapshot
+  if (!loadSnapshotFromDisk()) {
+    captureSnapshot();
+  }
+
+  // ── Transaction management ──────────────────────────────────────────────
+
+  function addTransaction(txData) {
+    const tx = {
+      timestamp_ms: txData.timestamp_ms || Date.now(),
+      memo: txData.memo,
+      from: txData.from || "unknown",
+    };
+    transactionsSinceSnapshot.push(tx);
+    broadcastTransaction(tx);
+  }
+
+  // ── WebSocket — transaction relay ───────────────────────────────────────
 
   let wss = null;
-  const needsKeyframe = new WeakSet();
   const readyClients = new WeakSet();
 
   function safeSend(ws, data) {
-    try { if (ws.readyState === WebSocket.OPEN) ws.send(data); } catch (e) { console.error("send error:", e.message); }
+    try { if (ws.readyState === WebSocket.OPEN) ws.send(data); }
+    catch (e) { console.error("send error:", e.message); }
+  }
+
+  function broadcastTransaction(tx) {
+    if (!wss) return;
+    const msg = JSON.stringify({
+      type: "tx",
+      timestamp_ms: tx.timestamp_ms,
+      memo: tx.memo,
+      from: tx.from,
+    });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
+        safeSend(client, msg);
+      }
+    }
+  }
+
+  function sendInitMessage(ws) {
+    const initMsg = {
+      type: "init",
+      config: { width: WIDTH, height: HEIGHT, sources: sourcesEnabled },
+      epoch: TICK_EPOCH,
+      tickHz: TICK_HZ,
+      snapshot: lastSnapshot,
+      transactions: transactionsSinceSnapshot,
+    };
+    safeSend(ws, JSON.stringify(initMsg));
   }
 
   function attachWebSocket(httpServer) {
@@ -180,9 +283,8 @@ function createEngine(opts) {
           const cmd = JSON.parse(msg);
           if (cmd.type === "ready") {
             if (ws.readyState !== WebSocket.OPEN) return;
-            safeSend(ws, JSON.stringify({ type: "config", width: WIDTH, height: HEIGHT, sources: sourcesEnabled }));
-            needsKeyframe.add(ws);
             readyClients.add(ws);
+            sendInitMessage(ws);
             const total = [...wss.clients].filter(c => readyClients.has(c)).length;
             console.log(`WS  client ready   (total ready: ${total})`);
           } else if (cmd.type === "reset") {
@@ -205,123 +307,72 @@ function createEngine(opts) {
 
   // ── Simulation tick loop ───────────────────────────────────────────────
 
-  let prevFrame = null;
-  let tickCount = 0;
-  let bytesSentTotal = 0;
-  let bytesSentWindow = 0;
   let lastStatsTime = Date.now();
 
   function tick() {
     universe.tick();
     tickCount++;
+    ticksProcessed++;
 
-    if (!wss || wss.clients.size === 0) { prevFrame = null; return; }
-
-    const cellPtr = universe.cells();
-    const cells = new Uint8Array(memory.buffer, cellPtr, FRAME_SIZE);
-    const frame = Buffer.from(cells);
-
-    let changedOffsets = null;
-    if (prevFrame) {
-      changedOffsets = [];
-      for (let i = 0; i < FRAME_SIZE; i += CELL_BYTES) {
-        if (frame[i] !== prevFrame[i] || frame[i+1] !== prevFrame[i+1] || frame[i+2] !== prevFrame[i+2]) {
-          changedOffsets.push(i);
-        }
-      }
+    // Periodic snapshot
+    if (Date.now() - lastSnapshotTime >= SNAPSHOT_INTERVAL_MS) {
+      captureSnapshot();
+      saveSnapshotToDisk();
     }
 
-    let anyNeedsKeyframe = false;
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && readyClients.has(client) && needsKeyframe.has(client)) {
-        anyNeedsKeyframe = true;
-        break;
-      }
+    // Periodic stats
+    const now = Date.now();
+    if (now - lastStatsTime >= 10000) {
+      const clientCount = wss ? wss.clients.size : 0;
+      const txCount = transactionsSinceSnapshot.length;
+      console.log(`[stats] tick ${tickCount}  |  ${clientCount} client(s)  |  ${txCount} txs since snapshot`);
+      lastStatsTime = now;
     }
-
-    if (changedOffsets && changedOffsets.length === 0 && !anyNeedsKeyframe) { prevFrame = frame; return; }
-
-    let keyframeMsg = null;
-    let deltaMsg = null;
-
-    function getKeyframe() {
-      if (!keyframeMsg) {
-        keyframeMsg = Buffer.alloc(1 + FRAME_SIZE);
-        keyframeMsg[0] = MSG_KEYFRAME;
-        frame.copy(keyframeMsg, 1);
-      }
-      return keyframeMsg;
-    }
-
-    if (changedOffsets && changedOffsets.length > 0) {
-      const deltaSize = 1 + 4 + changedOffsets.length * 8;
-      if (deltaSize < FRAME_SIZE) {
-        deltaMsg = Buffer.alloc(deltaSize);
-        deltaMsg[0] = MSG_DELTA;
-        deltaMsg.writeUInt32BE(changedOffsets.length, 1);
-        let pos = 5;
-        for (const off of changedOffsets) {
-          deltaMsg.writeUInt32BE(off, pos); pos += 4;
-          frame.copy(deltaMsg, pos, off, off + CELL_BYTES); pos += 4;
-        }
-      }
-    }
-
-    prevFrame = frame;
-
-    const needKF = anyNeedsKeyframe || (!deltaMsg && changedOffsets && changedOffsets.length > 0);
-    const needDelta = !!deltaMsg;
-
-    const clientsSnapshot = [];
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN || !readyClients.has(client)) continue;
-      const wantsKeyframe = needsKeyframe.has(client);
-      if (wantsKeyframe) needsKeyframe.delete(client);
-      clientsSnapshot.push({ client, wantsKeyframe });
-    }
-
-    if (clientsSnapshot.length === 0) return;
-
-    setImmediate(() => {
-      const tasks = [];
-      if (needKF) tasks.push(new Promise((res, rej) => { zlib.deflate(getKeyframe(), { level: 1 }, (e, r) => e ? rej(e) : res({ type: "keyframe", data: r })); }));
-      if (needDelta) tasks.push(new Promise((res, rej) => { zlib.deflate(deltaMsg, { level: 1 }, (e, r) => e ? rej(e) : res({ type: "delta", data: r })); }));
-      if (tasks.length === 0) return;
-
-      Promise.all(tasks).then((results) => {
-        let compKF = null, compDelta = null;
-        for (const r of results) { if (r.type === "keyframe") compKF = r.data; if (r.type === "delta") compDelta = r.data; }
-
-        for (const { client, wantsKeyframe } of clientsSnapshot) {
-          if (client.readyState !== WebSocket.OPEN) continue;
-          if (wantsKeyframe && compKF) { safeSend(client, compKF); bytesSentWindow += compKF.length; }
-          else if (compDelta) { safeSend(client, compDelta); bytesSentWindow += compDelta.length; }
-          else if (compKF) { safeSend(client, compKF); bytesSentWindow += compKF.length; }
-        }
-
-        const now = Date.now();
-        if (now - lastStatsTime >= 5000) {
-          const kbps = ((bytesSentWindow / 1024) / ((now - lastStatsTime) / 1000)).toFixed(1);
-          bytesSentTotal += bytesSentWindow;
-          console.log(`[stats] ${kbps} KB/s out  |  ${wss.clients.size} client(s)  |  tick ${tickCount}  |  total ${(bytesSentTotal / 1048576).toFixed(1)} MB`);
-          bytesSentWindow = 0;
-          lastStatsTime = now;
-        }
-      }).catch((err) => { console.error("compression error:", err.message); });
-    });
   }
 
   function startTickLoop() {
     setInterval(tick, 1000 / TICK_HZ);
   }
 
+  // ── HTTP handlers for snapshot and transactions ─────────────────────────
+
+  function handleSnapshotRequest(req, res) {
+    if (!lastSnapshot) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "No snapshot available" }));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "public, max-age=30",
+    });
+    res.end(JSON.stringify(lastSnapshot));
+  }
+
+  function handleTransactionsRequest(req, res) {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({
+      epoch: TICK_EPOCH,
+      tickHz: TICK_HZ,
+      currentTick: tickCount,
+      transactions: transactionsSinceSnapshot,
+    }));
+  }
+
   return {
     universe,
     applyDrawMemo,
+    addTransaction,
     processMockTransactions,
     attachWebSocket,
     startTickLoop,
-    config: { width: WIDTH, height: HEIGHT, tickHz: TICK_HZ },
+    handleSnapshotRequest,
+    handleTransactionsRequest,
+    captureSnapshot,
+    config: { width: WIDTH, height: HEIGHT, tickHz: TICK_HZ, epoch: TICK_EPOCH },
   };
 }
 
