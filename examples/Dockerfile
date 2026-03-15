@@ -36,6 +36,7 @@ COPY last-one-wins/game-logic.js last-one-wins/
 
 # Falling-sands engine + WASM loaders (node + browser) + built WASM package
 COPY falling-sands/engine.js falling-sands/
+COPY falling-sands/seed-content.js falling-sands/
 COPY falling-sands/wasm-loader.js falling-sands/
 COPY falling-sands/wasm-browser.js falling-sands/
 COPY --from=wasm-builder /build/sandspiel/crate/pkg/ falling-sands/sandspiel/crate/pkg/
