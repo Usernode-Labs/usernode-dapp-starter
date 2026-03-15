@@ -39,62 +39,43 @@
           Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
         background: var(--bg);
         color: var(--fg);
-        height: 100vh;
-        height: 100dvh;
-      }
-
-      main {
-        height: 100vh;
-        height: 100dvh;
-        display: flex;
-        justify-content: flex-start;
-        align-items: stretch;
-        padding: 16px;
-        box-sizing: border-box;
-      }
-
-      .shell {
-        width: 100%;
-        max-width: 900px;
-        margin: 0 auto;
-        display: block;
-      }
-
-      .appCard {
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        padding: 0;
         display: flex;
         flex-direction: column;
-        height: 100%;
-        min-height: 0;
+        height: 100vh;
+        height: 100dvh;
         overflow: hidden;
       }
 
-      .header {
+      .topBar {
         flex: 0 0 auto;
-        padding: 16px;
+        padding: 14px 16px;
         border-bottom: 1px solid var(--border);
-        position: relative;
-        z-index: 2;
         background: var(--card);
+        z-index: 2;
+      }
+      .topBar-inner {
+        max-width: 900px;
+        margin: 0 auto;
       }
 
-      .content {
+      .scrollArea {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
         touch-action: pan-y;
-        padding: 14px;
+        will-change: transform;
+        position: relative;
+        z-index: 1;
+      }
+      .scrollArea-inner {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 14px 16px;
         display: flex;
         flex-direction: column;
         align-items: stretch;
         justify-content: flex-start;
         gap: 14px;
-        will-change: transform;
-        position: relative;
-        z-index: 1;
       }
       .archivedDock {
         margin-top: auto;
@@ -404,25 +385,25 @@
     </style>
   </head>
   <body>
-    <main>
-      <div class="shell">
-        <div class="appCard">
-          <div class="header row" style="justify-content: space-between; align-items: flex-start;">
-            <h1 style="margin: 0;">Opinion Market</h1>
-            <div class="row">
-              <span class="pill hide" id="creditsDisplay" title="Your credits">
-                &#x1FA99; <code id="creditsAmount">0</code>
-              </span>
-              <button class="pill pillButton" id="headerUsernameBtn" type="button">
-                User: <code id="headerUsername">(loading...)</code>
-              </button>
-              <button class="btn small hide" id="leaderboardBtn" type="button" title="Leaderboard">&#x1F3C6;</button>
-              <button class="btn small" id="infoBtn" type="button" title="How it works">&#x2753;</button>
-              <button class="btn" id="backBtn" style="display: none;">Back</button>
-            </div>
-          </div>
+    <header class="topBar">
+      <div class="topBar-inner row" style="justify-content: space-between; align-items: flex-start;">
+        <h1 style="margin: 0;">Opinion Market</h1>
+        <div class="row">
+          <span class="pill hide" id="creditsDisplay" title="Your credits">
+            &#x1FA99; <code id="creditsAmount">0</code>
+          </span>
+          <button class="pill pillButton" id="headerUsernameBtn" type="button">
+            User: <code id="headerUsername">(loading...)</code>
+          </button>
+          <button class="btn small hide" id="leaderboardBtn" type="button" title="Leaderboard">&#x1F3C6;</button>
+          <button class="btn small" id="infoBtn" type="button" title="How it works">&#x2753;</button>
+          <button class="btn" id="backBtn" style="display: none;">Back</button>
+        </div>
+      </div>
+    </header>
 
-          <div class="content" id="scrollRoot">
+    <div class="scrollArea" id="scrollRoot">
+      <div class="scrollArea-inner">
             <!-- Onboarding -->
             <div class="panel onboarding hide" id="onboardingPanel">
               <h2>Welcome to Opinion Market</h2>
@@ -692,10 +673,8 @@
                 All data lives on the Usernode blockchain. There is no central server &mdash; every participant sees the same state derived from the same transactions.
               </p>
             </div>
-          </div>
-        </div>
       </div>
-    </main>
+    </div>
 
     <script>
       (function () {
@@ -2092,6 +2071,10 @@
 
           updateCreditsDisplay();
           syncHash();
+
+          if (latestTxs && latestTxs.length) {
+            renderSurveyDetail(computeResults(latestTxs, me, id));
+          }
         }
 
         function navigateToLeaderboard() {

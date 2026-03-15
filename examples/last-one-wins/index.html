@@ -28,28 +28,27 @@
       margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI,
         Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       background: var(--bg); color: var(--fg);
+      display: flex; flex-direction: column;
+      height: 100vh; height: 100dvh; overflow: hidden;
     }
-    main {
-      min-height: 100vh; min-height: 100dvh; width: 100%;
-      display: flex; justify-content: center; padding: 16px;
+
+    /* Three-zone layout */
+    .topBar {
+      flex: 0 0 auto; padding: 12px 16px;
+      border-bottom: 1px solid var(--border); text-align: center;
+      background: var(--card);
     }
-    .appCard {
-      width: 100%; max-width: 520px; display: flex;
-      flex-direction: column; gap: 0;
-    }
-    .header {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: 14px 14px 0 0; padding: 18px 20px 14px;
-      text-align: center;
-    }
-    .header h1 { margin: 0 0 2px; font-size: 22px; letter-spacing: 0.3px; }
-    .header .round { font-size: 13px; color: var(--muted); }
-    .content {
+    .topBar h1 { margin: 0; font-size: 20px; letter-spacing: 0.3px; }
+    .topBar .round { font-size: 13px; color: var(--muted); }
+    .scrollArea {
       flex: 1 1 auto; overflow-y: auto; min-height: 0;
-      background: var(--card); border-left: 1px solid var(--border);
-      border-right: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
-      border-radius: 0 0 14px 14px; padding: 0 20px 20px;
+      padding: 0 16px;
+    }
+    .bottomBar {
+      flex: 0 0 auto; padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
+      background: var(--card);
     }
 
     /* Hero countdown */
@@ -75,23 +74,23 @@
 
     hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
-    /* Send form */
+    /* Send form (horizontal row in footer) */
     .section-title { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
-    .send-form { display: grid; gap: 10px; }
-    .send-form label { display: grid; gap: 4px; }
-    .send-form .field-label { font-size: 12px; color: var(--muted); }
-    .send-form input {
-      width: 100%; padding: 10px 12px; border-radius: 10px;
+    .send-row {
+      display: flex; gap: 8px; align-items: center;
+    }
+    .send-row input {
+      width: 80px; flex: 0 0 80px;
+      padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--border); background: transparent;
       color: var(--fg); font-size: 16px; outline: none;
-    }
-    .send-form input:focus { border-color: var(--accent); }
-    .send-form input[type="number"] {
       font-variant-numeric: tabular-nums;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
+    .send-row input:focus { border-color: var(--accent); }
     .btn {
-      display: inline-block; padding: 12px 20px; border-radius: 10px;
+      flex: 1 1 auto;
+      display: inline-block; padding: 10px 16px; border-radius: 10px;
       border: 1px solid var(--accent); background: var(--accent);
       color: #fff; font-size: 15px; font-weight: 600;
       cursor: pointer; text-align: center; transition: opacity 0.15s;
@@ -101,12 +100,13 @@
       opacity: 0.45; cursor: not-allowed; pointer-events: none;
     }
     .error-msg {
-      font-size: 13px; color: var(--danger); margin-top: 6px;
-      min-height: 20px;
+      font-size: 13px; color: var(--danger); margin-top: 4px;
+      min-height: 0;
     }
+    .error-msg:empty { display: none; }
 
     /* Progress bar */
-    .tx-progress { width: 100%; margin: 8px 0 4px; }
+    .tx-progress { width: 100%; margin: 6px 0 2px; }
     .tx-progress .tx-progress-track {
       width: 100%; height: 6px; border-radius: 3px;
       background: var(--border); overflow: hidden;
@@ -147,7 +147,7 @@
     /* Status */
     .status-bar {
       display: flex; justify-content: space-between; align-items: center;
-      font-size: 11px; color: var(--muted); padding: 8px 0 0;
+      font-size: 11px; color: var(--muted); margin-top: 6px;
     }
     .status-dot {
       display: inline-block; width: 7px; height: 7px;
@@ -201,87 +201,80 @@
   </style>
 </head>
 <body>
-  <main>
-    <div class="appCard">
-      <div class="header">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <h1 style="margin:0;">Last One Wins</h1>
-          <button class="btn-sm secondary" id="infoToggle" type="button" style="padding:4px 10px;font-size:12px;">&#x2753;</button>
-        </div>
+  <!-- Header -->
+  <header class="topBar">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h1>Last One Wins</h1>
+      <div style="display:flex;align-items:center;gap:8px;">
         <div class="round" id="roundLabel">Round 1</div>
-        <button class="username-pill" id="usernamePill" type="button">
-          <code id="usernameDisplay">(loading...)</code>
-        </button>
-        <div class="username-panel" id="usernamePanel">
-          <div style="font-size:13px;color:var(--muted);margin-bottom:6px;">Set your display name</div>
-          <div class="inputAffix">
-            <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
-            <span id="usernameSuffix" class="inputAffixSuffix">_??????</span>
-          </div>
-          <div class="row">
-            <button class="btn-sm" id="saveUsernameBtn" type="button">Save</button>
-            <button class="btn-sm secondary" id="cancelUsernameBtn" type="button">Cancel</button>
-          </div>
-          <div class="tx-progress hide" id="usernameTxProgress">
-            <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
-            <div class="tx-progress-label">Setting username...</div>
-          </div>
-        </div>
-        <div id="infoPanel" class="hide" style="margin-top:12px;text-align:left;font-size:13px;line-height:1.6;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 6%, transparent);">
-          <p style="margin:0 0 6px;font-weight:600;">How it works</p>
-          <p style="margin:0 0 6px;">Last One Wins is a token game on the Usernode blockchain. Players send tokens to the game pot. If nobody sends for 24 hours, the <strong>last sender wins the entire pot</strong>.</p>
-          <ul style="margin:0 0 6px;padding-left:18px;">
-            <li>Send any amount of tokens to enter</li>
-            <li>Each entry resets the countdown timer</li>
-            <li>When the timer runs out, the last sender gets the full pot</li>
-            <li>A new round starts automatically after each payout</li>
-          </ul>
-          <p style="margin:0;color:var(--muted);">All game state is derived from on-chain transactions. The server tracks the timer and sends automated payouts.</p>
-        </div>
-      </div>
-      <div class="content">
-
-        <!-- Hero: countdown + pot -->
-        <div class="hero">
-          <div class="countdown waiting" id="countdown">Waiting for first entry...</div>
-          <div class="hero-label" id="countdownLabel"></div>
-          <div class="pot" id="potDisplay">0</div>
-          <div class="pot-label">tokens in the pot</div>
-          <div class="last-sender" id="lastSender"></div>
-        </div>
-
-        <hr />
-
-        <!-- Send form -->
-        <div class="section-title">Send Tokens</div>
-        <div class="send-form">
-          <label>
-            <span class="field-label">Amount</span>
-            <input id="amountInput" type="number" min="1" value="1" />
-          </label>
-          <button class="btn" id="sendBtn">Send Tokens</button>
-          <div class="error-msg" id="errorMsg"></div>
-          <div class="tx-progress hide" id="txProgress">
-            <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
-            <div class="tx-progress-label">Sending...</div>
-          </div>
-        </div>
-
-        <hr />
-
-        <!-- History -->
-        <div class="section-title">Recent Activity</div>
-        <div class="entry-list" id="entryList">
-          <div class="empty-state">No entries yet</div>
-        </div>
-
-        <div class="status-bar">
-          <span><span class="status-dot pending" id="statusDot"></span><span id="statusText">connecting...</span></span>
-          <span id="myAddress"></span>
-        </div>
+        <button class="btn-sm secondary" id="infoToggle" type="button" style="padding:4px 10px;font-size:12px;">&#x2753;</button>
       </div>
     </div>
-  </main>
+    <button class="username-pill" id="usernamePill" type="button">
+      <code id="usernameDisplay">(loading...)</code>
+    </button>
+    <div class="username-panel" id="usernamePanel">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:6px;">Set your display name</div>
+      <div class="inputAffix">
+        <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
+        <span id="usernameSuffix" class="inputAffixSuffix">_??????</span>
+      </div>
+      <div class="row">
+        <button class="btn-sm" id="saveUsernameBtn" type="button">Save</button>
+        <button class="btn-sm secondary" id="cancelUsernameBtn" type="button">Cancel</button>
+      </div>
+      <div class="tx-progress hide" id="usernameTxProgress">
+        <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+        <div class="tx-progress-label">Setting username...</div>
+      </div>
+    </div>
+    <div id="infoPanel" class="hide" style="margin-top:12px;text-align:left;font-size:13px;line-height:1.6;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 6%, transparent);">
+      <p style="margin:0 0 6px;font-weight:600;">How it works</p>
+      <p style="margin:0 0 6px;">Last One Wins is a token game on the Usernode blockchain. Players send tokens to the game pot. If nobody sends for 24 hours, the <strong>last sender wins the entire pot</strong>.</p>
+      <ul style="margin:0 0 6px;padding-left:18px;">
+        <li>Send any amount of tokens to enter</li>
+        <li>Each entry resets the countdown timer</li>
+        <li>When the timer runs out, the last sender gets the full pot</li>
+        <li>A new round starts automatically after each payout</li>
+      </ul>
+      <p style="margin:0;color:var(--muted);">All game state is derived from on-chain transactions. The server tracks the timer and sends automated payouts.</p>
+    </div>
+  </header>
+
+  <!-- Scrollable content -->
+  <div class="scrollArea">
+    <div class="hero">
+      <div class="countdown waiting" id="countdown">Waiting for first entry...</div>
+      <div class="hero-label" id="countdownLabel"></div>
+      <div class="pot" id="potDisplay">0</div>
+      <div class="pot-label">tokens in the pot</div>
+      <div class="last-sender" id="lastSender"></div>
+    </div>
+
+    <hr />
+
+    <div class="section-title">Recent Activity</div>
+    <div class="entry-list" id="entryList">
+      <div class="empty-state">No entries yet</div>
+    </div>
+  </div>
+
+  <!-- Footer: send form + status -->
+  <footer class="bottomBar">
+    <div class="send-row">
+      <input id="amountInput" type="number" min="1" value="1" placeholder="Amt" />
+      <button class="btn" id="sendBtn">Send Tokens</button>
+    </div>
+    <div class="error-msg" id="errorMsg"></div>
+    <div class="tx-progress hide" id="txProgress">
+      <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+      <div class="tx-progress-label">Sending...</div>
+    </div>
+    <div class="status-bar">
+      <span><span class="status-dot pending" id="statusDot"></span><span id="statusText">connecting...</span></span>
+      <span id="myAddress"></span>
+    </div>
+  </footer>
 
   <script>
   (function () {

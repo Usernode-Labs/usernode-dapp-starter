@@ -41,30 +41,32 @@
       }
       body {
         margin: 0;
-        overflow-x: hidden;
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
           Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
         background: var(--bg);
         color: var(--fg);
+        display: flex; flex-direction: column;
+        height: 100vh; height: 100dvh; overflow: hidden;
+      }
+      .topBar {
+        flex: 0 0 auto;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--card);
+      }
+      .topBar-inner {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      .scrollArea {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        min-height: 0;
       }
       main {
-        min-height: 100vh;
-        min-height: 100dvh;
-        width: 100%;
-        display: grid;
-        place-items: center;
-        padding: 24px;
-        overflow: hidden;
-      }
-      .card {
-        width: 100%;
-        max-width: 760px;
-        min-width: 0;
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 22px 20px;
-        overflow: hidden;
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 16px;
       }
       h1 {
         margin: 0 0 6px;
@@ -125,7 +127,7 @@
       .info-grid {
         display: grid;
         gap: 8px;
-        margin: 12px 0;
+        margin: 8px 0 0;
       }
       .info-row {
         display: flex;
@@ -271,8 +273,8 @@
     </style>
   </head>
   <body>
-    <main>
-      <div class="card">
+    <header class="topBar">
+      <div class="topBar-inner">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <h1>Usernode dapp Starter</h1>
           <a class="button" href="#" id="infoToggle" style="font-size:13px;padding:6px 12px;">&#x2753; Info</a>
@@ -288,7 +290,6 @@
           </ul>
           <p style="margin:0;color:var(--muted);">All data lives on-chain as transaction memos. No backend database required.</p>
         </div>
-
         <div class="info-grid">
           <div class="info-row">
             <span class="info-label">Address</span>
@@ -306,9 +307,11 @@
             </span>
           </div>
         </div>
+      </div>
+    </header>
 
-        <hr />
-
+    <div class="scrollArea">
+    <main>
         <h2>Balance</h2>
         <div class="balance-display" id="balanceDisplay">--</div>
         <p style="margin-top: 2px;">
@@ -386,8 +389,8 @@
           <a class="button" href="/" rel="noopener">Reload page</a>
         </div>
         <div class="tx-list" id="txList"></div>
-      </div>
     </main>
+    </div>
     <script>
       (function () {
         // ── Config ─────────────────────────────────────────────────
