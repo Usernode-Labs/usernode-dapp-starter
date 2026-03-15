@@ -1016,31 +1016,17 @@ function fastForwardTo(targetTick) {
 
 // ── Simulation tick (called at 30Hz) ────────────────────────────────────────
 
-const MAX_TICKS_PER_FRAME = 5;
-
 function simTick30Hz() {
   if (!universe) return;
 
   const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
   if (simTick >= targetTick) return;
 
-  const ticksToDo = Math.min(targetTick - simTick, MAX_TICKS_PER_FRAME);
-  for (let i = 0; i < ticksToDo; i++) {
-    while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
-      const tx = pendingTxs.shift();
-      if (tx.memo) applyDrawMemo(tx.memo);
-    }
+  // Always catch up instantly — never play visibly fast.
+  const ticksBefore = simTick;
+  fastForwardTo(targetTick);
+  ticksThisSecond += simTick - ticksBefore;
 
-    universe.tick();
-    simTick++;
-    ticksThisSecond++;
-
-    if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
-      saveCheckpoint();
-    }
-  }
-
-  // Update cellData from WASM memory (once after all ticks)
   const cellPtr = universe.cells();
   const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
   cellData.set(cells);
