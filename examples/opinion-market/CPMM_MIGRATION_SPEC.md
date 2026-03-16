@@ -169,12 +169,17 @@ The creator receives no shares from the ante — it is pure liquidity provision.
 
 When a user submits a custom option via `add_option`:
 
-1. Create a new binary CPMM pool for the option, initialized with a small liquidity amount (e.g., 10 credits from the option submitter, or from a system subsidy)
-2. The new pool starts at some initial probability (e.g., `1 / (N+1)` where N+1 is the new option count)
-3. Run the arbitrage to rebalance all existing pools so probabilities sum to 100% — this slightly reduces every existing option's probability to make room
-4. If the survey has `allow_custom_options: false`, this step never happens
+1. **Cost**: 10 credits. The submitter pays this; it seeds the new pool's liquidity. **The submitter receives the initial YES shares** — they effectively bet 10 credits on their new option at the seed price.
+2. **Initial probability**: Seed the new option at low probability to incentivize adding plausible underdogs:
+   ```
+   p_init = min(5%, max(1/(N*4), 1%))
+   ```
+   where N = number of options after adding (i.e., existing + 1). Examples: N=5 → 5%; N=10 → 2.5%; N=25 → 1%. The 1% floor prevents absurdly tiny odds; the 5% cap prevents new options from starting too high when there are few options.
+3. Create the new binary CPMM pool with 10 credits of liquidity, initialized so `prob = p_init`.
+4. Run the arbitrage to rebalance all existing pools so probabilities sum to 100% — this slightly reduces every existing option's probability to make room.
+5. If the survey has `allow_custom_options: false`, this step never happens.
 
-**Open question**: Should adding an option cost credits? In Manifold it costs M$25. In Opinion Market, `add_option` transactions currently have no credit cost. Adding a small cost (e.g., 10 credits) that seeds the new pool's liquidity would be a clean design.
+**Payout incentive**: At 5% initial probability, the option pays ~20x if it wins; at 2.5%, ~40x. Because the submitter receives these shares, they have skin in the game — a strong incentive to add plausible underdog options that the market might be undervaluing.
 
 ## Fee Structure
 
@@ -303,7 +308,7 @@ All changes are in `opinion-market.html`. The sections below reference the curre
 
 ### 1. Constants (lines 730-734)
 
-No changes to `FEE_RATE`, `EXIT_CAP_RATIO`, `MARKET_ANTE`, `CREATOR_REWARD_RATE`, `CREATOR_REWARD_CAP`. May want to adjust `MARKET_ANTE` upward since CPMM liquidity is split across N independent pools.
+No changes to `FEE_RATE`, `MARKET_ANTE`, `CREATOR_REWARD_RATE`, `CREATOR_REWARD_CAP`. Remove `EXIT_CAP_RATIO` — CPMM's constant product provides natural sell bounds.
 
 ### 2. Phase 5b — Market Initialization (lines 1166-1183)
 
@@ -495,13 +500,13 @@ Manifold users reported multi-outcome portfolio views as confusing. Plan for UX 
 
 ## Open Questions
 
-1. **Ante amount**: Should `MARKET_ANTE` increase? CPMM liquidity is split across N independent pools, so each pool has less depth than the single DPM pool. A higher ante compensates. However, CPMM with arbitrage effectively shares liquidity across pools, so the impact may be small.
+1. **Ante amount**: Resolved — keep the same `MARKET_ANTE`. CPMM with arbitrage effectively shares liquidity across pools, so the impact of splitting across N pools is small.
 
-2. **New option cost**: Should `add_option` require spending credits to seed the new pool's liquidity? This prevents spam options from fragmenting liquidity.
+2. **New option cost**: Resolved — 10 credits, seeding at `min(5%, max(1/(N*4), 1%))` initial probability. See "Adding a New Option Mid-Market" above.
 
-3. **Surprise metric**: Currently computed as `vote_share - market_probability` using DPM pool fractions. With CPMM, the market probability is `N_k / (Y_k + N_k)` per option. The surprise formula is unchanged conceptually but the probability source changes.
+3. **Surprise metric**: Not used yet, but when implemented, use `cpmmProb(pool)` — i.e. `N_k / (Y_k + N_k)` — for market probability instead of DPM pool fractions. The formula `vote_share - market_probability` is unchanged conceptually.
 
-4. **Sell cap**: The current `EXIT_CAP_RATIO` prevents selling from draining a pool below 1% of total. With CPMM, a natural floor exists (the constant product prevents the pool from going to zero), so this may no longer be needed. But a minimum liquidity threshold could still be useful to prevent extreme slippage.
+4. **Sell cap**: Resolved — remove `EXIT_CAP_RATIO` for CPMM. The constant product provides natural bounds; no separate sell cap needed.
 
 5. **Convergence speed**: Resolved by using closed-form arbitrage (Manifold issue #1553). Must benchmark before shipping.
 
