@@ -1,0 +1,7 @@
+{
+  "name": "opinion-market",
+  "private": true,
+  "scripts": {
+    "test": "node test/opinion-market-core.test.js"
+  }
+}

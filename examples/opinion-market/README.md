@@ -12,7 +12,11 @@ product spec.
 ```
 examples/opinion-market/
 ├── opinion-market.html           # The dapp UI (single HTML file)
+├── opinion-market-core.js        # CPMM logic (UMD: browser + Node)
+├── test/
+│   └── opinion-market-core.test.js
 ├── OPINION_MARKET_SPEC.md        # Product spec
+├── package.json                  # npm test
 └── README.md                     # This file
 ```
 

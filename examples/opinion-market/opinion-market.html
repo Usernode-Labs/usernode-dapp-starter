@@ -6,6 +6,7 @@
     <title>Opinion Market</title>
     <script src="/usernode-bridge.js"></script>
     <script src="/usernode-usernames.js"></script>
+    <script src="/opinion-market/opinion-market-core.js"></script>
     <style>
       :root {
         color-scheme: light dark;
@@ -637,8 +638,7 @@
                 A 5% fee supports voter rewards and the question creator.
               </p>
               <p style="font-size: 13px; line-height: 1.5; margin: 0 0 12px;">
-                <strong>Cash out:</strong> Changed your mind? Enter the credits you want back and the app handles the rest.
-                You can cash out anytime before the question ends.
+                <strong>Sell:</strong> Changed your mind? Sell your shares back anytime before the question ends.
               </p>
 
               <h3 style="margin: 16px 0 6px; font-size: 15px;">Settlement</h3>
@@ -659,7 +659,7 @@
                 Your position shows two numbers:
               </p>
               <ul style="font-size: 13px; line-height: 1.6; margin: 0 0 12px; padding-left: 20px;">
-                <li><strong>Value</strong> &mdash; what you'd get if you cashed out now (before fees)</li>
+                <li><strong>Value</strong> &mdash; what you'd get if you sold now (before fees)</li>
                 <li><strong>Payout if wins</strong> &mdash; what you'd receive at settlement if your option wins the vote</li>
               </ul>
 
@@ -716,6 +716,24 @@
           return await callNative("sendTransaction", { destination_pubkey, amount, memo });
         }
 
+        const CPMM = (typeof window !== "undefined" && window.OpinionMarketCore) || {};
+        function cpmmTotalLiquidity(mkt) {
+          if (!mkt || !mkt.pools) return 0;
+          let sum = 0;
+          for (const p of Object.values(mkt.pools)) {
+            if (p && typeof p.yes === "number" && typeof p.no === "number") sum += p.yes + p.no;
+          }
+          return sum;
+        }
+        function cpmmTotalShares(mkt, optKey) {
+          if (!mkt || !mkt.userShares) return 0;
+          let sum = 0;
+          for (const shares of Object.values(mkt.userShares)) {
+            if (shares && typeof shares[optKey] === "number") sum += shares[optKey];
+          }
+          return sum;
+        }
+
         /* ================================================================
          *  CONFIG
          * ================================================================ */
@@ -728,8 +746,10 @@
         const TX_SEND_OPTS = { timeoutMs: 90_000, pollIntervalMs: 1500 };
         const INITIAL_CREDITS = 1000;
         const FEE_RATE = 0.05;
-        const EXIT_CAP_RATIO = 0.01;
+        const LIQUIDITY_FEE_RATE = 0.02;
         const MARKET_ANTE = 50;
+        const PLATFORM_LIQUIDITY = 450;
+        const MAX_BET_POOL_RATIO = 0.30;
         const CREATOR_REWARD_RATE = 0.005;
         const CREATOR_REWARD_CAP = 100;
         const ENABLE_RESOLVE_EARLY = window.localStorage.getItem("opinion-market:resolve_early") === "true";
@@ -1025,6 +1045,15 @@
           return INITIAL_CREDITS - f.antes - f.grossBets + f.netSells + f.payouts + f.dividends + f.creatorRewards;
         }
 
+        function addPoolLiquidity(pools, amount) {
+          const total = Object.values(pools).reduce((s, p) => s + p.yes + p.no, 0);
+          if (total <= 0 || amount <= 0) return;
+          const scale = 1 + amount / total;
+          for (const k of Object.keys(pools)) {
+            pools[k] = { yes: pools[k].yes * scale, no: pools[k].no * scale };
+          }
+        }
+
         /* ================================================================
          *  STATE REBUILD
          * ================================================================ */
@@ -1163,28 +1192,23 @@
             if (!prev || tx.ts >= prev.ts) voteMap.set(k, { from: tx.from, survey: sv, choice: ch, ts: tx.ts });
           }
 
-          // --- Phase 5b: Seed markets from creator ante ---
+          // --- Phase 5b: Seed markets from creator ante (CPMM) ---
           for (const survey of SURVEYS) {
             if (!survey.createdBy || !JOINED.has(survey.createdBy)) continue;
             if (userBalance(survey.createdBy) < MARKET_ANTE) continue;
             const numOpts = survey.options.length;
             if (numOpts < 2) continue;
-            const perOpt = MARKET_ANTE / numOpts;
-            const mkt = { pools: {}, totalShares: {}, userShares: {}, netContribByUser: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: survey.createdBy };
-            mkt.userShares[survey.createdBy] = {};
-            mkt.netContribByUser[survey.createdBy] = {};
-            for (const opt of survey.options) {
-              mkt.pools[opt.key] = perOpt;
-              mkt.totalShares[opt.key] = perOpt;
-              mkt.userShares[survey.createdBy][opt.key] = perOpt;
-              mkt.netContribByUser[survey.createdBy][opt.key] = perOpt;
+            const initPools = CPMM.cpmmInitPools ? CPMM.cpmmInitPools(MARKET_ANTE + PLATFORM_LIQUIDITY, numOpts) : [];
+            if (initPools.length === 0) continue;
+            const mkt = { pools: {}, userShares: {}, feePool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: survey.createdBy };
+            for (let i = 0; i < survey.options.length; i++) {
+              mkt.pools[survey.options[i].key] = { ...initPools[i] };
             }
-            mkt.totalPool = MARKET_ANTE;
             MARKETS.set(survey.id, mkt);
             getCreditFlow(survey.createdBy).antes += MARKET_ANTE;
           }
 
-          // --- Phase 6: Market operations (chronological replay) ---
+          // --- Phase 6: Market operations (chronological replay, CPMM) ---
           for (const { tx, memo } of parsed) {
             if (memo.type !== "place_bet" && memo.type !== "sell_shares") continue;
             const sv = memo.survey == null ? null : String(memo.survey);
@@ -1197,7 +1221,12 @@
 
             let mkt = MARKETS.get(sv);
             if (!mkt) {
-              mkt = { pools: {}, totalShares: {}, userShares: {}, netContribByUser: {}, feePool: 0, totalPool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: null };
+              const numOpts = survey.options.length;
+              const initPools = CPMM.cpmmInitPools ? CPMM.cpmmInitPools(MARKET_ANTE + PLATFORM_LIQUIDITY, numOpts) : [];
+              mkt = { pools: {}, userShares: {}, feePool: 0, grossBetsByUser: {}, netSellsByUser: {}, creatorReward: 0, creator: survey.createdBy || null };
+              if (initPools.length === numOpts) {
+                for (let i = 0; i < numOpts; i++) mkt.pools[survey.options[i].key] = { ...initPools[i] };
+              }
               MARKETS.set(sv, mkt);
             }
 
@@ -1206,35 +1235,32 @@
               if (!Number.isFinite(credits) || credits < 1) continue;
               const bal = userBalance(tx.from);
               if (bal < credits) continue;
+              const totalPoolValue = Object.values(mkt.pools).reduce((s, p) => s + p.yes + p.no, 0);
+              const maxBet = Math.floor(totalPoolValue * MAX_BET_POOL_RATIO);
+              if (credits > maxBet) continue;
 
               const fee = credits * FEE_RATE;
+              const liquidityFee = credits * LIQUIDITY_FEE_RATE;
               const creatorCut = Math.min(credits * CREATOR_REWARD_RATE, CREATOR_REWARD_CAP - mkt.creatorReward);
-              const voterFee = fee - Math.max(0, creatorCut);
+              const voterFee = fee - Math.max(0, creatorCut) - liquidityFee;
               const net = credits - fee;
-              const poolBefore = mkt.pools[optKey] || 0;
-              const totalBefore = mkt.totalPool;
-              let shares;
-              if (poolBefore <= 0 || totalBefore <= 0) {
-                shares = net;
-              } else {
-                shares = net * (totalBefore / poolBefore);
-              }
 
-              mkt.pools[optKey] = poolBefore + net;
-              mkt.totalPool = totalBefore + net;
-              mkt.totalShares[optKey] = (mkt.totalShares[optKey] || 0) + shares;
+              const pool = mkt.pools[optKey];
+              if (!pool || !CPMM.cpmmArbitrage) continue;
+              const res = CPMM.cpmmArbitrage(mkt.pools, optKey, net);
+              if (res.sharesReceived <= 0) continue;
+
+              for (const k of Object.keys(res.newPools)) mkt.pools[k] = res.newPools[k];
+              addPoolLiquidity(mkt.pools, liquidityFee);
               if (!mkt.userShares[tx.from]) mkt.userShares[tx.from] = {};
-              mkt.userShares[tx.from][optKey] = (mkt.userShares[tx.from][optKey] || 0) + shares;
+              mkt.userShares[tx.from][optKey] = (mkt.userShares[tx.from][optKey] || 0) + res.sharesReceived;
               mkt.feePool += voterFee;
               if (creatorCut > 0) {
                 mkt.creatorReward += creatorCut;
                 if (mkt.creator) getCreditFlow(mkt.creator).creatorRewards += creatorCut;
               }
-
               mkt.grossBetsByUser[tx.from] = (mkt.grossBetsByUser[tx.from] || 0) + credits;
               getCreditFlow(tx.from).grossBets += credits;
-              if (!mkt.netContribByUser[tx.from]) mkt.netContribByUser[tx.from] = {};
-              mkt.netContribByUser[tx.from][optKey] = (mkt.netContribByUser[tx.from][optKey] || 0) + net;
             }
 
             if (memo.type === "sell_shares") {
@@ -1242,32 +1268,40 @@
               if (!Number.isFinite(sharesToSell) || sharesToSell <= 0) continue;
               const userHeld = (mkt.userShares[tx.from] && mkt.userShares[tx.from][optKey]) || 0;
               if (userHeld < sharesToSell) continue;
-              const poolBefore = mkt.pools[optKey] || 0;
-              const totalSharesBefore = mkt.totalShares[optKey] || 0;
-              if (totalSharesBefore <= 0) continue;
-              const grossCredits = sharesToSell * (poolBefore / totalSharesBefore);
-              const minPool = EXIT_CAP_RATIO * mkt.totalPool;
-              if (poolBefore - grossCredits < minPool) continue;
+              const pool = mkt.pools[optKey];
+              if (!pool) continue;
+
+              let grossCredits;
+              if (CPMM.cpmmSellArbitrage && Object.keys(mkt.pools).length > 1) {
+                const result = CPMM.cpmmSellArbitrage(mkt.pools, optKey, sharesToSell);
+                grossCredits = result.creditsReceived;
+                if (grossCredits <= 0) continue;
+                for (const pk of Object.keys(result.newPools)) {
+                  mkt.pools[pk] = result.newPools[pk];
+                }
+              } else if (CPMM.cpmmSellYes && CPMM.cpmmSellYesApply) {
+                grossCredits = CPMM.cpmmSellYes(pool, sharesToSell);
+                if (grossCredits <= 0) continue;
+                mkt.pools[optKey] = CPMM.cpmmSellYesApply(pool, sharesToSell);
+              } else {
+                continue;
+              }
 
               const fee = grossCredits * FEE_RATE;
+              const liquidityFee = grossCredits * LIQUIDITY_FEE_RATE;
               const creatorCut = Math.min(grossCredits * CREATOR_REWARD_RATE, CREATOR_REWARD_CAP - mkt.creatorReward);
-              const voterFee = fee - Math.max(0, creatorCut);
+              const voterFee = fee - Math.max(0, creatorCut) - liquidityFee;
               const netCredits = grossCredits - fee;
 
-              mkt.pools[optKey] = poolBefore - grossCredits;
-              mkt.totalPool -= grossCredits;
-              mkt.totalShares[optKey] = totalSharesBefore - sharesToSell;
+              addPoolLiquidity(mkt.pools, liquidityFee);
               mkt.userShares[tx.from][optKey] = userHeld - sharesToSell;
               mkt.feePool += voterFee;
               if (creatorCut > 0) {
                 mkt.creatorReward += creatorCut;
                 if (mkt.creator) getCreditFlow(mkt.creator).creatorRewards += creatorCut;
               }
-
               mkt.netSellsByUser[tx.from] = (mkt.netSellsByUser[tx.from] || 0) + netCredits;
               getCreditFlow(tx.from).netSells += netCredits;
-              if (!mkt.netContribByUser[tx.from]) mkt.netContribByUser[tx.from] = {};
-              mkt.netContribByUser[tx.from][optKey] = (mkt.netContribByUser[tx.from][optKey] || 0) - grossCredits;
             }
           }
 
@@ -1285,17 +1319,18 @@
               voterSet.add(v.from);
             }
 
-            const settlement = { winner: null, payouts: {}, voterDividendPer: 0, surprise: {}, totalPool: 0, feePool: 0, voteCounts, voterCount: voterSet.size };
+            const totalPool = mkt ? cpmmTotalLiquidity(mkt) : 0;
+            const settlement = { winner: null, payouts: {}, voterDividendPer: 0, surprise: {}, totalPool, feePool: mkt ? mkt.feePool : 0, voteCounts, voterCount: voterSet.size };
 
-            if (mkt && mkt.totalPool > 0) {
-              settlement.totalPool = mkt.totalPool;
+            if (mkt && totalPool > 0) {
               settlement.feePool = mkt.feePool;
               const totalVotes = Object.values(voteCounts).reduce((a, b) => a + b, 0);
 
-              // Surprise metric
+              // Surprise metric (CPMM: prob = cpmmProb(pool))
               for (const opt of survey.options) {
                 const vs = totalVotes > 0 ? (voteCounts[opt.key] || 0) / totalVotes : 0;
-                const mp = mkt.totalPool > 0 ? (mkt.pools[opt.key] || 0) / mkt.totalPool : 0;
+                const pool = mkt.pools[opt.key];
+                const mp = pool && CPMM.cpmmProb ? CPMM.cpmmProb(pool) : 0;
                 settlement.surprise[opt.key] = vs - mp;
               }
 
@@ -1309,41 +1344,22 @@
                   else if (count === maxVotes && count > 0) winners.push(key);
                 }
                 if (winners.length > 1) {
-                  let maxPool = -1;
+                  let maxLiq = -1;
                   let tieWinners = [];
                   for (const key of winners) {
-                    const p = mkt.pools[key] || 0;
-                    if (p > maxPool) { maxPool = p; tieWinners = [key]; }
-                    else if (p === maxPool) tieWinners.push(key);
+                    const p = mkt.pools[key];
+                    const liq = p ? (p.yes || 0) + (p.no || 0) : 0;
+                    if (liq > maxLiq) { maxLiq = liq; tieWinners = [key]; }
+                    else if (liq === maxLiq) tieWinners.push(key);
                   }
                   winners = tieWinners.length === 1 ? tieWinners : [];
                 }
                 if (winners.length === 1) {
                   const winner = winners[0];
-                  const winnerShares = mkt.totalShares[winner] || 0;
-                  if (winnerShares > 0) {
-                    settlement.winner = winner;
-                    // DPM I: refund first, then distribute losers' money as profit (guarantees min ~0.95x on correct bets)
-                    let totalRefund = 0;
-                    for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
-                      const s = shares[winner] || 0;
-                      if (s > 0) {
-                        const contrib = (mkt.netContribByUser && mkt.netContribByUser[pubkey] && mkt.netContribByUser[pubkey][winner]) || 0;
-                        totalRefund += Math.max(0, contrib);
-                      }
-                    }
-                    const profit = mkt.totalPool - totalRefund;
-                    for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
-                      const s = shares[winner] || 0;
-                      if (s > 0) {
-                        const contrib = (mkt.netContribByUser && mkt.netContribByUser[pubkey] && mkt.netContribByUser[pubkey][winner]) || 0;
-                        const refund = Math.max(0, contrib);
-                        const winnings = profit > 0 ? (s / winnerShares) * profit : 0;
-                        settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + refund + winnings;
-                      }
-                    }
-                  } else {
-                    distributeRefund(mkt, settlement);
+                  settlement.winner = winner;
+                  for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
+                    const s = (shares[winner] || 0);
+                    if (s > 0) settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + s;
                   }
                 } else {
                   distributeRefund(mkt, settlement);
@@ -1374,7 +1390,7 @@
           for (const survey of SURVEYS) {
             if (!survey.archived) continue;
             const mkt = MARKETS.get(survey.id);
-            if (!mkt || mkt.totalPool <= 0) continue;
+            if (!mkt || cpmmTotalLiquidity(mkt) <= 0) continue;
             const settlement = SETTLEMENTS.get(survey.id);
             if (!settlement) continue;
             const dividend = settlement.voterDividendPer || 0;
@@ -1410,9 +1426,21 @@
           for (const [pubkey, shares] of Object.entries(mkt.userShares)) {
             for (const [optKey, s] of Object.entries(shares)) {
               if (s <= 0) continue;
-              const totalS = mkt.totalShares[optKey] || 1;
-              const pool = mkt.pools[optKey] || 0;
-              settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + (s / totalS) * pool;
+              const pool = mkt.pools[optKey];
+              if (!pool) continue;
+              let credits;
+              if (CPMM.cpmmSellArbitrage && Object.keys(mkt.pools).length > 1) {
+                const result = CPMM.cpmmSellArbitrage(mkt.pools, optKey, s);
+                credits = result.creditsReceived;
+                for (const pk of Object.keys(result.newPools)) {
+                  mkt.pools[pk] = result.newPools[pk];
+                }
+              } else if (CPMM.cpmmSellYes) {
+                credits = CPMM.cpmmSellYes(pool, s);
+              } else {
+                continue;
+              }
+              if (credits > 0) settlement.payouts[pubkey] = (settlement.payouts[pubkey] || 0) + credits;
             }
           }
         }
@@ -1963,6 +1991,12 @@
           if (!JOINED.has(me)) throw new Error("Join first to get credits");
           if (credits < 1) throw new Error("Minimum bet is 1 credit");
           if (credits > myCredits()) throw new Error("Insufficient credits");
+          const mkt = MARKETS.get(surveyId);
+          if (mkt) {
+            const poolTotal = Object.values(mkt.pools).reduce((s, p) => s + p.yes + p.no, 0);
+            const maxBet = Math.floor(poolTotal * MAX_BET_POOL_RATIO);
+            if (credits > maxBet) throw new Error("Max bet is " + maxBet + " credits (30% of pool)");
+          }
           setSending(true);
           showPending("betPending", "Placing bet...");
           const memo = makeMemo({ app: "opinion-market", type: "place_bet", survey: surveyId, option: optionKey, credits });
@@ -2196,10 +2230,10 @@
             }
             // Market badge
             const mkt = MARKETS.get(s.id);
-            if (mkt && mkt.totalPool > 0) {
+            if (mkt && cpmmTotalLiquidity(mkt) > 0) {
               const mb = document.createElement("span");
               mb.className = "badge accent";
-              mb.textContent = formatCredits(mkt.totalPool) + " in market";
+              mb.textContent = formatCredits(cpmmTotalLiquidity(mkt)) + " in market";
               badges.appendChild(mb);
             }
             // Reveal badge
@@ -2386,9 +2420,9 @@
           const marketContent = $("marketContent");
           if (marketContent && !(_isFocusedInput && marketContent.contains(_focusEl))) {
             marketContent.textContent = "";
-            const hasMarket = mkt && mkt.totalPool > 0;
+            const hasMarket = mkt && cpmmTotalLiquidity(mkt) > 0;
             const canBet = !s.archived && JOINED.has(me);
-            const totalPool = hasMarket ? mkt.totalPool : 0;
+            const totalPool = hasMarket ? cpmmTotalLiquidity(mkt) : 0;
 
             if (s.archived && !hasMarket) {
               const p = document.createElement("p");
@@ -2412,14 +2446,20 @@
               }
 
               for (const opt of s.options) {
-                const pool = hasMarket ? (mkt.pools[opt.key] || 0) : 0;
-                const prob = totalPool > 0 ? pool / totalPool : 0;
-                const totalSh = hasMarket ? (mkt.totalShares[opt.key] || 0) : 0;
+                const pool = hasMarket ? mkt.pools[opt.key] : null;
+                const prob = pool && CPMM.cpmmProb ? CPMM.cpmmProb(pool) : 0;
+                const totalSh = hasMarket ? cpmmTotalShares(mkt, opt.key) : 0;
                 const myShares = (hasMarket && mkt.userShares[me] && mkt.userShares[me][opt.key]) || 0;
-                const myValue = totalSh > 0 ? myShares * (pool / totalSh) : 0;
-                const myRefund = (hasMarket && mkt.netContribByUser && mkt.netContribByUser[me] && mkt.netContribByUser[me][opt.key]) ? Math.max(0, mkt.netContribByUser[me][opt.key]) : 0;
-                const profit = Math.max(0, totalPool - pool);
-                const potentialPayout = totalSh > 0 ? myRefund + (myShares / totalSh) * profit : myRefund;
+                let myValue = 0;
+                if (pool && myShares > 0) {
+                  if (CPMM.cpmmSellArbitrage && hasMarket && Object.keys(mkt.pools).length > 1) {
+                    myValue = CPMM.cpmmSellArbitrage(mkt.pools, opt.key, myShares).creditsReceived;
+                  } else if (CPMM.cpmmSellYes) {
+                    myValue = CPMM.cpmmSellYes(pool, myShares);
+                  }
+                }
+                const poolLiq = pool && typeof pool.yes === "number" && typeof pool.no === "number" ? pool.yes + pool.no : 0;
+                const potentialPayout = myShares;
 
                 const mRow = document.createElement("div");
                 mRow.className = "marketRow";
@@ -2438,7 +2478,7 @@
 
                   const poolEl = document.createElement("div");
                   poolEl.className = "marketPool";
-                  poolEl.textContent = formatCredits(pool) + " pool";
+                  poolEl.textContent = formatCredits(poolLiq) + " pool";
                   mRow.appendChild(poolEl);
                 }
 
@@ -2446,12 +2486,15 @@
                   const actions = document.createElement("div");
                   actions.className = "marketActions";
 
+                  const poolTotal = mkt ? Object.values(mkt.pools).reduce((s, p) => s + p.yes + p.no, 0) : 0;
+                  const betCap = Math.floor(poolTotal * MAX_BET_POOL_RATIO);
+                  const effectiveMax = Math.min(Math.floor(myCredits()), betCap || Infinity);
                   const buyInp = document.createElement("input");
                   buyInp.type = "number";
                   buyInp.className = "inputInline";
-                  buyInp.placeholder = "credits";
+                  buyInp.placeholder = "max " + effectiveMax;
                   buyInp.min = "1";
-                  buyInp.max = String(Math.floor(myCredits()));
+                  buyInp.max = String(effectiveMax);
                   const buyBtn = document.createElement("button");
                   buyBtn.className = "btn small";
                   buyBtn.textContent = "Buy";
@@ -2468,23 +2511,26 @@
                   buyPreview.className = "betPreview";
                   buyInp.addEventListener("input", () => {
                     const c = parseInt(buyInp.value, 10);
-                    if (c > 0) {
+                    if (c > 0 && mkt && mkt.pools && pool) {
                       const fee = c * FEE_RATE;
                       const net = c - fee;
-                      const pBefore = pool;
-                      const tBefore = totalPool;
-                      let simShares;
-                      if (pBefore <= 0 || tBefore <= 0) { simShares = net; }
-                      else { simShares = net * (tBefore / pBefore); }
-                      const newTotalSh = totalSh + simShares;
-                      const profit = Math.max(0, tBefore - pBefore);
-                      const winnings = newTotalSh > 0 ? (simShares / newTotalSh) * profit : 0;
-                      const payout = net + winnings;
+                      const simShares = (s.options.length >= 2 && CPMM.cpmmArbitrage)
+                        ? CPMM.cpmmArbitrage(mkt.pools, opt.key, net).sharesReceived
+                        : (CPMM.cpmmBuyYes ? CPMM.cpmmBuyYes(pool, net) : 0);
                       buyPreview.innerHTML = "";
+                      if (simShares <= 0) return;
                       const payoutSpan = document.createElement("span");
                       payoutSpan.className = "ok";
-                      const mult = c > 0 ? payout / c : 0;
-                      payoutSpan.textContent = `Payout if wins: ${formatCredits(payout)} (~${mult.toFixed(1)}x, min ${formatCredits(net)})`;
+                      const mult = c > 0 ? simShares / c : 0;
+                      payoutSpan.textContent = `Payout if wins: ${formatCredits(simShares)}`;
+                      if (mult > 0) {
+                        const multSpan = document.createElement("span");
+                        multSpan.className = "muted";
+                        multSpan.style.fontSize = "10px";
+                        multSpan.style.marginLeft = "4px";
+                        multSpan.textContent = `(${mult.toFixed(2)}x)`;
+                        payoutSpan.appendChild(multSpan);
+                      }
                       buyPreview.appendChild(payoutSpan);
                       buyPreview.appendChild(document.createTextNode(` \u00B7 Fee: ${formatCredits(fee)}`));
                     } else {
@@ -2493,27 +2539,22 @@
                   });
                   actions.appendChild(buyPreview);
 
-                  if (myShares > 0) {
+                  if (myShares > 0 && pool) {
                     const sellRow = document.createElement("div");
                     sellRow.style.cssText = "display:flex;gap:4px;align-items:center;margin-top:4px;flex-wrap:wrap;";
                     const sellInp = document.createElement("input");
                     sellInp.type = "number";
                     sellInp.className = "inputInline";
-                    sellInp.placeholder = "credits";
+                    sellInp.placeholder = "shares";
                     sellInp.min = "1";
-                    const maxGross = myShares * (pool / (totalSh || 1));
-                    const maxNet = maxGross * (1 - FEE_RATE);
-                    sellInp.max = String(Math.floor(maxNet));
+                    sellInp.max = String(myShares);
                     const sellBtn = document.createElement("button");
                     sellBtn.className = "btn small";
-                    sellBtn.textContent = "Cash out";
+                    sellBtn.textContent = "Sell";
                     sellBtn.addEventListener("click", async () => {
-                      const desired = parseFloat(sellInp.value);
-                      if (!desired || desired <= 0) { window.alert("Enter credits to cash out"); return; }
-                      const gross = desired / (1 - FEE_RATE);
-                      const sharesToSell = totalSh > 0 ? gross * (totalSh / pool) : 0;
-                      if (sharesToSell <= 0) { window.alert("Cannot compute shares to sell"); return; }
-                      if (sharesToSell > myShares * 1.001) { window.alert(`Max you can cash out: ${formatCredits(maxNet)}`); return; }
+                      const sharesToSell = parseFloat(sellInp.value);
+                      if (!sharesToSell || sharesToSell <= 0) { window.alert("Enter shares to sell"); return; }
+                      if (sharesToSell > myShares * 1.001) { window.alert(`Max: ${myShares} shares`); return; }
                       const actualShares = Math.min(sharesToSell, myShares);
                       try { await sellSharesFlow(s.id, opt.key, actualShares); setSending(false, true); }
                       catch (e) { setSending(false, false); window.alert(e.message || e); }
@@ -2523,7 +2564,7 @@
                     maxBtn.textContent = "Max";
                     maxBtn.type = "button";
                     maxBtn.addEventListener("click", () => {
-                      sellInp.value = Math.round(maxNet * 100) / 100;
+                      sellInp.value = myShares;
                       sellInp.focus();
                       sellInp.dispatchEvent(new Event("input"));
                     });
@@ -2534,17 +2575,19 @@
                     const sellPreview = document.createElement("div");
                     sellPreview.className = "betPreview";
                     sellInp.addEventListener("input", () => {
-                      const desired = parseFloat(sellInp.value);
-                      if (desired > 0) {
-                        const gross = desired / (1 - FEE_RATE);
-                        const fee = gross * FEE_RATE;
-                        const sharesNeeded = totalSh > 0 ? gross * (totalSh / pool) : 0;
-                        const overMax = sharesNeeded > myShares * 1.001;
-                        if (overMax) {
-                          sellPreview.textContent = `Max: ${formatCredits(maxNet)}`;
-                        } else {
-                          sellPreview.textContent = `Fee: ${formatCredits(fee)} \u00B7 You receive: ${formatCredits(desired)}`;
+                      const sh = parseFloat(sellInp.value);
+                      if (sh > 0 && sh <= myShares) {
+                        let gross = 0;
+                        if (CPMM.cpmmSellArbitrage && hasMarket && Object.keys(mkt.pools).length > 1) {
+                          gross = CPMM.cpmmSellArbitrage(mkt.pools, opt.key, sh).creditsReceived;
+                        } else if (CPMM.cpmmSellYes) {
+                          gross = CPMM.cpmmSellYes(pool, sh);
                         }
+                        const fee = gross * FEE_RATE;
+                        const net = gross - fee;
+                        sellPreview.textContent = `You receive: ${formatCredits(net)} \u00B7 Fee: ${formatCredits(fee)}`;
+                      } else if (sh > myShares) {
+                        sellPreview.textContent = `Max: ${myShares} shares`;
                       } else {
                         sellPreview.textContent = "";
                       }
@@ -2563,15 +2606,12 @@
                   const ownEl = document.createElement("span");
                   ownEl.style.fontWeight = "600";
                   ownEl.style.color = "var(--fg)";
-                  ownEl.textContent = `You own ${ownershipPct.toFixed(1)}%`;
+                  ownEl.textContent = `You own ${myShares} shares (${ownershipPct.toFixed(1)}%)`;
                   const valEl = document.createElement("span");
-                  valEl.textContent = `Cash-out value: ${formatCredits(myValue)}`;
+                  valEl.textContent = `Sell value: ${formatCredits(myValue)}`;
                   const payEl = document.createElement("span");
                   payEl.className = "ok";
-                  const stakeForMult = myRefund > 0 ? myRefund : myValue;
-                  const posMult = stakeForMult > 0 ? potentialPayout / stakeForMult : 0;
-                  const minText = myRefund > 0 ? `, min ${formatCredits(myRefund)}` : "";
-                  payEl.textContent = `Payout if wins: ${formatCredits(potentialPayout)} (~${posMult.toFixed(1)}x${minText})`;
+                  payEl.textContent = `Payout if wins: ${formatCredits(potentialPayout)}`;
                   pos.appendChild(ownEl);
                   pos.appendChild(valEl);
                   pos.appendChild(payEl);

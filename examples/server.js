@@ -29,7 +29,24 @@ const createVoteEncryption = require("./opinion-market/vote-encryption");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const LOCAL_DEV = process.argv.includes("--local-dev");
+const OM_TEST_MARKET = process.argv.includes("-omt");
 const PORT = parseInt(process.env.PORT, 10) || 8000;
+
+// -t N or --tx-delay N: transaction delay in seconds (mock API)
+let TX_DELAY_MS = null;
+for (let i = 0; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg === "-t" || arg === "--tx-delay") {
+    const val = parseInt(process.argv[i + 1], 10);
+    if (Number.isFinite(val) && val >= 0) TX_DELAY_MS = val * 1000;
+    break;
+  }
+  if (arg.startsWith("-t") && arg.length > 2) {
+    const val = parseInt(arg.slice(2), 10);
+    if (Number.isFinite(val) && val >= 0) TX_DELAY_MS = val * 1000;
+    break;
+  }
+}
 
 // Falling-sands app pubkey (for chain polling)
 const SANDS_APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
@@ -56,8 +73,48 @@ const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({
   localDev: LOCAL_DEV,
-  delayOverrides: { [SANDS_APP_PUBKEY]: 3000 },
+  delayMs: TX_DELAY_MS ?? 5000,
+  delayOverrides: TX_DELAY_MS == null ? { [SANDS_APP_PUBKEY]: 3000 } : {},
 });
+
+// ── Seed test market for Opinion Market (--local-dev -omt) ───────────────────
+if (LOCAL_DEV && OM_TEST_MARKET) {
+  const crypto = require("crypto");
+  const TEST_USER = "ut1_omt_test_user_000000000000000000000000000000000000000000000000";
+  const now = new Date();
+  const joinTx = {
+    id: crypto.randomUUID(),
+    from_pubkey: TEST_USER,
+    destination_pubkey: OM_APP_PUBKEY,
+    amount: 1,
+    memo: JSON.stringify({ app: "opinion-market", type: "join" }),
+    created_at: new Date(now.getTime() - 2000).toISOString(),
+  };
+  const surveyTx = {
+    id: crypto.randomUUID(),
+    from_pubkey: TEST_USER,
+    destination_pubkey: OM_APP_PUBKEY,
+    amount: 1,
+    memo: JSON.stringify({
+      app: "opinion-market",
+      type: "create_survey",
+      survey: {
+        id: "test-market",
+        title: "Test Market",
+        question: "Which option will win?",
+        active_duration_ms: 86400000,
+        options: [
+          { key: "yes", label: "Yes" },
+          { key: "no", label: "No" },
+          { key: "maybe", label: "Maybe" },
+        ],
+      },
+    }),
+    created_at: new Date(now.getTime() - 1000).toISOString(),
+  };
+  mockApi.transactions.push(joinTx, surveyTx);
+  console.log("[omt] Injected test market: \"Test Market\" (3 options, 24h) from", TEST_USER.slice(0, 20) + "…");
+}
 
 // ── Falling-sands engine ─────────────────────────────────────────────────────
 const engine = createEngine({ wasmLoaderPath: require.resolve("./falling-sands/wasm-loader") });
@@ -162,6 +219,16 @@ const server = http.createServer((req, res) => {
     }
   }
 
+  // Opinion Market CPMM core
+  if (pathname === "/opinion-market/opinion-market-core.js") {
+    try {
+      const buf = fs.readFileSync(path.join(__dirname, "opinion-market", "opinion-market-core.js"));
+      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read opinion-market-core.js: " + e.message);
+    }
+  }
+
   // Falling-sands browser WASM loader
   if (pathname === "/wasm-browser.js" || pathname === "/falling-sands/wasm-browser.js") {
     try {
@@ -253,5 +320,12 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  /last-one-wins  — Last One Wins token game`);
   console.log(`  Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);
   console.log(`  Tick epoch: ${new Date(epoch).toISOString()}`);
-  console.log(`  Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}\n`);
+  console.log(`  Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}`);
+  if (LOCAL_DEV && TX_DELAY_MS != null) {
+    console.log(`  Mock tx delay: ${TX_DELAY_MS / 1000}s (-t / --tx-delay)`);
+  }
+  if (LOCAL_DEV && OM_TEST_MARKET) {
+    console.log(`  Opinion Market test market: INJECTED (-omt)`);
+  }
+  console.log("");
 });

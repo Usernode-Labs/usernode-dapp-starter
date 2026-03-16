@@ -10,101 +10,152 @@ Questions gain a **reveal mechanism**: votes are submitted on-chain but hidden i
 
 - **Initial grant**: 1000 credits on first `join` transaction (one-time per pubkey, derived from chain history)
 - **All memo-tracked**: Credits are virtual. All txs still use `amount = 1` on-chain. Credit quantities live in memo fields.
-- **Balance derivation**: `1000 - sum(active bets) + sum(settled winnings)`. Recomputed from full tx history on each refresh.
+- **Balance derivation**: `1000 - antes - grossBets + netSells + payouts + dividends + creatorRewards`. Recomputed from full tx history on each refresh.
 - **Credits cannot go negative**: UI validates sufficient balance before allowing a bet.
 
-## Prediction Market — DPM (Dynamic Parimutuel Market) with Shares
+---
 
-Follows the same mechanism Manifold Markets uses for multi-outcome prediction markets. Users buy and sell **shares** of options. Share prices move with every trade, creating continuous price discovery.
+## Prediction Market — Linked Binary CPMM
 
-### How Buying Works
+Uses Manifold Markets' **linked binary CPMM** approach (p=0.5) for multi-option prediction markets. Originally used DPM (Dynamic Parimutuel Market); migrated to CPMM for fixed payouts, natural buy/sell, and linked multi-option arbitrage.
 
-Each option has a credit pool. When you spend M credits on option A:
+Reference: [manifoldmarkets/manifold](https://github.com/manifoldmarkets/manifold) — `common/src/calculate-cpmm.ts`, `common/src/calculate-cpmm-arbitrage.ts`
 
+### Key Properties
+
+1. **Fixed payouts**: Each YES share pays 1 credit if that option wins, 0 if it loses. Return known at purchase.
+2. **Dynamic pricing**: CPMM moves price with trades. Popular options cost more per share.
+3. **Linked liquidity**: Buying YES on one option arbitrages NO on others. Probabilities sum to 100%.
+4. **New options mid-market**: Supported. New pool created; arbitrage rebalances.
+
+### Single-Pool Math
+
+- **Invariant**: `k = yes * no` (constant product, equivalent to Manifold's `y^0.5 * n^0.5`)
+- **Probability**: `no / (yes + no)`
+- **Buy/sell**: closed-form formulas from the constant-product invariant
+- **Inverse** (`cpmmAmountForShares`): closed-form from Manifold's `calculateAmountToBuySharesFixedP`
+
+**Pool state**: Each option `k` has `pool[k] = { yes: Y_k, no: N_k }` with invariant `Y_k * N_k = K_k`.
+
+**Share identity**: 1 YES share in every option = 1 credit. 1 NO share in option k = 1 YES share in every other option.
+
+**Buying YES** (spend `m` credits):
+- Mint `m` YES + `m` NO. Deposit NO to pool. Pool releases YES to maintain invariant.
+- YES received: `m + Y_k * m / (N_k + m) = m * (Y_k + N_k + m) / (N_k + m)`.
+
+**Selling YES** (sell `s` shares): Credits received = `N_k * s / (Y_k + s)`.
+
+### Multi-Option Buy-Arbitrage
+
+Matches Manifold's `calculateCpmmMultiArbitrageBetYes` — **buy-NO-in-others** strategy:
+
+1. Binary search over `noShares` (NO shares to buy in each other answer)
+2. For each other answer: compute credits needed via `cpmmAmountForShares` (closed-form)
+3. Apply sums-to-one identity: `noShares` NO in all others = `noShares` YES in target + `noShares * (n-2)` mana redemption
+4. Remaining budget buys YES directly in target
+5. Total shares = `noShares` (from identity) + direct YES shares
+6. Constraint: `sum(probabilities) = 1`
+
+### Multi-Option Sell-Arbitrage
+
+Matches Manifold's `calculateCpmmMultiArbitrageSellYes` — **buy-NO-in-target + buy-YES-in-others + redeem** strategy:
+
+1. Binary search over `noShares` (0..sharesToSell)
+2. Buy `noShares` NO in the **target** pool (costs `noAmount` credits)
+3. Buy `yesSharesInOthers = sharesToSell - noShares` YES in **each other** pool (costs `yesAmounts`)
+4. Redeem pairs: `noShares` (NO\_target + YES\_target) form pairs → `noShares` credits; remaining YES form complete sets → `yesSharesInOthers` credits
+5. Net credits = `sharesToSell - noAmount - totalYesAmounts`
+6. Constraint: `sum(probabilities) = 1`
+
+**Key property**: A full round-trip (buy then sell all) returns exactly the original investment with no value extraction from pools. When the market moves between buy and sell, the user gains or loses accordingly.
+
+### Initialization
+
+**Creator ante** (`MARKET_ANTE` = 50 credits): For N options at `prob = 1/N`:
 ```
-shares_received = M * (totalPool / poolA)
+N_k = ante / (2*(n-1)),  Y_k = (n-1)*N_k
+```
+Creator receives no shares from ante. Pools are initialized at `MARKET_ANTE + PLATFORM_LIQUIDITY` = 500 effective depth (see Platform-Subsidized Liquidity below).
+
+### Data Model
+
+```js
+pools: { optKey: { yes, no } }
+userShares: { pubkey: { optKey: sharesYes } }
 ```
 
-- If A is unpopular (small pool relative to total), you get many shares per credit (cheap entry)
-- If A is popular (large pool), you get fewer shares per credit (expensive entry)
-- After the purchase, `poolA` increases by M, shifting implied odds
+Settlement: 1 credit per YES share of winner.
 
-**Example**: Pool is {Blue: 200, White: 800} (total 1000).
+### Implementation
 
-- Betting 100 on Blue: `100 * 1000/200 = 500 shares` (buying the underdog)
-- Betting 100 on White: `100 * 1000/800 = 125 shares` (buying the favorite)
+CPMM logic lives in `opinion-market-core.js` (UMD module, works in browser + Node). Tests in `test/opinion-market-core.test.js`. Run `npm test`.
 
-### How Selling Works
+---
 
-You can sell shares back to the pool at current market rate:
+## Fee Structure
 
-```
-credits_received = shares * (poolA / totalSharesA)
-```
+A 5% fee is taken from all market activity (buying and selling shares).
 
-- **Exit cap**: Sales are capped to prevent extracting more credits than the pool can sustain (same constraint Manifold uses). A sell cannot reduce an option's pool below a minimum threshold (e.g., 1% of total pool or the initial creator subsidy).
-- Selling reduces your share count and returns credits to your balance; the pool shrinks accordingly.
+| Component | Rate | Description |
+|-----------|------|-------------|
+| Total fee | 5% (`FEE_RATE`) | Per bet or sell |
+| Creator cut | 0.5% (`CREATOR_REWARD_RATE`), capped at 100/market | Rewards question creator |
+| Liquidity reinvestment | 2% (`LIQUIDITY_FEE_RATE`) | Reinvested into pools (increases k) |
+| Voter dividends | ~2.5% (remainder) | Distributed to voters at settlement |
 
-### Implied Probability
+### Voter Dividends
 
-```
-probability(A) = poolA / totalPool
-```
+The voter dividend portion of fees creates a direct incentive to vote — the behavior that drives market resolution.
 
-Shifts with every buy and sell. This IS the market price.
-
-### Settlement
-
-At survey expiry, the option with the most **votes** wins. The entire pool (all options combined) is distributed to holders of the winning option's shares, proportional to shares held:
-
-```
-payout = (myShares / totalWinningShares) * totalPool
-```
-
-### Early Bettor Advantage (Built Into the Math)
-
-- Alice bets 100 on Blue early when Blue is 20% of pool → gets 500 shares
-- Bob bets 100 on Blue late when Blue is 60% of pool → gets 167 shares
-- If Blue wins, Alice earns 3x more than Bob from the same 100-credit bet
-- No arbitrary fees needed — the share pricing naturally rewards conviction
-
-### Edge Cases
-
-- **No bets on winning option**: all bets returned (no winner)
-- **Zero votes at expiry**: all bets returned (market voided)
-- **Tie in votes**: option with more total credits bet wins (tiebreaker); if still tied, all bets returned
-- **Survey with 0 bets**: no market, just a regular vote
-- **Selling at a loss**: if you bought an option that became unpopular, selling returns fewer credits than you spent (your shares are worth less). This is the natural cost of being wrong.
-
-## Voter Dividend Fee
-
-A small fee is taken from market activity and distributed equally to all voters in that question, regardless of how they voted. This creates a direct incentive to vote — the behavior that drives market resolution.
-
-### Mechanics
-
-- **Fee rate**: 5% on all market transactions (buying and selling shares). Tunable.
-- **Fee pool**: Each question accumulates a fee pool from its market activity.
+- **Fee pool**: Each question accumulates voter fees from its market activity.
 - **Distribution**: At settlement, the fee pool is divided equally among all unique voters (one share per voter, regardless of which option they voted for or when they voted).
-- **Effect on DPM**: When a user spends M credits buying shares, `0.95 * M` enters the option pool and `0.05 * M` enters the voter fee pool. Share calculation uses the net amount entering the pool. Similarly for sells: `0.95 * credits_received` goes to the seller, `0.05 * credits_received` goes to the voter fee pool.
+- **Agnostic to vote choice**: No incentive to vote strategically for fee purposes.
+- **Flywheel**: More voters → more reliable settlement → more bettor confidence → more market activity → more fees → more voter reward → more voters.
 
-### Why This Works
+### Liquidity Reinvestment
 
-- **Incentivizes voting**: Voting is free and earns you a share of market fees. Even users who don't want to bet are rewarded for participating.
-- **Agnostic to vote choice**: No incentive to vote strategically for fee purposes — you earn the same regardless of which option you picked.
-- **Scales with market activity**: Popular, heavily-traded questions generate larger voter dividends, naturally rewarding participation in the questions people care about most.
-- **Creates a flywheel**: More voters → more reliable settlement → more bettor confidence → more market activity → more fees → more voter reward → more voters.
+After each trade (buy or sell), `addPoolLiquidity` scales all pools proportionally by the liquidity fee amount. This preserves current probabilities while increasing the `k` invariant (`yes * no`), which deepens the market and reduces slippage for future trades. Popular markets with many transactions automatically become more liquid over time.
 
-### Credit Balance Update
+Follows the same design pattern as Manifold's `liquidityFee` + `addCpmmLiquidity` architecture (though Manifold currently has all fee rates set to zero).
 
-With the fee, credit balance derivation becomes:
+### Creator Rewards
 
-```
-balance = 1000 (if joined)
-        - sum(credits spent buying shares, gross)
-        + sum(credits received selling shares, net of fee)
-        + sum(settlement payouts)
-        + sum(voter dividends from settled questions)
-```
+Question creators earn 0.5% of all trading volume in their market, capped at 100 credits per market. This incentivizes creating engaging questions that drive trading activity.
+
+---
+
+## Platform-Subsidized Liquidity
+
+Creator pays `MARKET_ANTE` (50 credits) to create a market. The platform adds `PLATFORM_LIQUIDITY` (450 credits) of free virtual liquidity, so pools initialize at an effective depth of 500. This reduces price impact from a 100-credit bet at 50/50 from ~39pp (at ante=50) to ~9pp (at ante=500).
+
+Manifold solves this differently — they give creators subsidized mana and allow third-party liquidity provision. Our approach is simpler: the subsidy is automatic and invisible to users.
+
+## Bet Cap
+
+Individual bets are capped at `MAX_BET_POOL_RATIO` (30%) of total pool value. This prevents any single bet from moving the price more than ~21pp even at max size. The cap grows over time as pools deepen from liquidity reinvestment.
+
+Enforced in three places: state rebuild (rejects over-cap bets), `placeBetFlow` pre-send check (throws error), and UI input max (limits the input field).
+
+---
+
+## Differences from Manifold
+
+| Aspect | Manifold | Opinion Market |
+|--------|----------|----------------|
+| **Fees** | Taker fee, creator fee, liquidity fee; iterative (currently all 0) | 5% flat (0.5% creator, 2% liquidity, ~2.5% voters) |
+| **Initial liquidity** | Creator-funded + third-party LPs + platform subsidies | Creator pays 50, platform adds 450 automatically |
+| **Bet limits** | No hard cap (limit orders provide price protection) | 30% of total pool value |
+| **Limit orders** | `computeFills` matches against limit orders | None |
+| **Liquidity injection** | `addCpmmLiquidity`; adjusts `p` | Proportional scaling via fee reinvestment (preserves `p`) |
+| **Settlement** | Admin/creator resolves | Automatic: most votes wins at expiry |
+
+### Future Improvements
+
+1. **Parametrized CPMM**: Support `p ≠ 0.5` for binary markets with asymmetric seeding.
+2. **Fee refinement**: Iterative fee calculation on effective probability.
+3. **Limit orders**: Allow users to set price targets.
+
+---
 
 ## Reveal Mechanism
 
@@ -112,7 +163,7 @@ balance = 1000 (if joined)
 - **Between reveals**: Votes are encrypted on-chain (ECDH P-256 + AES-GCM). Neither the UI nor chain scrapers can see vote choices until the server publishes the decryption key.
 - **At each reveal checkpoint** (`createTs + i * revealInterval`): the server publishes the private key for that interval as an on-chain `reveal_key` transaction. Clients decrypt votes and display cumulative tallies.
 - **Vote changes**: Users can change their vote at any time during the active period. Only the most recent decryptable vote counts for each checkpoint's tally. Only the most recent decryptable vote before expiry counts for final settlement.
-- **Bets**: Can be placed (bought) or sold anytime during the active period. DPM share pricing naturally rewards early, correct bets (more shares per credit when the option is cheap).
+- **Bets**: Can be placed (bought) or sold anytime during the active period. Share pricing naturally rewards early, correct bets.
 - **Legacy plaintext fallback**: If encryption keys are unavailable (server down, misconfigured), votes fall back to plaintext `choice` field for backward compatibility.
 
 ### Encryption Architecture
@@ -149,27 +200,27 @@ The `create_survey` memo gains new fields:
 | `publish_pubkeys` | `{ app: "opinion-market", type: "publish_pubkeys", survey: "id", keys: { "0": "base64pub", ... } }`                                                      | Server publishes ECDH public keys for each interval                     |
 | `reveal_key`    | `{ app: "opinion-market", type: "reveal_key", survey: "id", ki: N, d: "base64url_scalar" }`                                                                | Server reveals private key at checkpoint; clients decrypt votes          |
 | `add_option`    | `{ app: "opinion-market", type: "add_option", survey: "id", option: { key, label } }`                                                                      | Only when `allow_custom_options: true`                                  |
-| `place_bet`     | `{ app: "opinion-market", type: "place_bet", survey: "id", option: "key", credits: N }`                                                                    | Buy shares: 5% fee to voter pool, remainder buys shares at current odds |
-| `sell_shares`   | `{ app: "opinion-market", type: "sell_shares", survey: "id", option: "key", shares: N }`                                                                   | Sell shares at market rate; 5% fee to voter pool; exit cap              |
-| `set_username`  | `{ app: "opinion-market", type: "set_username", username: "name_suffix" }`                                                                                 | Unchanged                                                               |
+| `place_bet`     | `{ app: "opinion-market", type: "place_bet", survey: "id", option: "key", credits: N }`                                                                    | 5% fee (split: 0.5% creator, 2% liquidity, ~2.5% voters), remainder buys shares |
+| `sell_shares`   | `{ app: "opinion-market", type: "sell_shares", survey: "id", option: "key", shares: N }`                                                                   | Sell shares at market rate; same fee split                              |
+| `set_username`  | `{ app: "opinion-market", type: "set_username", username: "name_suffix" }`                                                                                 | Legacy (global usernames via `usernode-usernames.js` preferred)         |
 
 
 ## State Derivation (All Client-Side)
 
-All state is derived by scanning the full transaction history on each refresh (same pattern as today, extended):
+All state is derived by scanning the full transaction history on each refresh:
 
-- **Usernames**: latest `set_username` per sender (unchanged)
-- **Surveys**: `create_survey` txs with rate limiting (unchanged, extended config)
-- **Votes**: latest `vote` per sender per survey (unchanged, but display gated by reveal checkpoints)
-- **Custom options**: oldest `add_option` per sender per survey (unchanged, gated by `allow_custom_options`)
-- **Credit balances**: `1000 (if joined) - sum(gross credits spent buying) + sum(net credits from selling) + sum(settlement payouts) + sum(voter dividends)`
+- **Usernames**: Global usernames via `UsernodeUsernames` module; legacy per-app `set_username` as fallback
+- **Surveys**: `create_survey` txs with rate limiting
+- **Votes**: latest `vote` per sender per survey (display gated by reveal checkpoints)
+- **Custom options**: oldest `add_option` per sender per survey (gated by `allow_custom_options`)
+- **Credit balances**: `1000 (if joined) - antes - grossBets + netSells + payouts + dividends + creatorRewards`
 - **Market state per survey** (derived via sequential tx replay):
-  - Per option: `{ pool: totalCredits, totalShares: totalOutstanding }`
+  - Per option: `{ pool: { yes, no } }` (CPMM pool)
   - Per user per option: `{ shares: N }`
-  - Implied probability: `pool / totalPool`
-  - Fee pool: `sum(5% of all buy and sell transactions in this survey)`
+  - Implied probability: `no / (yes + no)` per pool
+  - Fee pool: voter dividend portion of fees from all buy/sell transactions
 - **Sequential replay**: `place_bet` and `sell_shares` transactions must be processed in chronological order because each transaction's share price depends on the pool state at that moment. Every client replays the same sequence and arrives at the same deterministic state.
-- **Settlement**: For expired surveys: (1) identify winning option (most votes), (2) distribute total market pool to winning shareholders proportional to shares, (3) distribute fee pool equally among all unique voters.
+- **Settlement**: For expired surveys: (1) identify winning option (most votes), (2) each winning YES share pays 1 credit, (3) distribute fee pool equally among all unique voters.
 - **Voter set**: The set of unique pubkeys with a `vote` transaction for that survey. One dividend share per voter regardless of vote count or timing.
 
 ## Leaderboard
@@ -189,7 +240,7 @@ All state is derived by scanning the full transaction history on each refresh (s
   - **Question + Countdown**: Survey title, question, time to next reveal, time to expiry
   - **Your Vote**: Option picker with "submitted, hidden until reveal" confirmation. Shows your current vote if already cast.
   - **Results** (only for passed reveal checkpoints): Vote bar chart, same as today but only showing data up to the last reveal
-  - **Market**: For each option — implied probability (%), total pool, share price. Your position (shares held, current value). Buy/sell controls. Shows "your potential payout if this wins."
+  - **Market**: For each option — implied probability (%), pool depth, share price. Your position (shares held, current value). Buy/sell controls. Shows "your potential payout if this wins."
   - **Settled Market** (archived surveys only): Final results + winning option + payout amounts per shareholder + surprise index per option ("White was 12% more popular than the market predicted")
 
 ### New Screens
@@ -266,14 +317,12 @@ Take the exact question from a trending Crypto Twitter poll, run the identical q
 - Every CT mirror question is a marketing event: post the result comparison back to CT with the surprise metric ("CT said 72% Yes. Verified humans said 41% Yes. The market predicted 55%.")
 - Repeatable: new trending poll = new mirror question = new comparison content = new reason to visit Opinion Market
 
-## Open Design Questions (Can Decide During Implementation)
+## Open Design Questions
 
-1. **Can you buy shares in multiple options in the same survey?** Recommended: yes. This lets users hedge and creates richer market dynamics.
+1. **Can you buy shares in multiple options in the same survey?** Yes. This lets users hedge and creates richer market dynamics.
 2. **Can you buy more shares after an initial purchase?** Yes, via a new `place_bet` tx (each purchase is independent, priced at current odds). Shares accumulate.
-3. **Can you sell shares?** Yes, via `sell_shares` tx. Shares sold at current market rate. Exit cap prevents draining the pool.
-4. **New options mid-survey**: When someone adds a custom option to a survey with an active market, the new option starts with 0 pool and 0 shares. First buyer gets very cheap shares (bootstraps the pool).
-5. **Minimum bet**: 1 credit. No maximum (limited only by balance).
-6. **Pool bootstrap**: The first bet on any option seeds that option's pool. No initial liquidity required from the system or the survey creator — DPM bootstraps naturally from the first trade.
+3. **Can you sell shares?** Yes, via `sell_shares` tx. Shares sold at current market rate via sell-arbitrage.
+4. **New options mid-survey**: When someone adds a custom option to a survey with an active market, a new pool is created and arbitrage rebalances probabilities.
 
 ## Surprise Metric (v1 — Display Only)
 
@@ -283,7 +332,7 @@ After a question settles, compute and display the **Surprise Index** for each op
 surprise(option) = actual_vote_share - final_market_probability
 ```
 
-Where `actual_vote_share` is the option's fraction of total votes at expiry, and `final_market_probability` is the DPM implied probability (`poolA / totalPool`) at the moment voting closed.
+Where `actual_vote_share` is the option's fraction of total votes at expiry, and `final_market_probability` is the CPMM implied probability at the moment voting closed.
 
 - Positive surprise: "White was 12% more popular than the market predicted" — the crowd knew something the market hadn't priced in.
 - Negative surprise: "Blue was 8% less popular than expected" — the market overestimated this option.
@@ -328,13 +377,3 @@ Drawing from Bayesian Truth Serum (Prelec, 2004), an alternative settlement mode
 ## Naming
 
 **Opinion Market**. Captures the fusion of surveys (human input) and prediction markets. The app identifier in memos is `"opinion-market"`. Each question is simultaneously a survey and a market.
-
-## Implementation Todos
-
-- [ ] Credit system: join transaction, balance derivation from tx history, UI balance display
-- [ ] Extend create_survey with reveal_interval_ms, allow_custom_options, expanded durations
-- [ ] Reveal mechanism: checkpoint calculation, vote hiding between reveals, progressive result display
-- [ ] DPM with shares: place_bet (credits → shares at current odds), sell_shares (shares → credits at current odds), pool state derivation via sequential tx replay
-- [ ] Settlement at expiry: winning option (most votes), share-proportional market payout, voter dividend (fee pool / unique voters), credit distribution
-- [ ] Leaderboard: lifetime earnings tracking, ranked display, win rate
-- [ ] Restructure survey detail screen into vote/results/market sections; add onboarding flow
