@@ -1994,7 +1994,7 @@
           showPending("joinPending", "Joining...");
           const memo = makeMemo({ app: "opinion-market", type: "join" });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function voteFlow(optionKey) {
@@ -2015,7 +2015,7 @@
           }
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
           storeMyVote(s.id, optionKey);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function addOptionFlow(labelRaw) {
@@ -2032,7 +2032,7 @@
           const key = slugify(label) || `opt_${Date.now().toString(36)}`;
           const memo = makeMemo({ app: "opinion-market", type: "add_option", survey: s.id, option: { key, label } });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function setUsernameFlow(raw) {
@@ -2042,7 +2042,7 @@
           const value = await UsernodeUsernames.setUsername(raw);
           myUsername = value;
           setText($("headerUsername"), myUsername);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function placeBetFlow(surveyId, optionKey, credits) {
@@ -2062,7 +2062,7 @@
           showPending("betPending", "Placing bet...");
           const memo = makeMemo({ app: "opinion-market", type: "place_bet", survey: surveyId, option: optionKey, credits });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function sellSharesFlow(surveyId, optionKey, shares) {
@@ -2074,7 +2074,7 @@
           showPending("betPending", "Selling shares...");
           const memo = makeMemo({ app: "opinion-market", type: "sell_shares", survey: surveyId, option: optionKey, shares });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function createSurveyFlow() {
@@ -2097,7 +2097,7 @@
           setSending(true);
           showPending("addSurveyPending", "Creating question...");
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         async function resolveEarlyFlow(surveyId) {
@@ -2108,7 +2108,7 @@
           showPending("votePending", "Resolving...");
           const memo = makeMemo({ app: "opinion-market", type: "resolve_early", survey: surveyId });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
         }
 
         let _deleteConfirmId = null;
@@ -2143,7 +2143,7 @@
           showPending("deletePending", "Deleting...");
           const memo = makeMemo({ app: "opinion-market", type: "delete_survey", survey: surveyId });
           await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
-          await refreshLoopOnce();
+          await postActionRefresh();
           navigateToList();
         }
 
@@ -2545,7 +2545,13 @@
                 const hint = document.createElement("p");
                 hint.className = "muted";
                 hint.style.fontSize = "13px";
-                hint.textContent = "No bets yet \u2014 place the first bet to set the opening odds.";
+                hint.textContent = "Market initializing\u2026";
+                marketContent.appendChild(hint);
+              } else if (hasMarket && Object.keys(mkt.userShares).length === 0) {
+                const hint = document.createElement("p");
+                hint.className = "muted";
+                hint.style.fontSize = "13px";
+                hint.textContent = "No bets yet \u2014 odds start equal across all options.";
                 marketContent.appendChild(hint);
               }
 
@@ -3011,6 +3017,13 @@
             if (p.tx.ts >= latestTs) { latestTs = p.tx.ts; latest = u; }
           }
           return latest;
+        }
+
+        async function postActionRefresh() {
+          _lastRebuildTxCount = -1;
+          await refreshLoopOnce();
+          setTimeout(refreshLoopOnce, 1500);
+          setTimeout(refreshLoopOnce, 3500);
         }
 
         async function refreshLoopOnce() {

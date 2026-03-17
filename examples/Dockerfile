@@ -29,6 +29,7 @@ COPY usernode-usernames.js ./
 # HTML files for all apps
 COPY index.html ./
 COPY opinion-market/opinion-market.html opinion-market/
+COPY opinion-market/opinion-market-core.js opinion-market/
 COPY opinion-market/vote-encryption.js opinion-market/
 COPY falling-sands/index.html falling-sands/
 COPY last-one-wins/index.html last-one-wins/
