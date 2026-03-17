@@ -127,6 +127,7 @@ let engine = null;
 
   let replayTxs = [];
   let lastHeight = null;
+  let replayTxIds = [];
   if (!LOCAL_DEV && chainInfo.chainId) {
     const fetched = await fetchAllTransactions({
       chainId: chainInfo.chainId,
@@ -135,6 +136,7 @@ let engine = null;
     });
     replayTxs = fetched.transactions;
     lastHeight = fetched.lastHeight;
+    replayTxIds = fetched.txIds || [];
   }
 
   engine = createEngine({
@@ -151,6 +153,7 @@ let engine = null;
 
   if (!LOCAL_DEV) {
     if (lastHeight != null) sandsPoller.setInitialLastHeight(lastHeight);
+    sandsPoller.addSeenIds(replayTxIds);
     sandsPoller.start();
   }
 })();
@@ -163,9 +166,6 @@ const sandsPoller = createChainPoller({
     if (!engine || !tx.memo) return;
     try {
       const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
-      const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
-      const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
-      engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
       const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
       engine.addTransaction({ timestamp_ms: timestampMs, memo, from: tx.source || tx.from_pubkey || tx.from || "unknown" });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }

@@ -423,18 +423,22 @@ function createChainPoller(opts) {
     if (lastHeight == null && h != null) lastHeight = h;
   }
 
+  function addSeenIds(ids) {
+    for (const id of ids) if (id) seenTxIds.add(id);
+  }
+
   function start() {
     poll();
     setInterval(poll, intervalMs);
   }
 
-  return { start, setInitialLastHeight };
+  return { start, setInitialLastHeight, addSeenIds };
 }
 
 // ── Bulk transaction fetch ───────────────────────────────────────────────────
 //
 // One-shot paginated fetch of all transactions for a pubkey/chain.
-// Returns { transactions: [...], lastHeight } sorted oldest-first.
+// Returns { transactions: [...], lastHeight, txIds: [...] } sorted oldest-first.
 
 async function fetchAllTransactions(opts) {
   const chainId = opts.chainId;
@@ -500,8 +504,9 @@ async function fetchAllTransactions(opts) {
   }
 
   allTxs.sort((a, b) => extractTs(a) - extractTs(b));
+  const txIds = allTxs.map(tx => tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash).filter(Boolean);
   console.log(`[fetch-txs] fetched ${allTxs.length} transaction(s), lastHeight=${lastHeight ?? "none"}`);
-  return { transactions: allTxs, lastHeight };
+  return { transactions: allTxs, lastHeight, txIds };
 }
 
 // ── Chain info discovery ─────────────────────────────────────────────────────

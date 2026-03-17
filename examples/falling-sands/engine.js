@@ -101,8 +101,6 @@ function createEngine(opts) {
       try {
         if (!tx.memo) continue;
         const memo = JSON.parse(tx.memo);
-        const from = (tx.from_pubkey || "").slice(0, 16);
-        applyDrawMemo(memo, `${from}… (mock)`);
         const timestampMs = tx.created_at ? Date.parse(tx.created_at) : Date.now();
         const ageMs = Date.now() - timestampMs;
         const assignedTick = timestampToTick(timestampMs);
