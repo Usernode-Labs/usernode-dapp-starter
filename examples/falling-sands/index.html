@@ -468,6 +468,7 @@ const TICK_INTERVAL_MS = 1000 / TICK_HZ;
 const RENDER_DELAY_MS = 5000;
 const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5; // every 5 seconds
 const MAX_CHECKPOINTS = 24;
+const WINDOW_TICKS = 10 * 60 * TICK_HZ; // 10 min physics window (matches server)
 
 // Default epoch — overridden by server's init message with chain genesis time.
 let TICK_EPOCH = 1767225600000;
@@ -875,6 +876,7 @@ let wasmPrng = null;
 let FRAME_SIZE = 0;
 
 let simTick = 0;              // current simulation tick number
+let clientActiveUntilTick = 0; // server's physics window end — client freezes past this
 let pendingTxs = [];          // transactions buffered for future ticks, sorted by tick
 let appliedTxCount = 0;
 
@@ -969,6 +971,12 @@ function addPendingTx(tx) {
   const label = delta > 0 ? `future(+${delta})` : delta === 0 ? "exact" : `late(${delta})`;
   console.log(`[sands-tx] rx: age=${ageS}s  txTick=${tick}  simTick=${simTick}  renderTick=${renderTick}  ${label}`);
 
+  // Extend the active window when a draw arrives — matches server behavior.
+  const isDraw = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "draw";
+  if (isDraw) {
+    clientActiveUntilTick = Math.max(clientActiveUntilTick, tick + WINDOW_TICKS);
+  }
+
   const entry = { tick, memo: tx.memo, from: tx.from };
 
   if (tick <= simTick) {
@@ -1019,19 +1027,34 @@ function fastForwardTo(targetTick) {
 function simTick30Hz() {
   if (!universe) return;
 
-  // Speculative local physics: advance one tick per call at 30 Hz.
-  // The client doesn't chase wall-clock time — it just animates forward
-  // from wherever the server's canonical snapshot left off.
-  while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
-    const tx = pendingTxs.shift();
-    if (tx.memo) applyDrawMemo(tx.memo);
-  }
-  universe.tick();
-  simTick++;
-  ticksThisSecond++;
+  const wallTick = timestampToTick(Date.now());
+  let ticksToRun = Math.max(1, wallTick - simTick);
 
-  if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
-    saveCheckpoint();
+  // Within the server's active window, fast-forward the full gap so the
+  // client stays deterministically in sync (handles background recovery).
+  // Past the window, the client runs speculative local physics at 30Hz —
+  // cap at 1 tick per frame so it doesn't try to fast-forward hours of
+  // frozen time.  If the gap somehow exceeds 10 minutes (e.g. very long
+  // background), just jump the tick counter and resume live.
+  if (simTick >= clientActiveUntilTick) {
+    ticksToRun = 1;
+  } else if (ticksToRun > WINDOW_TICKS) {
+    simTick = Math.max(wallTick - 1, clientActiveUntilTick);
+    ticksToRun = Math.max(1, wallTick - simTick);
+  }
+
+  for (let i = 0; i < ticksToRun; i++) {
+    while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
+      const tx = pendingTxs.shift();
+      if (tx.memo) applyDrawMemo(tx.memo);
+    }
+    universe.tick();
+    simTick++;
+    ticksThisSecond++;
+
+    if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
+      saveCheckpoint();
+    }
   }
 
   const cellPtr = universe.cells();
@@ -1170,10 +1193,25 @@ function handleMessage(event) {
         pendingTxs.sort((a, b) => a.tick - b.tick);
       }
 
-      // No catch-up-to-now: the server sends its canonical state (which may
-      // be behind wall-clock time). The client starts speculative local
-      // physics immediately from the snapshot tick.
-      console.log(`[sands-init] loaded snapshot at tick ${simTick}, frozen=${!!msg.frozen}, ${pendingTxs.length} buffered txs — starting speculative physics`);
+      // Track the server's active physics window. Within this window the
+      // server also simulated physics, so the client should fast-forward
+      // deterministically to stay in sync. Past the window end the client
+      // runs speculative local physics at 30Hz (the tick loop handles this).
+      clientActiveUntilTick = msg.activeUntilTick || simTick;
+
+      // Fast-forward behind the loading bar up to wall-clock time (capped
+      // at the server's window end — beyond that we go live at 30Hz).
+      {
+        const wallTick = timestampToTick(Date.now());
+        const targetTick = msg.frozen ? simTick : Math.min(wallTick, clientActiveUntilTick);
+        if (targetTick > simTick) {
+          setLoading(70, "Catching up...");
+          console.log(`[sands-init] fast-forwarding ${targetTick - simTick} ticks to catch up`);
+          fastForwardTo(targetTick);
+        }
+      }
+
+      console.log(`[sands-init] ready at tick ${simTick}, frozen=${!!msg.frozen}, activeUntil=${clientActiveUntilTick}`);
 
       setLoading(100, "Ready!");
       statusEl.className = "ok";
@@ -1206,7 +1244,18 @@ function handleMessage(event) {
         pendingTxs.sort((a, b) => a.tick - b.tick);
       }
 
-      console.log(`[sands-resync] reloaded snapshot at tick ${simTick}, ${pendingTxs.length} buffered txs — restarting speculative physics`);
+      clientActiveUntilTick = msg.activeUntilTick || (simTick + WINDOW_TICKS);
+
+      {
+        const wallTick = timestampToTick(Date.now());
+        const targetTick = Math.min(wallTick, clientActiveUntilTick);
+        if (targetTick > simTick) {
+          console.log(`[sands-resync] fast-forwarding ${targetTick - simTick} ticks to catch up`);
+          fastForwardTo(targetTick);
+        }
+      }
+
+      console.log(`[sands-resync] ready at tick ${simTick}, activeUntil=${clientActiveUntilTick}`);
 
       statusEl.className = "ok";
       statusEl.textContent = "Running locally";

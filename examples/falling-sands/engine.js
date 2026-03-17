@@ -27,7 +27,6 @@ const PING_INTERVAL = 20_000;
 const DEFAULT_TICK_EPOCH = 1767225600000;
 
 const SNAPSHOT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours (disk saves)
-const MIN_CLIENT_SNAPSHOT_AGE_MS = 5000; // min interval between on-demand snapshots
 const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5;    // every 5 seconds
 const MAX_CHECKPOINTS = 24;
 
@@ -395,6 +394,7 @@ function createEngine(opts) {
       transactions: transactionsSinceSnapshot,
       epoch: TICK_EPOCH,
       tickHz: TICK_HZ,
+      activeUntilTick,
     });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
@@ -404,9 +404,7 @@ function createEngine(opts) {
   }
 
   function sendInitMessage(ws) {
-    if (!lastSnapshot || Date.now() - lastSnapshotTime > MIN_CLIENT_SNAPSHOT_AGE_MS) {
-      captureSnapshot();
-    }
+    captureSnapshot();
 
     const frozen = tickCount >= activeUntilTick;
     const snapshotAgeSec = ((Date.now() - lastSnapshotTime) / 1000).toFixed(1);
@@ -421,6 +419,7 @@ function createEngine(opts) {
       snapshot: lastSnapshot,
       transactions: transactionsSinceSnapshot,
       frozen,
+      activeUntilTick: frozen ? tickCount : activeUntilTick,
     };
     safeSend(ws, JSON.stringify(initMsg));
   }
