@@ -167,6 +167,7 @@ let engine = null;
 const sandsPoller = createChainPoller({
   appPubkey: SANDS_APP_PUBKEY,
   queryField: "recipient",
+  intervalMs: 1500,
   onTransaction(tx) {
     if (!engine || !tx.memo) return;
     try {
