@@ -1222,44 +1222,30 @@ function handleMessage(event) {
       simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
 
     } else if (msg.type === "resync") {
-      // Server's canonical state advanced (new draw). Discard speculative
-      // state and restart from the new snapshot.
-      if (msg.epoch && typeof msg.epoch === "number") {
-        TICK_EPOCH = msg.epoch;
-      }
+      // Error-recovery fallback: reload snapshot and restart simulation.
+      // Normal draws arrive as lightweight "tx" messages instead.
+      console.warn("[sands-resync] received full resync (error recovery)");
+      if (msg.epoch && typeof msg.epoch === "number") TICK_EPOCH = msg.epoch;
 
       if (simInterval) clearInterval(simInterval);
       simInterval = null;
 
-      if (msg.snapshot) {
-        loadSnapshot(msg.snapshot);
-      }
-
+      if (msg.snapshot) loadSnapshot(msg.snapshot);
       pendingTxs = [];
-      if (msg.transactions && Array.isArray(msg.transactions)) {
-        for (const tx of msg.transactions) {
-          const tick = timestampToTick(tx.timestamp_ms);
-          pendingTxs.push({ tick, memo: tx.memo, from: tx.from });
-        }
-        pendingTxs.sort((a, b) => a.tick - b.tick);
-      }
-
       clientActiveUntilTick = msg.activeUntilTick || (simTick + WINDOW_TICKS);
 
-      {
-        const wallTick = timestampToTick(Date.now());
-        const targetTick = Math.min(wallTick, clientActiveUntilTick);
-        if (targetTick > simTick) {
-          console.log(`[sands-resync] fast-forwarding ${targetTick - simTick} ticks to catch up`);
-          fastForwardTo(targetTick);
-        }
-      }
+      const wallTick = timestampToTick(Date.now());
+      const targetTick = Math.min(wallTick, clientActiveUntilTick);
+      if (targetTick > simTick) fastForwardTo(targetTick);
 
-      console.log(`[sands-resync] ready at tick ${simTick}, activeUntil=${clientActiveUntilTick}`);
-
+      console.log(`[sands-resync] recovered at tick ${simTick}`);
       statusEl.className = "ok";
       statusEl.textContent = "Running locally";
       simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
+
+    } else if (msg.type === "loading") {
+      const pct = Math.round((msg.progress || 0) * 100);
+      setLoading(Math.min(pct, 45), "Server loading\u2026 " + pct + "%");
 
     } else if (msg.type === "tx") {
       addPendingTx(msg);

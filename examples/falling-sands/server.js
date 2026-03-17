@@ -64,9 +64,10 @@ let engine = null;
     replayTxs,
   });
 
-  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
-
   engine.attachWebSocket(server);
+  await engine.init();
+
+  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
   engine.startTickLoop();
 
   if (!LOCAL_DEV) {

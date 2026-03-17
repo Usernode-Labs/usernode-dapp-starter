@@ -34,6 +34,11 @@ const MAX_CHECKPOINTS = 24;
 const WINDOW_SECONDS = 10 * 60;
 const WINDOW_TICKS = WINDOW_SECONDS * TICK_HZ;
 
+// Fixed delay added to block timestamp to derive the canonical draw tick.
+// Covers explorer indexing + server poll interval so the draw tick lands
+// slightly in the future relative to when the server first sees the tx.
+const PROCESSING_DELAY_MS = 5000;
+
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
   const snapshotDir = (opts && opts.snapshotDir) || __dirname;
@@ -42,6 +47,14 @@ function createEngine(opts) {
 
   function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
   function tickToTimestamp(tick) { return TICK_EPOCH + tick * TICK_INTERVAL_MS; }
+
+  function computeDrawTick(tx) {
+    const blockTs = (tx.inclusion_latency_ms != null)
+      ? tx.timestamp_ms + tx.inclusion_latency_ms
+      : tx.timestamp_ms;
+    return timestampToTick(blockTs + PROCESSING_DELAY_MS);
+  }
+
   const { Universe, Species, memory, prng } = require(wasmLoaderPath);
 
   const universe = Universe.new(WIDTH, HEIGHT);
@@ -241,7 +254,7 @@ function createEngine(opts) {
       if (memo.app !== "falling-sands" || memo.type !== "draw") continue;
       const ts = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : 0);
       if (!ts) continue;
-      const txTick = timestampToTick(ts);
+      const txTick = computeDrawTick({ timestamp_ms: ts, inclusion_latency_ms: tx.inclusion_latency_ms });
       if (txTick <= tickCount) continue;
       replayDraws.push({ tick: txTick, memo, from: tx.source || tx.from_pubkey || "chain" });
     } catch (_) {}
@@ -251,81 +264,131 @@ function createEngine(opts) {
   // Genesis window: simulate 10 min from wherever we start
   activeUntilTick = tickCount + WINDOW_TICKS;
 
-  const nowTick = timestampToTick(Date.now());
-  const replayT0 = Date.now();
-  let lastProgressLog = replayT0;
-  let drawsApplied = 0;
-  let physicsTicksSimulated = 0;
-  let ticksSkipped = 0;
+  // ── Async replay (non-blocking) ─────────────────────────────────────────
+  //
+  // The replay yields to the event loop periodically so the server can
+  // accept WebSocket connections and serve static files during startup.
+  // Clients that connect before replay is done receive "loading" messages
+  // with progress updates.
 
-  {
-    const fromLabel = snapshotLoaded ? `snapshot tick ${tickCount}` : "genesis (tick 0)";
-    const timelineSpan = Math.max(0, nowTick - tickCount);
-    console.log(`[replay] starting from ${fromLabel}, timeline span ${timelineSpan} ticks (${(timelineSpan / TICK_HZ).toFixed(1)}s), ${replayDraws.length} draw txs, window=${WINDOW_SECONDS}s`);
-  }
+  let engineReady = false;
+  let replayProgress = 0;
+  const waitingClients = [];
 
-  const REPLAY_BATCH = 512;
-
-  function advancePhysicsTo(target) {
-    while (tickCount < target) {
-      const chunk = Math.min(REPLAY_BATCH, target - tickCount);
-      universe.tick_n(chunk);
-      tickCount += chunk;
-      physicsTicksSimulated += chunk;
-
-      const now = Date.now();
-      if (now - lastProgressLog >= 2000) {
-        const elapsed = ((now - replayT0) / 1000).toFixed(1);
-        const rate = physicsTicksSimulated > 0 ? (physicsTicksSimulated / ((now - replayT0) / 1000)).toFixed(0) : "?";
-        console.log(`[replay] tick ${tickCount} — ${elapsed}s elapsed — ${rate} ticks/s — ${physicsTicksSimulated} simulated, ${ticksSkipped} skipped — ${drawsApplied}/${replayDraws.length} draws`);
-        lastProgressLog = now;
+  function sendLoadingProgress() {
+    const msg = JSON.stringify({ type: "loading", progress: replayProgress });
+    for (let i = waitingClients.length - 1; i >= 0; i--) {
+      const ws = waitingClients[i];
+      if (ws.readyState === WebSocket.OPEN) {
+        safeSend(ws, msg);
+      } else {
+        waitingClients.splice(i, 1);
       }
     }
   }
 
-  for (const draw of replayDraws) {
-    const drawTick = Math.min(draw.tick, nowTick);
+  async function init() {
+    const nowTick = timestampToTick(Date.now());
+    const replayT0 = Date.now();
+    let lastProgressLog = replayT0;
+    let drawsApplied = 0;
+    let physicsTicksSimulated = 0;
+    let ticksSkipped = 0;
 
-    if (drawTick > activeUntilTick) {
-      // Finish the current active window
-      const windowEnd = Math.min(activeUntilTick, nowTick);
-      if (tickCount < windowEnd) advancePhysicsTo(windowEnd);
-      // Skip the gap
-      const gap = drawTick - tickCount;
-      if (gap > 0) {
-        ticksSkipped += gap;
-        tickCount = drawTick;
-      }
-    } else {
-      // Still within the active window — simulate up to the draw
-      if (tickCount < drawTick) advancePhysicsTo(drawTick);
+    const replayStartTick = tickCount;
+    const replayTargetTick = nowTick;
+    const totalSpan = Math.max(1, replayTargetTick - replayStartTick);
+
+    {
+      const fromLabel = snapshotLoaded ? `snapshot tick ${tickCount}` : "genesis (tick 0)";
+      console.log(`[replay] starting from ${fromLabel}, timeline span ${totalSpan} ticks (${(totalSpan / TICK_HZ).toFixed(1)}s), ${replayDraws.length} draw txs, window=${WINDOW_SECONDS}s`);
     }
 
-    // Extend the window past this draw
-    activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
+    const REPLAY_BATCH = 512;
+    const YIELD_EVERY = 2048;
+    let ticksSinceYield = 0;
 
-    applyDrawMemo(draw.memo, `${(draw.from || "").slice(0, 16)}… (replay)`);
-    drawsApplied++;
-  }
+    async function advancePhysicsTo(target) {
+      while (tickCount < target) {
+        const chunk = Math.min(REPLAY_BATCH, target - tickCount);
+        universe.tick_n(chunk);
+        tickCount += chunk;
+        physicsTicksSimulated += chunk;
+        ticksSinceYield += chunk;
 
-  // Finish the final active window (capped at now)
-  const finalWindowEnd = Math.min(activeUntilTick, nowTick);
-  if (tickCount < finalWindowEnd) advancePhysicsTo(finalWindowEnd);
+        if (ticksSinceYield >= YIELD_EVERY) {
+          ticksSinceYield = 0;
+          replayProgress = Math.min(0.99, (tickCount - replayStartTick) / totalSpan);
+          sendLoadingProgress();
+          await new Promise(resolve => setImmediate(resolve));
+        }
 
-  // If we're still behind now, skip the remaining gap (frozen period)
-  if (tickCount < nowTick) {
-    ticksSkipped += nowTick - tickCount;
-    tickCount = nowTick;
-  }
+        const now = Date.now();
+        if (now - lastProgressLog >= 2000) {
+          const elapsed = ((now - replayT0) / 1000).toFixed(1);
+          const rate = physicsTicksSimulated > 0 ? (physicsTicksSimulated / ((now - replayT0) / 1000)).toFixed(0) : "?";
+          console.log(`[replay] tick ${tickCount} — ${elapsed}s elapsed — ${rate} ticks/s — ${physicsTicksSimulated} simulated, ${ticksSkipped} skipped — ${drawsApplied}/${replayDraws.length} draws`);
+          lastProgressLog = now;
+        }
+      }
+    }
 
-  {
-    const elapsed = ((Date.now() - replayT0) / 1000).toFixed(1);
-    console.log(`[replay] complete in ${elapsed}s — ${physicsTicksSimulated} ticks simulated (${(physicsTicksSimulated / TICK_HZ).toFixed(1)}s of physics), ${ticksSkipped} skipped — ${drawsApplied} draws applied — canonical tick ${tickCount}`);
-  }
+    for (const draw of replayDraws) {
+      const drawTick = Math.min(draw.tick, nowTick);
 
-  captureSnapshot();
-  if (physicsTicksSimulated > TICK_HZ * 60) {
-    saveSnapshotToDisk();
+      if (drawTick > activeUntilTick) {
+        const windowEnd = Math.min(activeUntilTick, nowTick);
+        if (tickCount < windowEnd) await advancePhysicsTo(windowEnd);
+        const gap = drawTick - tickCount;
+        if (gap > 0) {
+          ticksSkipped += gap;
+          tickCount = drawTick;
+        }
+      } else {
+        if (tickCount < drawTick) await advancePhysicsTo(drawTick);
+      }
+
+      activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
+
+      applyDrawMemo(draw.memo, `${(draw.from || "").slice(0, 16)}… (replay)`);
+      drawsApplied++;
+
+      // Update progress after skips (which are instant)
+      replayProgress = Math.min(0.99, (tickCount - replayStartTick) / totalSpan);
+    }
+
+    // Finish the final active window (capped at now)
+    const finalWindowEnd = Math.min(activeUntilTick, nowTick);
+    if (tickCount < finalWindowEnd) await advancePhysicsTo(finalWindowEnd);
+
+    if (tickCount < nowTick) {
+      ticksSkipped += nowTick - tickCount;
+      tickCount = nowTick;
+    }
+
+    {
+      const elapsed = ((Date.now() - replayT0) / 1000).toFixed(1);
+      console.log(`[replay] complete in ${elapsed}s — ${physicsTicksSimulated} ticks simulated (${(physicsTicksSimulated / TICK_HZ).toFixed(1)}s of physics), ${ticksSkipped} skipped — ${drawsApplied} draws applied — canonical tick ${tickCount}`);
+    }
+
+    captureSnapshot();
+    if (physicsTicksSimulated > TICK_HZ * 60) {
+      saveSnapshotToDisk();
+    }
+
+    // Engine is now ready — send init to all clients that connected during replay
+    engineReady = true;
+    replayProgress = 1;
+    for (const ws of waitingClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        readyClients.add(ws);
+        sendInitMessage(ws);
+      }
+    }
+    if (waitingClients.length > 0) {
+      console.log(`[replay] sent init to ${waitingClients.length} waiting client(s)`);
+    }
+    waitingClients.length = 0;
   }
 
   // ── Transaction management ──────────────────────────────────────────────
@@ -333,20 +396,15 @@ function createEngine(opts) {
   function addTransaction(txData) {
     const tx = {
       timestamp_ms: txData.timestamp_ms || Date.now(),
+      inclusion_latency_ms: txData.inclusion_latency_ms,
       memo: txData.memo,
       from: txData.from || "unknown",
     };
 
-    // Check if this is a draw — if so, it activates the physics window
     const isDraw = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "draw";
 
     if (isDraw) {
-      // Use current wall time so draws appear immediately when the server
-      // processes them, rather than being backdated to chain confirmation
-      // time (which could be 10-30s in the past). Historical timestamps
-      // are only used during startup replay.
-      const nowTick = timestampToTick(Date.now());
-      const drawTick = Math.max(tickCount, nowTick);
+      const drawTick = computeDrawTick(tx);
 
       if (drawTick > tickCount && drawTick > activeUntilTick) {
         tickCount = drawTick;
@@ -362,10 +420,12 @@ function createEngine(opts) {
       applyDrawMemo(tx.memo, `${(tx.from || "").slice(0, 16)}… (live)`);
 
       activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
-      tx.timestamp_ms = Date.now();
 
-      captureSnapshot();
-      broadcastResync();
+      broadcastTx({
+        timestamp_ms: tickToTimestamp(drawTick),
+        memo: tx.memo,
+        from: tx.from,
+      });
 
       console.log(`[window] draw received — canonical tick ${tickCount}, active until tick ${activeUntilTick} (${((activeUntilTick - tickCount) / TICK_HZ).toFixed(0)}s remaining)`);
     }
@@ -392,6 +452,21 @@ function createEngine(opts) {
       epoch: TICK_EPOCH,
       tickHz: TICK_HZ,
       activeUntilTick,
+    });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
+        safeSend(client, msg);
+      }
+    }
+  }
+
+  function broadcastTx(txData) {
+    if (!wss) return;
+    const msg = JSON.stringify({
+      type: "tx",
+      timestamp_ms: txData.timestamp_ms,
+      memo: txData.memo,
+      from: txData.from,
     });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
@@ -454,6 +529,12 @@ function createEngine(opts) {
           const cmd = JSON.parse(msg);
           if (cmd.type === "ready") {
             if (ws.readyState !== WebSocket.OPEN) return;
+            if (!engineReady) {
+              waitingClients.push(ws);
+              safeSend(ws, JSON.stringify({ type: "loading", progress: replayProgress }));
+              console.log(`WS  client queued (engine loading, ${waitingClients.length} waiting)`);
+              return;
+            }
             readyClients.add(ws);
             sendInitMessage(ws);
             const total = [...wss.clients].filter(c => readyClients.has(c)).length;
@@ -465,6 +546,8 @@ function createEngine(opts) {
       });
 
       ws.on("close", (code, reason) => {
+        const idx = waitingClients.indexOf(ws);
+        if (idx !== -1) waitingClients.splice(idx, 1);
         const elapsed = Date.now() - connTime;
         const r = reason ? reason.toString() : "";
         console.log(`WS  disconnected  code=${code}${r ? " reason=" + r : ""}  after=${elapsed}ms  remaining=${wss.clients.size}`);
@@ -555,6 +638,7 @@ function createEngine(opts) {
     processMockTransactions,
     attachWebSocket,
     startTickLoop,
+    init,
     handleSnapshotRequest,
     handleTransactionsRequest,
     captureSnapshot,

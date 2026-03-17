@@ -146,9 +146,14 @@ let engine = null;
     replayTxs,
   });
 
-  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
-
+  // Attach WebSocket immediately so clients can connect during replay
+  // (they receive "loading" messages with progress until replay finishes).
   engine.attachWebSocket(server);
+
+  // Replay is async — yields to the event loop so the server stays responsive.
+  await engine.init();
+
+  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
   engine.startTickLoop();
 
   if (!LOCAL_DEV) {
@@ -167,7 +172,12 @@ const sandsPoller = createChainPoller({
     try {
       const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
       const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
-      engine.addTransaction({ timestamp_ms: timestampMs, memo, from: tx.source || tx.from_pubkey || tx.from || "unknown" });
+      engine.addTransaction({
+        timestamp_ms: timestampMs,
+        inclusion_latency_ms: tx.inclusion_latency_ms,
+        memo,
+        from: tx.source || tx.from_pubkey || tx.from || "unknown",
+      });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
   onChainReset(newId, oldId) {
