@@ -341,15 +341,16 @@ function createEngine(opts) {
     const isDraw = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "draw";
 
     if (isDraw) {
-      const drawTick = timestampToTick(tx.timestamp_ms);
-      const wasFrozen = tickCount >= activeUntilTick;
+      // Use current wall time so draws appear immediately when the server
+      // processes them, rather than being backdated to chain confirmation
+      // time (which could be 10-30s in the past). Historical timestamps
+      // are only used during startup replay.
+      const nowTick = timestampToTick(Date.now());
+      const drawTick = Math.max(tickCount, nowTick);
 
-      // If the draw is ahead of our canonical tick, advance physics to it
       if (drawTick > tickCount && drawTick > activeUntilTick) {
-        // We were frozen — skip the gap to the draw tick
         tickCount = drawTick;
       } else if (drawTick > tickCount) {
-        // Still in an active window — simulate up to the draw
         const target = Math.min(drawTick, activeUntilTick);
         while (tickCount < target) {
           universe.tick();
@@ -358,13 +359,11 @@ function createEngine(opts) {
         if (drawTick > tickCount) tickCount = drawTick;
       }
 
-      // Apply the draw to the canonical state
       applyDrawMemo(tx.memo, `${(tx.from || "").slice(0, 16)}… (live)`);
 
-      // Extend the active window
       activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
+      tx.timestamp_ms = Date.now();
 
-      // Capture fresh snapshot and resync all clients
       captureSnapshot();
       broadcastResync();
 
