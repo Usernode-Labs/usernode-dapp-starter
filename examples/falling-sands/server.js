@@ -80,6 +80,7 @@ let engine = null;
 const poller = createChainPoller({
   appPubkey: APP_PUBKEY,
   queryField: "recipient",
+  intervalMs: 1500,
   onTransaction(tx) {
     if (!engine || !tx.memo) return;
     try {

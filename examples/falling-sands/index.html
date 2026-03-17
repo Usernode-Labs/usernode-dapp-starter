@@ -977,6 +977,16 @@ function addPendingTx(tx) {
     clientActiveUntilTick = Math.max(clientActiveUntilTick, tick + WINDOW_TICKS);
   }
 
+  // Match incoming tx to our sent overlay so we can clear it at the right tick.
+  if (sentStrokes.length > 0 && sentMemoJson && isDraw) {
+    try {
+      if (JSON.stringify(tx.memo) === sentMemoJson) {
+        sentStrokesApplyTick = tick;
+        sentMemoJson = null;
+      }
+    } catch (_) {}
+  }
+
   const entry = { tick, memo: tx.memo, from: tx.from };
 
   if (tick <= simTick) {
@@ -993,6 +1003,12 @@ function addPendingTx(tx) {
     } else {
       console.warn(`[sands-tx] no checkpoint for rewind — applying immediately (best effort)`);
       if (entry.memo) applyDrawMemo(entry.memo);
+    }
+    // Late tx already applied — clear overlay immediately if it was ours.
+    if (sentStrokesApplyTick !== null && simTick >= sentStrokesApplyTick) {
+      sentStrokes = [];
+      sentStrokesApplyTick = null;
+      redrawOverlay();
     }
   } else {
     // Future transaction — insert sorted
@@ -1054,6 +1070,17 @@ function simTick30Hz() {
 
     if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
       saveCheckpoint();
+    }
+  }
+
+  if (sentStrokes.length > 0) {
+    const applied = sentStrokesApplyTick !== null && simTick >= sentStrokesApplyTick;
+    const expired = Date.now() >= sentStrokesDeadline;
+    if (applied || expired) {
+      sentStrokes = [];
+      sentMemoJson = null;
+      sentStrokesApplyTick = null;
+      redrawOverlay();
     }
   }
 
@@ -1387,6 +1414,10 @@ document.addEventListener("visibilitychange", () => {
 // =============================================================================
 
 let pendingStrokes = [];
+let sentStrokes = [];
+let sentMemoJson = null;
+let sentStrokesApplyTick = null;
+let sentStrokesDeadline = 0;
 let painting = false;
 let lastPaintPos = null;
 let dragStartIdx = 0;
@@ -1481,7 +1512,7 @@ function simplifyDragSegments(startIdx, endIdx) {
 }
 
 function drawOverlaySegment(seg) {
-  const d = Math.max(seg.size * 2, 2);
+  const d = Math.max(seg.size, 2);
   if (seg.species === 0) {
     overlayCtx.strokeStyle = "rgba(255,100,100,0.7)";
     overlayCtx.lineWidth = d;
@@ -1506,7 +1537,7 @@ function drawOverlaySegment(seg) {
   overlayCtx.stroke();
   overlayCtx.globalAlpha = 1.0;
   overlayCtx.strokeStyle = "rgba(255,255,255,0.45)";
-  overlayCtx.lineWidth = d + 1.5;
+  overlayCtx.lineWidth = d + 1;
   overlayCtx.lineCap = "round";
   overlayCtx.globalAlpha = 0.3;
   overlayCtx.beginPath();
@@ -1518,6 +1549,7 @@ function drawOverlaySegment(seg) {
 
 redrawOverlay = function() {
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  for (const s of sentStrokes) drawOverlaySegment(s);
   for (const s of pendingStrokes) drawOverlaySegment(s);
 };
 
@@ -1636,9 +1668,13 @@ btnSend.addEventListener("click", async () => {
     const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
     const memo = JSON.stringify({ app: "falling-sands", type: "draw", s: strokes });
     await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+    sentStrokes = pendingStrokes;
+    sentMemoJson = memo;
+    sentStrokesApplyTick = null;
+    sentStrokesDeadline = Date.now() + 60000;
     pendingStrokes = [];
     usedBudget = 0;
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    redrawOverlay();
     refreshFabs();
     setSending(false, true);
   } catch (e) {
