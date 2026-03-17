@@ -286,7 +286,7 @@ function createChainPoller(opts) {
 
   let chainId = null;
   const seenTxIds = new Set();
-  let lastHeight = null;
+  let lastHeight = (opts.initialLastHeight != null) ? opts.initialLastHeight : null;
   let pollCount = 0;
 
   async function discoverChainId() {
@@ -393,12 +393,137 @@ function createChainPoller(opts) {
     }
   }
 
+  function setInitialLastHeight(h) {
+    if (lastHeight == null && h != null) lastHeight = h;
+  }
+
   function start() {
     poll();
     setInterval(poll, intervalMs);
   }
 
-  return { start };
+  return { start, setInitialLastHeight };
+}
+
+// ── Bulk transaction fetch ───────────────────────────────────────────────────
+//
+// One-shot paginated fetch of all transactions for a pubkey/chain.
+// Returns { transactions: [...], lastHeight } sorted oldest-first.
+
+async function fetchAllTransactions(opts) {
+  const chainId = opts.chainId;
+  const appPubkey = opts.appPubkey;
+  const queryField = opts.queryField || "recipient";
+  const upstream = opts.upstream || getExplorerUpstream();
+  const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
+  const maxPages = opts.maxPages || 500;
+
+  if (!chainId || !appPubkey) return { transactions: [], lastHeight: null };
+
+  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
+  const url = `${baseUrl}/transactions`;
+  const allTxs = [];
+  let lastHeight = null;
+  let cursor = null;
+
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const body = { [queryField]: appPubkey, limit: 50 };
+      if (cursor) body.cursor = cursor;
+      const resp = await httpsJson("POST", url, body);
+
+      const items = Array.isArray(resp) ? resp
+        : (resp && Array.isArray(resp.items)) ? resp.items
+        : (resp && Array.isArray(resp.transactions)) ? resp.transactions
+        : [];
+
+      if (items.length === 0) break;
+
+      for (const tx of items) {
+        allTxs.push(tx);
+        const bh = tx.block_height;
+        if (typeof bh === "number" && (lastHeight == null || bh > lastHeight)) {
+          lastHeight = bh;
+        }
+      }
+
+      if (page % 10 === 0 && page > 0) {
+        console.log(`[fetch-txs] page ${page}, ${allTxs.length} txs so far...`);
+      }
+
+      const hasMore = resp && resp.has_more;
+      const nextCursor = resp && resp.next_cursor;
+      if (!hasMore || !nextCursor) break;
+      cursor = nextCursor;
+    }
+  } catch (e) {
+    console.warn(`[fetch-txs] error after ${allTxs.length} txs: ${e.message}`);
+  }
+
+  function extractTs(tx) {
+    const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+    for (const v of candidates) {
+      if (typeof v === "number" && Number.isFinite(v))
+        return v < 10_000_000_000 ? v * 1000 : v;
+      if (typeof v === "string" && v.trim()) {
+        const t = Date.parse(v);
+        if (!Number.isNaN(t)) return t;
+      }
+    }
+    return 0;
+  }
+
+  allTxs.sort((a, b) => extractTs(a) - extractTs(b));
+  console.log(`[fetch-txs] fetched ${allTxs.length} transaction(s), lastHeight=${lastHeight ?? "none"}`);
+  return { transactions: allTxs, lastHeight };
+}
+
+// ── Chain info discovery ─────────────────────────────────────────────────────
+//
+// Discovers chain_id and estimates genesis timestamp from the block explorer.
+// Returns { chainId, genesisTimestampMs } — either field may be null on failure.
+
+async function discoverChainInfo(opts) {
+  const upstream = (opts && opts.upstream) || getExplorerUpstream();
+  const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
+  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}`;
+
+  const result = { chainId: null, genesisTimestampMs: null };
+
+  try {
+    const data = await httpsJson("GET", `${baseUrl}/active_chain`);
+    if (data && data.chain_id) result.chainId = data.chain_id;
+  } catch (e) {
+    console.warn(`[chain-info] could not discover chain: ${e.message}`);
+    return result;
+  }
+
+  if (!result.chainId) return result;
+
+  try {
+    const data = await httpsJson("GET", `${baseUrl}/${result.chainId}/blocks?limit=2`);
+    const blocks = (data && data.items) || [];
+
+    if (blocks.length >= 2) {
+      const [b1, b2] = blocks;
+      const slotDiff = b1.global_slot - b2.global_slot;
+      const timeDiff = b1.timestamp_ms - b2.timestamp_ms;
+      if (slotDiff > 0 && timeDiff > 0) {
+        const slotMs = timeDiff / slotDiff;
+        result.genesisTimestampMs = Math.round(b1.timestamp_ms - b1.global_slot * slotMs);
+        console.log(`[chain-info] genesis: ${new Date(result.genesisTimestampMs).toISOString()} (slot=${slotMs}ms, chain=${result.chainId.slice(0, 16)}…)`);
+      }
+    } else if (blocks.length === 1 && blocks[0].global_slot > 0) {
+      const b = blocks[0];
+      const slotMs = 5000;
+      result.genesisTimestampMs = Math.round(b.timestamp_ms - b.global_slot * slotMs);
+      console.log(`[chain-info] genesis (estimated, 1 block): ${new Date(result.genesisTimestampMs).toISOString()}`);
+    }
+  } catch (e) {
+    console.warn(`[chain-info] could not fetch blocks for genesis time: ${e.message}`);
+  }
+
+  return result;
 }
 
 // ── Path resolution ──────────────────────────────────────────────────────────
@@ -419,5 +544,7 @@ module.exports = {
   handleExplorerProxy,
   createMockApi,
   createChainPoller,
+  fetchAllTransactions,
+  discoverChainInfo,
   resolvePath,
 };

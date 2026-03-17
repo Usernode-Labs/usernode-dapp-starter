@@ -149,6 +149,13 @@ class Universe {
   tick() {
     wasm.universe_tick(this._ptr);
   }
+  tick_n(count) {
+    if (wasm.universe_tick_n) {
+      wasm.universe_tick_n(this._ptr, count);
+    } else {
+      for (let i = 0; i < count; i++) wasm.universe_tick(this._ptr);
+    }
+  }
   reset() {
     wasm.universe_reset(this._ptr);
   }

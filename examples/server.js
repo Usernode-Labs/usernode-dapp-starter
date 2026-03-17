@@ -20,7 +20,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, httpsJson, resolvePath } = require("./lib/dapp-server");
+const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
@@ -116,18 +116,48 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
   console.log("[omt] Injected test market: \"Test Market\" (3 options, 24h) from", TEST_USER.slice(0, 20) + "…");
 }
 
-// ── Falling-sands engine ─────────────────────────────────────────────────────
-const engine = createEngine({ wasmLoaderPath: require.resolve("./falling-sands/wasm-loader") });
+// ── Falling-sands engine (async init — discovers chain genesis) ──────────────
+let engine = null;
 
-// Poll mock transactions for falling-sands drawings
-setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
+(async function initEngine() {
+  const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
+
+  let replayTxs = [];
+  let lastHeight = null;
+  if (!LOCAL_DEV && chainInfo.chainId) {
+    const fetched = await fetchAllTransactions({
+      chainId: chainInfo.chainId,
+      appPubkey: SANDS_APP_PUBKEY,
+      queryField: "recipient",
+    });
+    replayTxs = fetched.transactions;
+    lastHeight = fetched.lastHeight;
+  }
+
+  engine = createEngine({
+    wasmLoaderPath: require.resolve("./falling-sands/wasm-loader"),
+    chainId: chainInfo.chainId,
+    epoch: chainInfo.genesisTimestampMs,
+    replayTxs,
+  });
+
+  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
+
+  engine.attachWebSocket(server);
+  engine.startTickLoop();
+
+  if (!LOCAL_DEV) {
+    if (lastHeight != null) sandsPoller.setInitialLastHeight(lastHeight);
+    sandsPoller.start();
+  }
+})();
 
 // ── Chain polling for falling-sands ──────────────────────────────────────────
 const sandsPoller = createChainPoller({
   appPubkey: SANDS_APP_PUBKEY,
   queryField: "recipient",
   onTransaction(tx) {
-    if (!tx.memo) return;
+    if (!engine || !tx.memo) return;
     try {
       const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
@@ -138,7 +168,6 @@ const sandsPoller = createChainPoller({
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
-if (!LOCAL_DEV) sandsPoller.start();
 
 // ── Opinion Market vote encryption ───────────────────────────────────────────
 const voteEncryption = createVoteEncryption({
@@ -250,8 +279,14 @@ const server = http.createServer((req, res) => {
   }
 
   // Falling-sands snapshot and transactions APIs
-  if (pathname === "/__sands/snapshot") return engine.handleSnapshotRequest(req, res);
-  if (pathname === "/__sands/transactions") return engine.handleTransactionsRequest(req, res);
+  if (pathname === "/__sands/snapshot") {
+    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
+    return engine.handleSnapshotRequest(req, res);
+  }
+  if (pathname === "/__sands/transactions") {
+    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
+    return engine.handleTransactionsRequest(req, res);
+  }
 
   // Last One Wins game state API
   if (lastOneWins.handleRequest(req, res, pathname)) return;
@@ -306,20 +341,13 @@ const server = http.createServer((req, res) => {
   send(res, 404, { "Content-Type": "text/plain" }, "Not found");
 });
 
-// ── WebSocket + tick loop ────────────────────────────────────────────────────
-engine.attachWebSocket(server);
-engine.startTickLoop();
-
 // ── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, "0.0.0.0", () => {
-  const { width, height, tickHz, epoch } = engine.config;
   console.log(`\nCombined examples server running at http://localhost:${PORT}`);
   console.log(`  /               — dapp-starter demo`);
   console.log(`  /opinion-market — Opinion Market`);
   console.log(`  /falling-sands  — Falling Sands (client-side WASM + server relay)`);
   console.log(`  /last-one-wins  — Last One Wins token game`);
-  console.log(`  Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);
-  console.log(`  Tick epoch: ${new Date(epoch).toISOString()}`);
   console.log(`  Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}`);
   if (LOCAL_DEV && TX_DELAY_MS != null) {
     console.log(`  Mock tx delay: ${TX_DELAY_MS / 1000}s (-t / --tx-delay)`);

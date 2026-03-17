@@ -14,7 +14,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { handleExplorerProxy, createMockApi, createChainPoller, resolvePath } = require("../lib/dapp-server");
+const { handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
 const createEngine = require("./engine");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
@@ -39,18 +39,48 @@ const WASM_BROWSER_PATH = path.join(__dirname, "wasm-browser.js");
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({ localDev: LOCAL_DEV });
 
-// ── Engine ───────────────────────────────────────────────────────────────────
-const engine = createEngine({ wasmLoaderPath: require.resolve("./wasm-loader") });
+// ── Async init (discover chain info, then create engine) ─────────────────────
+let engine = null;
 
-// Poll mock transactions for drawings
-setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
+(async function init() {
+  const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
+
+  let replayTxs = [];
+  let lastHeight = null;
+  if (!LOCAL_DEV && chainInfo.chainId) {
+    const fetched = await fetchAllTransactions({
+      chainId: chainInfo.chainId,
+      appPubkey: APP_PUBKEY,
+      queryField: "recipient",
+    });
+    replayTxs = fetched.transactions;
+    lastHeight = fetched.lastHeight;
+  }
+
+  engine = createEngine({
+    wasmLoaderPath: require.resolve("./wasm-loader"),
+    chainId: chainInfo.chainId,
+    epoch: chainInfo.genesisTimestampMs,
+    replayTxs,
+  });
+
+  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
+
+  engine.attachWebSocket(server);
+  engine.startTickLoop();
+
+  if (!LOCAL_DEV) {
+    if (lastHeight != null) poller.setInitialLastHeight(lastHeight);
+    poller.start();
+  }
+})();
 
 // ── Chain polling ────────────────────────────────────────────────────────────
 const poller = createChainPoller({
   appPubkey: APP_PUBKEY,
   queryField: "recipient",
   onTransaction(tx) {
-    if (!tx.memo) return;
+    if (!engine || !tx.memo) return;
     try {
       const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
       const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
@@ -65,7 +95,6 @@ const poller = createChainPoller({
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
 });
-if (!LOCAL_DEV) poller.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -127,11 +156,13 @@ const server = http.createServer((req, res) => {
 
   // Snapshot API
   if (pathname === "/__sands/snapshot") {
+    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
     return engine.handleSnapshotRequest(req, res);
   }
 
   // Transactions API
   if (pathname === "/__sands/transactions") {
+    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
     return engine.handleTransactionsRequest(req, res);
   }
 
@@ -154,13 +185,8 @@ const server = http.createServer((req, res) => {
   send(res, 404, { "Content-Type": "text/plain" }, "Not found");
 });
 
-// ── WebSocket + tick loop ────────────────────────────────────────────────────
-engine.attachWebSocket(server);
-engine.startTickLoop();
-
 // ── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, "0.0.0.0", () => {
-  const { width, height, tickHz, epoch } = engine.config;
   console.log(`\nFalling Sands server running at http://localhost:${PORT}`);
 
   const nets = require("os").networkInterfaces();
@@ -172,8 +198,6 @@ server.listen(PORT, "0.0.0.0", () => {
     }
   }
 
-  console.log(`   Grid: ${width}x${height}  |  Tick rate: ${tickHz} Hz`);
-  console.log(`   Tick epoch: ${new Date(epoch).toISOString()}`);
   console.log(`   Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}`);
   console.log(`   Clients run WASM locally — server relays transactions + snapshots\n`);
 });

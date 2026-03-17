@@ -469,8 +469,8 @@ const RENDER_DELAY_MS = 5000;
 const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5; // every 5 seconds
 const MAX_CHECKPOINTS = 24;
 
-// Must match engine.js exactly
-const TICK_EPOCH = 1767225600000;
+// Default epoch — overridden by server's init message with chain genesis time.
+let TICK_EPOCH = 1767225600000;
 
 function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
 
@@ -1019,13 +1019,20 @@ function fastForwardTo(targetTick) {
 function simTick30Hz() {
   if (!universe) return;
 
-  const targetTick = timestampToTick(Date.now() - RENDER_DELAY_MS);
-  if (simTick >= targetTick) return;
+  // Speculative local physics: advance one tick per call at 30 Hz.
+  // The client doesn't chase wall-clock time — it just animates forward
+  // from wherever the server's canonical snapshot left off.
+  while (pendingTxs.length > 0 && pendingTxs[0].tick <= simTick) {
+    const tx = pendingTxs.shift();
+    if (tx.memo) applyDrawMemo(tx.memo);
+  }
+  universe.tick();
+  simTick++;
+  ticksThisSecond++;
 
-  // Always catch up instantly — never play visibly fast.
-  const ticksBefore = simTick;
-  fastForwardTo(targetTick);
-  ticksThisSecond += simTick - ticksBefore;
+  if (simTick - lastCheckpointTick >= CHECKPOINT_INTERVAL_TICKS) {
+    saveCheckpoint();
+  }
 
   const cellPtr = universe.cells();
   const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
@@ -1131,6 +1138,11 @@ function handleMessage(event) {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "init") {
+      // Use the server's epoch (derived from chain genesis) for tick calculations.
+      if (msg.epoch && typeof msg.epoch === "number") {
+        TICK_EPOCH = msg.epoch;
+      }
+
       // Config
       if (msg.config) {
         WIDTH = msg.config.width || WIDTH;
@@ -1149,6 +1161,7 @@ function handleMessage(event) {
       }
 
       // Buffer transactions since snapshot
+      pendingTxs = [];
       if (msg.transactions && Array.isArray(msg.transactions)) {
         for (const tx of msg.transactions) {
           const tick = timestampToTick(tx.timestamp_ms);
@@ -1157,30 +1170,47 @@ function handleMessage(event) {
         pendingTxs.sort((a, b) => a.tick - b.tick);
       }
 
-      // Fast-forward to current time (minus delay), keeping loader until caught up
-      setLoading(70, "Synchronizing...");
-      statusEl.textContent = "Catching up...";
-      function catchUpLoop() {
-        const target = timestampToTick(Date.now() - RENDER_DELAY_MS);
-        if (simTick < target) fastForwardTo(target);
-        if (universe && wasmMemory) {
-          const cellPtr = universe.cells();
-          const cells = new Uint8Array(wasmMemory.buffer, cellPtr, FRAME_SIZE);
-          cellData.set(cells);
-        }
-        const gap = timestampToTick(Date.now() - RENDER_DELAY_MS) - simTick;
-        if (gap > 1) {
-          setLoading(70 + Math.min(29, 29 * (1 - gap / 300)), "Synchronizing...");
-          requestAnimationFrame(catchUpLoop);
-          return;
-        }
-        setLoading(100, "Ready!");
-        statusEl.className = "ok";
-        statusEl.textContent = "Running locally";
-        dismissLoader();
-        simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
+      // No catch-up-to-now: the server sends its canonical state (which may
+      // be behind wall-clock time). The client starts speculative local
+      // physics immediately from the snapshot tick.
+      console.log(`[sands-init] loaded snapshot at tick ${simTick}, frozen=${!!msg.frozen}, ${pendingTxs.length} buffered txs — starting speculative physics`);
+
+      setLoading(100, "Ready!");
+      statusEl.className = "ok";
+      statusEl.textContent = "Running locally";
+      dismissLoader();
+
+      if (simInterval) clearInterval(simInterval);
+      simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
+
+    } else if (msg.type === "resync") {
+      // Server's canonical state advanced (new draw). Discard speculative
+      // state and restart from the new snapshot.
+      if (msg.epoch && typeof msg.epoch === "number") {
+        TICK_EPOCH = msg.epoch;
       }
-      requestAnimationFrame(catchUpLoop);
+
+      if (simInterval) clearInterval(simInterval);
+      simInterval = null;
+
+      if (msg.snapshot) {
+        loadSnapshot(msg.snapshot);
+      }
+
+      pendingTxs = [];
+      if (msg.transactions && Array.isArray(msg.transactions)) {
+        for (const tx of msg.transactions) {
+          const tick = timestampToTick(tx.timestamp_ms);
+          pendingTxs.push({ tick, memo: tx.memo, from: tx.from });
+        }
+        pendingTxs.sort((a, b) => a.tick - b.tick);
+      }
+
+      console.log(`[sands-resync] reloaded snapshot at tick ${simTick}, ${pendingTxs.length} buffered txs — restarting speculative physics`);
+
+      statusEl.className = "ok";
+      statusEl.textContent = "Running locally";
+      simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
 
     } else if (msg.type === "tx") {
       addPendingTx(msg);

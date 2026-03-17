@@ -23,26 +23,26 @@ const TICK_HZ = 30;
 const TICK_INTERVAL_MS = 1000 / TICK_HZ;
 const PING_INTERVAL = 20_000;
 
-// Tick epoch: January 1, 2026 00:00:00 UTC.
-// All tick numbers are derived from (timestamp_ms - TICK_EPOCH) / TICK_INTERVAL_MS.
-// This constant must be identical in server (engine.js) and client (index.html).
-const TICK_EPOCH = 1767225600000;
+// Default epoch (Jan 1, 2026). Overridden per-engine by chain genesis time.
+const DEFAULT_TICK_EPOCH = 1767225600000;
 
-const SNAPSHOT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const SNAPSHOT_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours (disk saves)
+const MIN_CLIENT_SNAPSHOT_AGE_MS = 5000; // min interval between on-demand snapshots
 const CHECKPOINT_INTERVAL_TICKS = TICK_HZ * 5;    // every 5 seconds
 const MAX_CHECKPOINTS = 24;
 
-function timestampToTick(timestampMs) {
-  return Math.floor((timestampMs - TICK_EPOCH) / TICK_INTERVAL_MS);
-}
-
-function tickToTimestamp(tick) {
-  return TICK_EPOCH + tick * TICK_INTERVAL_MS;
-}
+// Physics only runs for WINDOW_SECONDS after genesis or any draw transaction.
+const WINDOW_SECONDS = 10 * 60;
+const WINDOW_TICKS = WINDOW_SECONDS * TICK_HZ;
 
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
   const snapshotDir = (opts && opts.snapshotDir) || __dirname;
+  const chainId = (opts && opts.chainId) || null;
+  const TICK_EPOCH = (opts && opts.epoch) || DEFAULT_TICK_EPOCH;
+
+  function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
+  function tickToTimestamp(tick) { return TICK_EPOCH + tick * TICK_INTERVAL_MS; }
   const { Universe, Species, memory, prng } = require(wasmLoaderPath);
 
   const universe = Universe.new(WIDTH, HEIGHT);
@@ -141,6 +141,8 @@ function createEngine(opts) {
       buffers: 3,
       width: WIDTH,
       height: HEIGHT,
+      chain_id: chainId || undefined,
+      epoch: TICK_EPOCH,
     };
     transactionsSinceSnapshot = [];
     lastSnapshotTime = Date.now();
@@ -196,9 +198,137 @@ function createEngine(opts) {
     }
   }
 
-  // Try to restore from disk; otherwise create initial snapshot
-  if (!loadSnapshotFromDisk()) {
-    captureSnapshot();
+  // ── Windowed deterministic replay ────────────────────────────────────────
+  //
+  // Physics only simulates during "active windows": 10 minutes after genesis
+  // and 10 minutes after each draw transaction. Between windows the canonical
+  // state freezes and tickCount jumps forward without physics.
+
+  const replayTxs = (opts && opts.replayTxs) || [];
+  let activeUntilTick = 0;
+
+  let snapshotLoaded = loadSnapshotFromDisk();
+
+  if (snapshotLoaded && lastSnapshot) {
+    let discard = false;
+    const reason = [];
+
+    const snapChain = lastSnapshot.chain_id || null;
+    const snapEpoch = lastSnapshot.epoch || DEFAULT_TICK_EPOCH;
+
+    if (chainId && snapChain && snapChain !== chainId) {
+      reason.push(`chain_id mismatch (snapshot: ${snapChain.slice(0, 16)}…, current: ${chainId.slice(0, 16)}…)`);
+      discard = true;
+    }
+    if (snapEpoch !== TICK_EPOCH) {
+      reason.push(`epoch mismatch (snapshot: ${new Date(snapEpoch).toISOString()}, current: ${new Date(TICK_EPOCH).toISOString()})`);
+      discard = true;
+    }
+
+    if (discard) {
+      console.log(`[snapshot] discarding disk snapshot: ${reason.join("; ")}`);
+      snapshotLoaded = false;
+    }
+  }
+
+  if (!snapshotLoaded) {
+    tickCount = 0;
+  }
+
+  // Parse replay txs: extract timestamp + drawing memo, filter to sands draws
+  const replayDraws = [];
+  for (const tx of replayTxs) {
+    try {
+      if (!tx.memo) continue;
+      const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
+      if (memo.app !== "falling-sands" || memo.type !== "draw") continue;
+      const ts = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : 0);
+      if (!ts) continue;
+      const txTick = timestampToTick(ts);
+      if (txTick <= tickCount) continue;
+      replayDraws.push({ tick: txTick, memo, from: tx.source || tx.from_pubkey || "chain" });
+    } catch (_) {}
+  }
+  replayDraws.sort((a, b) => a.tick - b.tick);
+
+  // Genesis window: simulate 10 min from wherever we start
+  activeUntilTick = tickCount + WINDOW_TICKS;
+
+  const nowTick = timestampToTick(Date.now());
+  const replayT0 = Date.now();
+  let lastProgressLog = replayT0;
+  let drawsApplied = 0;
+  let physicsTicksSimulated = 0;
+  let ticksSkipped = 0;
+
+  {
+    const fromLabel = snapshotLoaded ? `snapshot tick ${tickCount}` : "genesis (tick 0)";
+    const timelineSpan = Math.max(0, nowTick - tickCount);
+    console.log(`[replay] starting from ${fromLabel}, timeline span ${timelineSpan} ticks (${(timelineSpan / TICK_HZ).toFixed(1)}s), ${replayDraws.length} draw txs, window=${WINDOW_SECONDS}s`);
+  }
+
+  const REPLAY_BATCH = 512;
+
+  function advancePhysicsTo(target) {
+    while (tickCount < target) {
+      const chunk = Math.min(REPLAY_BATCH, target - tickCount);
+      universe.tick_n(chunk);
+      tickCount += chunk;
+      physicsTicksSimulated += chunk;
+
+      const now = Date.now();
+      if (now - lastProgressLog >= 2000) {
+        const elapsed = ((now - replayT0) / 1000).toFixed(1);
+        const rate = physicsTicksSimulated > 0 ? (physicsTicksSimulated / ((now - replayT0) / 1000)).toFixed(0) : "?";
+        console.log(`[replay] tick ${tickCount} — ${elapsed}s elapsed — ${rate} ticks/s — ${physicsTicksSimulated} simulated, ${ticksSkipped} skipped — ${drawsApplied}/${replayDraws.length} draws`);
+        lastProgressLog = now;
+      }
+    }
+  }
+
+  for (const draw of replayDraws) {
+    const drawTick = Math.min(draw.tick, nowTick);
+
+    if (drawTick > activeUntilTick) {
+      // Finish the current active window
+      const windowEnd = Math.min(activeUntilTick, nowTick);
+      if (tickCount < windowEnd) advancePhysicsTo(windowEnd);
+      // Skip the gap
+      const gap = drawTick - tickCount;
+      if (gap > 0) {
+        ticksSkipped += gap;
+        tickCount = drawTick;
+      }
+    } else {
+      // Still within the active window — simulate up to the draw
+      if (tickCount < drawTick) advancePhysicsTo(drawTick);
+    }
+
+    // Extend the window past this draw
+    activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
+
+    applyDrawMemo(draw.memo, `${(draw.from || "").slice(0, 16)}… (replay)`);
+    drawsApplied++;
+  }
+
+  // Finish the final active window (capped at now)
+  const finalWindowEnd = Math.min(activeUntilTick, nowTick);
+  if (tickCount < finalWindowEnd) advancePhysicsTo(finalWindowEnd);
+
+  // If we're still behind now, skip the remaining gap (frozen period)
+  if (tickCount < nowTick) {
+    ticksSkipped += nowTick - tickCount;
+    tickCount = nowTick;
+  }
+
+  {
+    const elapsed = ((Date.now() - replayT0) / 1000).toFixed(1);
+    console.log(`[replay] complete in ${elapsed}s — ${physicsTicksSimulated} ticks simulated (${(physicsTicksSimulated / TICK_HZ).toFixed(1)}s of physics), ${ticksSkipped} skipped — ${drawsApplied} draws applied — canonical tick ${tickCount}`);
+  }
+
+  captureSnapshot();
+  if (physicsTicksSimulated > TICK_HZ * 60) {
+    saveSnapshotToDisk();
   }
 
   // ── Transaction management ──────────────────────────────────────────────
@@ -209,8 +339,42 @@ function createEngine(opts) {
       memo: txData.memo,
       from: txData.from || "unknown",
     };
+
+    // Check if this is a draw — if so, it activates the physics window
+    const isDraw = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "draw";
+
+    if (isDraw) {
+      const drawTick = timestampToTick(tx.timestamp_ms);
+      const wasFrozen = tickCount >= activeUntilTick;
+
+      // If the draw is ahead of our canonical tick, advance physics to it
+      if (drawTick > tickCount && drawTick > activeUntilTick) {
+        // We were frozen — skip the gap to the draw tick
+        tickCount = drawTick;
+      } else if (drawTick > tickCount) {
+        // Still in an active window — simulate up to the draw
+        const target = Math.min(drawTick, activeUntilTick);
+        while (tickCount < target) {
+          universe.tick();
+          tickCount++;
+        }
+        if (drawTick > tickCount) tickCount = drawTick;
+      }
+
+      // Apply the draw to the canonical state
+      applyDrawMemo(tx.memo, `${(tx.from || "").slice(0, 16)}… (live)`);
+
+      // Extend the active window
+      activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
+
+      // Capture fresh snapshot and resync all clients
+      captureSnapshot();
+      broadcastResync();
+
+      console.log(`[window] draw received — canonical tick ${tickCount}, active until tick ${activeUntilTick} (${((activeUntilTick - tickCount) / TICK_HZ).toFixed(0)}s remaining)`);
+    }
+
     transactionsSinceSnapshot.push(tx);
-    broadcastTransaction(tx);
   }
 
   // ── WebSocket — transaction relay ───────────────────────────────────────
@@ -223,13 +387,14 @@ function createEngine(opts) {
     catch (e) { console.error("send error:", e.message); }
   }
 
-  function broadcastTransaction(tx) {
+  function broadcastResync() {
     if (!wss) return;
     const msg = JSON.stringify({
-      type: "tx",
-      timestamp_ms: tx.timestamp_ms,
-      memo: tx.memo,
-      from: tx.from,
+      type: "resync",
+      snapshot: lastSnapshot,
+      transactions: transactionsSinceSnapshot,
+      epoch: TICK_EPOCH,
+      tickHz: TICK_HZ,
     });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
@@ -239,6 +404,15 @@ function createEngine(opts) {
   }
 
   function sendInitMessage(ws) {
+    if (!lastSnapshot || Date.now() - lastSnapshotTime > MIN_CLIENT_SNAPSHOT_AGE_MS) {
+      captureSnapshot();
+    }
+
+    const frozen = tickCount >= activeUntilTick;
+    const snapshotAgeSec = ((Date.now() - lastSnapshotTime) / 1000).toFixed(1);
+    const txsSince = transactionsSinceSnapshot.length;
+    console.log(`[init] snapshot at tick ${lastSnapshot.tick}  age=${snapshotAgeSec}s  frozen=${frozen}  txsSinceSnapshot=${txsSince}`);
+
     const initMsg = {
       type: "init",
       config: { width: WIDTH, height: HEIGHT, sources: sourcesEnabled },
@@ -246,6 +420,7 @@ function createEngine(opts) {
       tickHz: TICK_HZ,
       snapshot: lastSnapshot,
       transactions: transactionsSinceSnapshot,
+      frozen,
     };
     safeSend(ws, JSON.stringify(initMsg));
   }
@@ -308,14 +483,28 @@ function createEngine(opts) {
   // ── Simulation tick loop ───────────────────────────────────────────────
 
   let lastStatsTime = Date.now();
+  let wasActive = tickCount < activeUntilTick;
 
   function tick() {
-    universe.tick();
-    tickCount++;
-    ticksProcessed++;
+    const wallTick = timestampToTick(Date.now());
+    const isActive = tickCount < activeUntilTick && tickCount < wallTick;
 
-    // Periodic snapshot
-    if (Date.now() - lastSnapshotTime >= SNAPSHOT_INTERVAL_MS) {
+    if (isActive) {
+      universe.tick();
+      tickCount++;
+      ticksProcessed++;
+    }
+
+    // Transition active → frozen: save snapshot
+    if (wasActive && !isActive) {
+      console.log(`[window] physics frozen at tick ${tickCount}`);
+      captureSnapshot();
+      saveSnapshotToDisk();
+    }
+    wasActive = isActive;
+
+    // Periodic snapshot (while active)
+    if (isActive && Date.now() - lastSnapshotTime >= SNAPSHOT_INTERVAL_MS) {
       captureSnapshot();
       saveSnapshotToDisk();
     }
@@ -325,7 +514,8 @@ function createEngine(opts) {
     if (now - lastStatsTime >= 10000) {
       const clientCount = wss ? wss.clients.size : 0;
       const txCount = transactionsSinceSnapshot.length;
-      console.log(`[stats] tick ${tickCount}  |  ${clientCount} client(s)  |  ${txCount} txs since snapshot`);
+      const state = isActive ? "active" : "frozen";
+      console.log(`[stats] tick ${tickCount} (${state})  |  ${clientCount} client(s)  |  ${txCount} txs since snapshot`);
       lastStatsTime = now;
     }
   }
