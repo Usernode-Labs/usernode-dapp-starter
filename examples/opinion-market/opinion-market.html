@@ -383,6 +383,18 @@
       }
       .toggle input:checked + .slider { background: var(--accent); }
       .toggle input:checked + .slider::before { transform: translateX(18px); }
+
+      .inline-toast {
+        position: fixed; left: 50%; transform: translateX(-50%);
+        top: 60px; z-index: 9999; max-width: 90vw; width: max-content;
+        padding: 10px 18px; border-radius: 8px;
+        background: var(--danger, #ff6b6b); color: #fff;
+        font-size: 13px; font-weight: 500; line-height: 1.4;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        pointer-events: none; opacity: 1;
+        transition: opacity 0.3s ease;
+      }
+      .inline-toast.hide { display: none; opacity: 0; }
     </style>
   </head>
   <body>
@@ -402,6 +414,8 @@
         </div>
       </div>
     </header>
+
+    <div id="inlineToast" class="inline-toast hide"></div>
 
     <div class="scrollArea" id="scrollRoot">
       <div class="scrollArea-inner">
@@ -535,6 +549,11 @@
               </div>
               <div id="surveyRevealInfo" class="revealNotice hide" style="margin: 8px 0;"></div>
               <button class="btn small hide" id="resolveEarlyBtn" type="button" style="margin-top: 8px; color: var(--warn); border-color: var(--warn);">&#x23F1; Resolve early (testing)</button>
+              <button class="btn small hide" id="deleteSurveyBtn" type="button" style="margin-top: 8px; color: var(--danger); border-color: var(--danger);">&#x1F5D1; Delete question</button>
+              <div id="deletePending" class="tx-progress hide" role="status" aria-live="polite">
+                <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+                <div class="tx-progress-label">Deleting...</div>
+              </div>
 
               <hr class="sectionDivider" />
 
@@ -1015,6 +1034,7 @@
         let sending = false;
         let isAdmin = false;
         let _explicitAdminPubkey = null;
+        let _firstJoiner = null;
         let GENESIS_ACCOUNTS = new Set();
         let currentSurveyId = null;
         let currentOptionByKey = new Map();
@@ -1095,8 +1115,12 @@
           }
 
           // --- Phase 2: Joins (first per pubkey, genesis-gated) ---
+          _firstJoiner = null;
+          let _firstJoinTs = Infinity;
           for (const { tx, memo } of parsed) {
-            if (memo.type === "join" && isGenesisAccount(tx.from)) JOINED.add(tx.from);
+            if (memo.type !== "join" || !isGenesisAccount(tx.from)) continue;
+            JOINED.add(tx.from);
+            if (tx.ts < _firstJoinTs) { _firstJoinTs = tx.ts; _firstJoiner = tx.from; }
           }
 
           // --- Phase 3: Surveys (with rate limiting, genesis-gated) ---
@@ -1131,9 +1155,21 @@
             const prev = earlyResolves.get(sv);
             if (!prev || tx.ts < prev) earlyResolves.set(sv, tx.ts);
           }
+          // Scan for delete_survey txs (admin-only; any delete wins)
+          const deletedSurveyIds = new Set();
+          for (const { tx, memo } of parsed) {
+            if (memo.type !== "delete_survey") continue;
+            const sv = memo.survey == null ? null : String(memo.survey);
+            if (!sv) continue;
+            const isAdminSender = _explicitAdminPubkey
+              ? tx.from === _explicitAdminPubkey
+              : !!_firstJoiner && tx.from === _firstJoiner;
+            if (isAdminSender) deletedSurveyIds.add(sv);
+          }
 
           const now = Date.now();
           SURVEYS = Array.from(latestCreated.values())
+            .filter(x => !deletedSurveyIds.has(x.survey.id))
             .sort((a, b) => b.ts - a.ts)
             .map(x => {
               let expiresAtMs = x.ts + x.survey.activeDurationMs;
@@ -1738,7 +1774,7 @@
          * ================================================================ */
         const TX_PROGRESS_EXPECTED_S = 30, TX_PROGRESS_WARN_S = 45, TX_PROGRESS_ERR_S = 90;
         let _txProgressRaf = null, _txProgressStart = 0;
-        const pendingEls = () => ["setUsernamePending", "addSurveyPending", "votePending", "joinPending", "betPending"].map($).filter(el => el && !el.classList.contains("hide"));
+        const pendingEls = () => ["setUsernamePending", "addSurveyPending", "votePending", "joinPending", "betPending", "deletePending"].map($).filter(el => el && !el.classList.contains("hide"));
 
         function txProgressPercent(s) {
           if (s <= TX_PROGRESS_EXPECTED_S) { const t = s / TX_PROGRESS_EXPECTED_S; return 95 * (1 - Math.pow(1 - t, 3)); }
@@ -1792,19 +1828,29 @@
           if (label) label.textContent = labelText;
         }
 
+        let _toastTimer = null;
+        function showInlineError(msg) {
+          const el = $("inlineToast");
+          if (!el) return;
+          el.textContent = msg;
+          el.classList.remove("hide");
+          clearTimeout(_toastTimer);
+          _toastTimer = setTimeout(() => el.classList.add("hide"), 5000);
+        }
+
         function setSending(v, txSucceeded) {
           sending = !!v;
           if (v) startTxProgress();
           else if (txSucceeded) completeTxProgress();
           else {
             stopTxProgress();
-            ["setUsernamePending", "addSurveyPending", "votePending", "joinPending", "betPending"].forEach(id => {
+            ["setUsernamePending", "addSurveyPending", "votePending", "joinPending", "betPending", "deletePending"].forEach(id => {
               const el = $(id);
               if (el) { el.classList.add("hide"); resetProgressBar(el); }
             });
           }
           document.querySelectorAll("button, input, select").forEach(el => { if (!el.closest("#screenLeaderboard")) el.disabled = !!v; });
-          if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) btn.disabled = true; }
+          if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) btn.style.display = "none"; }
           if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
             const joinBtn = $("joinBtn"); if (joinBtn) joinBtn.disabled = true;
           }
@@ -2065,6 +2111,42 @@
           await refreshLoopOnce();
         }
 
+        let _deleteConfirmId = null;
+        let _deleteConfirmTimer = null;
+
+        function requestDeleteConfirm(surveyId) {
+          const btn = $("deleteSurveyBtn");
+          if (!btn) return;
+          if (_deleteConfirmId === surveyId) {
+            executeDeleteSurvey(surveyId);
+            return;
+          }
+          _deleteConfirmId = surveyId;
+          btn.textContent = "\u26A0 Tap again to confirm delete";
+          btn.style.borderColor = "var(--danger)";
+          btn.style.background = "rgba(255,107,107,0.15)";
+          clearTimeout(_deleteConfirmTimer);
+          _deleteConfirmTimer = setTimeout(() => {
+            _deleteConfirmId = null;
+            btn.textContent = "\uD83D\uDDD1 Delete question";
+            btn.style.background = "";
+          }, 4000);
+        }
+
+        async function executeDeleteSurvey(surveyId) {
+          _deleteConfirmId = null;
+          clearTimeout(_deleteConfirmTimer);
+          if (!isAdmin) throw new Error("Only the admin can delete questions");
+          const s = SURVEYS_BY_ID.get(surveyId);
+          if (!s) throw new Error("Question not found");
+          setSending(true);
+          showPending("deletePending", "Deleting...");
+          const memo = makeMemo({ app: "opinion-market", type: "delete_survey", survey: surveyId });
+          await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+          await refreshLoopOnce();
+          navigateToList();
+        }
+
         /* ================================================================
          *  NAVIGATION
          * ================================================================ */
@@ -2076,6 +2158,10 @@
         }
 
         function navigateToList() {
+          _deleteConfirmId = null;
+          clearTimeout(_deleteConfirmTimer);
+          const delBtn = $("deleteSurveyBtn");
+          if (delBtn) { delBtn.textContent = "\uD83D\uDDD1 Delete question"; delBtn.style.background = ""; }
           currentSurveyId = null;
           const joined = me && JOINED.has(me);
           show($("screenActiveList"), joined);
@@ -2129,6 +2215,7 @@
 
           // Resolve early button (testing — opt-in via localStorage)
           show($("resolveEarlyBtn"), ENABLE_RESOLVE_EARLY && !s.archived);
+          show($("deleteSurveyBtn"), isAdmin);
 
           // Add option button
           const addOptBtn = $("addOptionToggleBtn");
@@ -2366,7 +2453,7 @@
               btn.addEventListener("click", async () => {
                 if (sending || s.archived) return;
                 try { await voteFlow(opt.key); setSending(false, true); }
-                catch (e) { setSending(false, false); window.alert(e.message || e); }
+                catch (e) { setSending(false, false); showInlineError(e.message || e); }
               });
               voteList.appendChild(btn);
             }
@@ -2515,19 +2602,33 @@
                   const buyBtn = document.createElement("button");
                   buyBtn.className = "btn small";
                   buyBtn.textContent = "Buy";
+                  const buyErrEl = document.createElement("div");
+                  buyErrEl.style.cssText = "font-size:11px;color:var(--danger);margin-top:2px;min-height:14px;";
                   buyBtn.addEventListener("click", async () => {
                     const c = parseInt(buyInp.value, 10);
-                    if (!c || c < 1) { window.alert("Enter credits to bet"); return; }
+                    if (!c || c < 1) { buyErrEl.textContent = "Enter credits to bet"; return; }
+                    if (c > effectiveMax) { buyErrEl.textContent = "Max is " + effectiveMax + " credits"; buyInp.value = effectiveMax; return; }
+                    buyErrEl.textContent = "";
                     try { await placeBetFlow(s.id, opt.key, c); setSending(false, true); }
-                    catch (e) { setSending(false, false); window.alert(e.message || e); }
+                    catch (e) { setSending(false, false); buyErrEl.textContent = e.message || String(e); }
                   });
                   actions.appendChild(buyInp);
                   actions.appendChild(buyBtn);
+                  actions.appendChild(buyErrEl);
 
                   const buyPreview = document.createElement("div");
                   buyPreview.className = "betPreview";
                   buyInp.addEventListener("input", () => {
                     const c = parseInt(buyInp.value, 10);
+                    if (c > effectiveMax) {
+                      buyErrEl.textContent = "Max is " + effectiveMax + " credits";
+                      buyBtn.disabled = true;
+                      buyPreview.textContent = "";
+                      return;
+                    } else {
+                      buyErrEl.textContent = "";
+                      buyBtn.disabled = false;
+                    }
                     if (c > 0 && mkt && mkt.pools && pool) {
                       const fee = c * FEE_RATE;
                       const net = c - fee;
@@ -2568,13 +2669,16 @@
                     const sellBtn = document.createElement("button");
                     sellBtn.className = "btn small";
                     sellBtn.textContent = "Sell";
+                    const sellErrEl = document.createElement("div");
+                    sellErrEl.style.cssText = "font-size:11px;color:var(--danger);margin-top:2px;min-height:14px;width:100%;";
                     sellBtn.addEventListener("click", async () => {
                       const sharesToSell = parseFloat(sellInp.value);
-                      if (!sharesToSell || sharesToSell <= 0) { window.alert("Enter shares to sell"); return; }
-                      if (sharesToSell > myShares * 1.001) { window.alert(`Max: ${myShares} shares`); return; }
+                      if (!sharesToSell || sharesToSell <= 0) { sellErrEl.textContent = "Enter shares to sell"; return; }
+                      if (sharesToSell > myShares * 1.001) { sellErrEl.textContent = "Max: " + myShares + " shares"; sellInp.value = myShares; return; }
+                      sellErrEl.textContent = "";
                       const actualShares = Math.min(sharesToSell, myShares);
                       try { await sellSharesFlow(s.id, opt.key, actualShares); setSending(false, true); }
-                      catch (e) { setSending(false, false); window.alert(e.message || e); }
+                      catch (e) { setSending(false, false); sellErrEl.textContent = e.message || String(e); }
                     });
                     const maxBtn = document.createElement("button");
                     maxBtn.className = "maxBtn";
@@ -2588,11 +2692,19 @@
                     sellRow.appendChild(sellInp);
                     sellRow.appendChild(sellBtn);
                     sellRow.appendChild(maxBtn);
+                    sellRow.appendChild(sellErrEl);
 
                     const sellPreview = document.createElement("div");
                     sellPreview.className = "betPreview";
                     sellInp.addEventListener("input", () => {
                       const sh = parseFloat(sellInp.value);
+                      if (sh > myShares) {
+                        sellErrEl.textContent = "Max: " + myShares + " shares";
+                        sellBtn.disabled = true;
+                      } else {
+                        sellErrEl.textContent = "";
+                        sellBtn.disabled = false;
+                      }
                       if (sh > 0 && sh <= myShares) {
                         let gross = 0;
                         if (CPMM.cpmmSellArbitrage && hasMarket && Object.keys(mkt.pools).length > 1) {
@@ -2603,8 +2715,6 @@
                         const fee = gross * FEE_RATE;
                         const net = gross - fee;
                         sellPreview.textContent = `You receive: ${formatCredits(net)} \u00B7 Fee: ${formatCredits(fee)}`;
-                      } else if (sh > myShares) {
-                        sellPreview.textContent = `Max: ${myShares} shares`;
                       } else {
                         sellPreview.textContent = "";
                       }
@@ -2919,8 +3029,10 @@
             if (_explicitAdminPubkey) {
               isAdmin = !!me && me === _explicitAdminPubkey;
             } else {
-              isAdmin = !!me && isGenesisAccount(me) && JOINED.has(me);
+              isAdmin = !!me && !!_firstJoiner && me === _firstJoiner;
             }
+            const addBtn = $("addSurveyBtn");
+            if (addBtn) addBtn.style.display = isAdmin ? "" : "none";
             updateCreditsDisplay();
 
             // Onboarding — show join screen and hide surveys until joined
@@ -2995,13 +3107,13 @@
                 _explicitAdminPubkey = cfg.admin_pubkey;
                 isAdmin = !!me && me === cfg.admin_pubkey;
               } else {
-                isAdmin = !!me && isGenesisAccount(me) && JOINED.has(me);
+                isAdmin = !!me && !!_firstJoiner && me === _firstJoiner;
               }
             }
           } catch (_) {}
           if (!isAdmin) {
             const btn = $("addSurveyBtn");
-            if (btn) { btn.disabled = true; btn.title = "Only eligible participants can create questions"; }
+            if (btn) btn.style.display = "none";
           }
           if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
             const joinBtn = $("joinBtn");
@@ -3045,23 +3157,45 @@
               await setUsernameFlow(($("usernameInput") || {}).value || "");
               show($("setUsernamePanel"), false);
               setSending(false, true);
-            } catch (e) { setSending(false, false); window.alert(e.message || e); }
+            } catch (e) { setSending(false, false); showInlineError(e.message || e); }
           });
 
           $("joinBtn").addEventListener("click", async () => {
             try { await joinFlow(); setSending(false, true); }
-            catch (e) { setSending(false, false); window.alert(e.message || e); }
+            catch (e) { setSending(false, false); showInlineError(e.message || e); }
           });
 
           $("leaderboardBtn").addEventListener("click", navigateToLeaderboard);
           $("infoBtn").addEventListener("click", navigateToInfo);
 
+          let _resolveConfirmId = null, _resolveConfirmTimer = null;
           $("resolveEarlyBtn").addEventListener("click", async () => {
             const s = currentSurvey();
             if (!s || s.archived || sending) return;
-            if (!window.confirm("Resolve this question early? This will end voting and settle the market.")) return;
+            const btn = $("resolveEarlyBtn");
+            if (_resolveConfirmId !== s.id) {
+              _resolveConfirmId = s.id;
+              if (btn) { btn.textContent = "\u26A0 Tap again to confirm"; btn.style.background = "rgba(230,168,23,0.15)"; }
+              clearTimeout(_resolveConfirmTimer);
+              _resolveConfirmTimer = setTimeout(() => {
+                _resolveConfirmId = null;
+                if (btn) { btn.textContent = "\u23F1 Resolve early (testing)"; btn.style.background = ""; }
+              }, 4000);
+              return;
+            }
+            _resolveConfirmId = null;
+            clearTimeout(_resolveConfirmTimer);
+            if (btn) { btn.textContent = "\u23F1 Resolve early (testing)"; btn.style.background = ""; }
             try { await resolveEarlyFlow(s.id); setSending(false, true); }
-            catch (e) { setSending(false, false); window.alert(e.message || e); }
+            catch (e) { setSending(false, false); showInlineError(e.message || e); }
+          });
+
+          $("deleteSurveyBtn").addEventListener("click", async () => {
+            const s = currentSurvey();
+            if (!s || sending || !isAdmin) return;
+            if (_deleteConfirmId !== s.id) { requestDeleteConfirm(s.id); return; }
+            try { await executeDeleteSurvey(s.id); setSending(false, true); }
+            catch (e) { setSending(false, false); showInlineError(e.message || e); }
           });
 
           $("addOptionToggleBtn").addEventListener("click", () => {
@@ -3084,7 +3218,7 @@
               show($("addOptionPanel"), false);
               const inp = $("newOptionInput"); if (inp) inp.value = "";
               setSending(false, true);
-            } catch (e) { setSending(false, false); window.alert(e.message || e); }
+            } catch (e) { setSending(false, false); showInlineError(e.message || e); }
           });
 
           $("addSurveyOptionBtn").addEventListener("click", () => addSurveyOptionField(""));
@@ -3108,7 +3242,7 @@
               show($("addSurveyPanel"), false);
               clearAddSurveyForm();
               setSending(false, true);
-            } catch (e) { setSending(false, false); window.alert(e.message || e); }
+            } catch (e) { setSending(false, false); showInlineError(e.message || e); }
           });
 
           initSurveyOptionFields();

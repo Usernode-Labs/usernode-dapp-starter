@@ -93,14 +93,6 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
   const crypto = require("crypto");
   const TEST_USER = "ut1_omt_test_user_000000000000000000000000000000000000000000000000";
   const now = new Date();
-  const joinTx = {
-    id: crypto.randomUUID(),
-    from_pubkey: TEST_USER,
-    destination_pubkey: OM_APP_PUBKEY,
-    amount: 1,
-    memo: JSON.stringify({ app: "opinion-market", type: "join" }),
-    created_at: new Date(now.getTime() - 2000).toISOString(),
-  };
   const surveyTx = {
     id: crypto.randomUUID(),
     from_pubkey: TEST_USER,
@@ -123,7 +115,7 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
     }),
     created_at: new Date(now.getTime() - 1000).toISOString(),
   };
-  mockApi.transactions.push(joinTx, surveyTx);
+  mockApi.transactions.push(surveyTx);
   console.log("[omt] Injected test market: \"Test Market\" (3 options, 24h) from", TEST_USER.slice(0, 20) + "…");
 }
 
