@@ -125,6 +125,10 @@ const server = http.createServer((req, res) => {
     }
   })();
 
+  if (pathname === "/__health") {
+    return send(res, 200, { "content-type": "text/plain" }, "ok");
+  }
+
   if (pathname === "/usernode-bridge.js") {
     return fs.readFile(BRIDGE_PATH, (err, buf) => {
       if (err) {

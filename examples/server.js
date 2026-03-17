@@ -121,6 +121,7 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
 
 // ── Falling-sands engine (async init — discovers chain genesis) ──────────────
 let engine = null;
+let engineReady = false;
 
 (async function initEngine() {
   const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
@@ -159,6 +160,7 @@ let engine = null;
 
   // Replay is async — yields to the event loop so the server stays responsive.
   await engine.init();
+  engineReady = true;
 
   setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
   engine.startTickLoop();
@@ -263,6 +265,12 @@ const server = http.createServer((req, res) => {
     try { return new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname; }
     catch (_) { return req.url || "/"; }
   })();
+
+  // Health check for blue-green deploys (200 only after engine replay is complete)
+  if (pathname === "/__health") {
+    const status = engineReady ? 200 : 503;
+    return send(res, status, { "Content-Type": "text/plain" }, engineReady ? "ok" : "loading");
+  }
 
   // Shared bridge
   if (pathname === "/usernode-bridge.js") {
