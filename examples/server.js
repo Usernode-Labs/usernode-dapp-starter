@@ -167,6 +167,10 @@ const sandsPoller = createChainPoller({
       engine.addTransaction({ timestamp_ms: timestampMs, memo, from: tx.source || tx.from_pubkey || tx.from || "unknown" });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
+  onChainReset(newId, oldId) {
+    console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
+    if (engine && engine.universe) engine.universe.reset();
+  },
 });
 
 // ── Opinion Market vote encryption ───────────────────────────────────────────
@@ -189,6 +193,11 @@ const omPoller = createChainPoller({
     omTxCache.push(tx);
     voteEncryption.processTransaction(tx);
   },
+  onChainReset(newId, oldId) {
+    console.log(`[om] chain reset ${oldId} -> ${newId}, clearing tx cache and vote-encryption state`);
+    omTxCache.length = 0;
+    voteEncryption.reset();
+  },
 });
 if (!LOCAL_DEV) omPoller.start();
 
@@ -203,15 +212,21 @@ const lastOneWins = createLastOneWins({
 });
 lastOneWins.start();
 
+function resetLastOneWins(newId, oldId) {
+  console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
+  lastOneWins.reset();
+}
 const lastwinEntryPoller = createChainPoller({
   appPubkey: LASTWIN_APP_PUBKEY,
   queryField: "recipient",
   onTransaction: lastOneWins.processTransaction,
+  onChainReset: resetLastOneWins,
 });
 const lastwinPayoutPoller = createChainPoller({
   appPubkey: LASTWIN_APP_PUBKEY,
   queryField: "sender",
   onTransaction: lastOneWins.processTransaction,
+  onChainReset: resetLastOneWins,
 });
 if (!LOCAL_DEV) { lastwinEntryPoller.start(); lastwinPayoutPoller.start(); }
 

@@ -94,6 +94,10 @@ const poller = createChainPoller({
       });
     } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
   },
+  onChainReset(newId, oldId) {
+    console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
+    if (engine && engine.universe) engine.universe.reset();
+  },
 });
 
 // ── HTTP server ──────────────────────────────────────────────────────────────

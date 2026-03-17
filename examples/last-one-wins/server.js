@@ -56,16 +56,22 @@ const game = createLastOneWins({
 game.start();
 
 // ── Chain polling (production) ───────────────────────────────────────────────
+function onChainReset(newId, oldId) {
+  console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
+  game.reset();
+}
 if (!LOCAL_DEV) {
   createChainPoller({
     appPubkey: APP_PUBKEY,
     queryField: "recipient",
     onTransaction: game.processTransaction,
+    onChainReset,
   }).start();
   createChainPoller({
     appPubkey: APP_PUBKEY,
     queryField: "sender",
     onTransaction: game.processTransaction,
+    onChainReset,
   }).start();
 }
 

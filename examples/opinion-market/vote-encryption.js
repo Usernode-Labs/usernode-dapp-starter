@@ -340,12 +340,20 @@ function createVoteEncryption(opts) {
     }
   }
 
+  function reset() {
+    seenTxIds.clear();
+    surveys.clear();
+    signerConfigured = false;
+    console.log("[vote-enc] state reset (chain restart detected)");
+  }
+
   return {
     processTransaction,
     handleRequest,
     start,
     checkAndPublishKeys,
     buildPubkeysForSurvey,
+    reset,
     surveys,
   };
 }

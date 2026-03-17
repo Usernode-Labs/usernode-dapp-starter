@@ -324,6 +324,20 @@ function createLastOneWins(opts) {
     }
   }
 
+  function reset() {
+    seenTxIds.clear();
+    usernames.clear();
+    state.roundNumber = 1;
+    state.potBalance = 0;
+    state.lastSender = null;
+    state.lastEntryTs = null;
+    state.entries = [];
+    state.pastRounds = [];
+    state.payoutInProgress = false;
+    signerConfigured = false;
+    console.log("[game] state reset (chain restart detected)");
+  }
+
   return {
     state,
     processTransaction,
@@ -331,6 +345,7 @@ function createLastOneWins(opts) {
     getStateResponse,
     checkPayout,
     start,
+    reset,
     appPubkey,
   };
 }

@@ -277,27 +277,50 @@ function createMockApi(opts) {
 function createChainPoller(opts) {
   const appPubkey = opts.appPubkey;
   const onTransaction = opts.onTransaction;
+  const onChainReset = opts.onChainReset || null;
   const intervalMs = opts.intervalMs || 3000;
   const upstream = opts.upstream || getExplorerUpstream();
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const queryField = opts.queryField || "account";
   const maxPages = opts.maxPages || 200;
   const seenIdsCap = opts.seenIdsCap || 5000;
+  const recheckIntervalPolls = opts.recheckIntervalPolls || 10;
 
   let chainId = null;
   const seenTxIds = new Set();
   let lastHeight = (opts.initialLastHeight != null) ? opts.initialLastHeight : null;
   let pollCount = 0;
 
+  async function fetchActiveChainId() {
+    const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
+    return (data && data.chain_id) ? data.chain_id : null;
+  }
+
   async function discoverChainId() {
     try {
-      const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
-      if (data && data.chain_id) {
-        chainId = data.chain_id;
+      const id = await fetchActiveChainId();
+      if (id) {
+        chainId = id;
         console.log(`[chain] discovered chain_id: ${chainId}`);
       }
     } catch (e) {
       console.warn(`[chain] could not discover chain ID: ${e.message}`);
+    }
+  }
+
+  async function recheckChainId() {
+    try {
+      const id = await fetchActiveChainId();
+      if (id && id !== chainId) {
+        const oldId = chainId;
+        console.log(`[chain] chain_id changed: ${oldId} -> ${id} — resetting poller state`);
+        chainId = id;
+        seenTxIds.clear();
+        lastHeight = null;
+        if (onChainReset) onChainReset(id, oldId);
+      }
+    } catch (e) {
+      // Transient error — keep using current chainId
     }
   }
 
@@ -316,6 +339,9 @@ function createChainPoller(opts) {
 
   async function poll() {
     if (!chainId) { await discoverChainId(); if (!chainId) return; }
+    else if (pollCount > 0 && pollCount % recheckIntervalPolls === 0) {
+      await recheckChainId();
+    }
 
     pollCount++;
     const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
