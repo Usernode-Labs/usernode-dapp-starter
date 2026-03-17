@@ -139,12 +139,19 @@ let engine = null;
     replayTxIds = fetched.txIds || [];
   }
 
-  engine = createEngine({
+  const engineOpts = {
     wasmLoaderPath: require.resolve("./falling-sands/wasm-loader"),
     chainId: chainInfo.chainId,
     epoch: chainInfo.genesisTimestampMs,
     replayTxs,
-  });
+  };
+  if (process.env.SNAPSHOT_DIR) {
+    const dir = path.resolve(process.env.SNAPSHOT_DIR);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    engineOpts.snapshotDir = dir;
+  }
+
+  engine = createEngine(engineOpts);
 
   // Attach WebSocket immediately so clients can connect during replay
   // (they receive "loading" messages with progress until replay finishes).

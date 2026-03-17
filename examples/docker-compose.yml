@@ -7,14 +7,20 @@ services:
         required: false
     environment:
       PORT: "8000"
+      SNAPSHOT_DIR: "/app/data"
       VIRTUAL_HOST: "dapps.usernodelabs.org"
       VIRTUAL_PORT: "8000"
       LETSENCRYPT_HOST: "dapps.usernodelabs.org"
     expose:
       - "8000"
+    volumes:
+      - sands-data:/app/data
     networks:
       - proxy-network
     restart: unless-stopped
+
+volumes:
+  sands-data:
 
 networks:
   proxy-network:

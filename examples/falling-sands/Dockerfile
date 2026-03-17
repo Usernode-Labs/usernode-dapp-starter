@@ -28,6 +28,8 @@ COPY falling-sands/usernode-bridge.js ./falling-sands/
 # Built WASM package
 COPY --from=wasm-builder /build/sandspiel/crate/pkg/ falling-sands/sandspiel/crate/pkg/
 
+RUN mkdir -p /app/falling-sands/data
+
 EXPOSE 3333
 
 WORKDIR /app/falling-sands

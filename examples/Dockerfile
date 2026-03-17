@@ -42,6 +42,8 @@ COPY falling-sands/wasm-loader.js falling-sands/
 COPY falling-sands/wasm-browser.js falling-sands/
 COPY --from=wasm-builder /build/sandspiel/crate/pkg/ falling-sands/sandspiel/crate/pkg/
 
+RUN mkdir -p /app/data
+
 EXPOSE 8000
 
 CMD ["node", "server.js"]

@@ -57,12 +57,19 @@ let engine = null;
     lastHeight = fetched.lastHeight;
   }
 
-  engine = createEngine({
+  const engineOpts = {
     wasmLoaderPath: require.resolve("./wasm-loader"),
     chainId: chainInfo.chainId,
     epoch: chainInfo.genesisTimestampMs,
     replayTxs,
-  });
+  };
+  if (process.env.SNAPSHOT_DIR) {
+    const dir = path.resolve(process.env.SNAPSHOT_DIR);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    engineOpts.snapshotDir = dir;
+  }
+
+  engine = createEngine(engineOpts);
 
   engine.attachWebSocket(server);
   await engine.init();

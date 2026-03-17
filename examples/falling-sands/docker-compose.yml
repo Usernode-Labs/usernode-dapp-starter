@@ -6,6 +6,12 @@ services:
     container_name: falling-sands
     environment:
       PORT: "3333"
+      SNAPSHOT_DIR: "/app/falling-sands/data"
     ports:
       - "3333:3333"
+    volumes:
+      - sands-data:/app/falling-sands/data
     restart: unless-stopped
+
+volumes:
+  sands-data:
