@@ -28,6 +28,7 @@ jobs:
             APP_PUBKEY=${{ secrets.APP_PUBKEY }}
             APP_SECRET_KEY=${{ secrets.APP_SECRET_KEY }}
             VOTE_ENCRYPT_SEED=${{ secrets.VOTE_ENCRYPT_SEED }}
+            OM_ADMIN_PUBKEY=${{ secrets.OM_ADMIN_PUBKEY }}
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
             echo "==> .env written ($(wc -l < .env) lines)"
