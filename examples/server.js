@@ -20,7 +20,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
+const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
@@ -69,6 +69,17 @@ const LASTWIN_TIMER_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000
 const OM_APP_PUBKEY = "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
 const OM_ADMIN_PUBKEY = process.env.OM_ADMIN_PUBKEY || "";
 const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
+
+// Genesis accounts (fetched once on startup; empty in local-dev)
+let omGenesisAccounts = [];
+if (!LOCAL_DEV) {
+  fetchGenesisAccounts().then(accounts => {
+    omGenesisAccounts = accounts;
+    console.log(`[om] genesis accounts loaded: ${accounts.length}`);
+  }).catch(e => {
+    console.warn(`[om] failed to load genesis accounts: ${e.message}`);
+  });
+}
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({
@@ -325,7 +336,10 @@ const server = http.createServer((req, res) => {
   // Opinion Market config (exposes non-secret settings to the client)
   if (pathname === "/__config/opinion-market") {
     return send(res, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" },
-      JSON.stringify({ admin_pubkey: OM_ADMIN_PUBKEY || null }));
+      JSON.stringify({
+        admin_pubkey: OM_ADMIN_PUBKEY || null,
+        genesis_accounts: omGenesisAccounts,
+      }));
   }
 
   // Explorer proxy

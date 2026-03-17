@@ -1013,7 +1013,9 @@
         let me = null;
         let myUsername = null;
         let sending = false;
-        let isAdmin = true;
+        let isAdmin = false;
+        let _explicitAdminPubkey = null;
+        let GENESIS_ACCOUNTS = new Set();
         let currentSurveyId = null;
         let currentOptionByKey = new Map();
         let myAddedOptionBySurvey = {};
@@ -1024,6 +1026,8 @@
         let _lastRebuildTxCount = -1;
         const _decryptCache = new Map();
 
+        function isGenesisGated() { return GENESIS_ACCOUNTS.size > 0; }
+        function isGenesisAccount(addr) { return !isGenesisGated() || GENESIS_ACCOUNTS.has(addr); }
         function currentSurvey() { return SURVEYS_BY_ID.get(currentSurveyId) || null; }
         function myCredits() {
           if (!me || !JOINED.has(me)) return 0;
@@ -1090,15 +1094,16 @@
             for (const addr in globalNames) GLOBAL_USERNAMES.set(addr, globalNames[addr]);
           }
 
-          // --- Phase 2: Joins (first per pubkey) ---
+          // --- Phase 2: Joins (first per pubkey, genesis-gated) ---
           for (const { tx, memo } of parsed) {
-            if (memo.type === "join") JOINED.add(tx.from);
+            if (memo.type === "join" && isGenesisAccount(tx.from)) JOINED.add(tx.from);
           }
 
-          // --- Phase 3: Surveys (with rate limiting) ---
+          // --- Phase 3: Surveys (with rate limiting, genesis-gated) ---
           const allCreations = [];
           for (const { tx, memo } of parsed) {
             if (memo.type !== "create_survey") continue;
+            if (!isGenesisAccount(tx.from)) continue;
             const survey = normalizeSurveyDefinition(memo.survey);
             if (survey) allCreations.push({ survey, ts: tx.ts, from: tx.from });
           }
@@ -1145,10 +1150,11 @@
           SURVEYS_BY_ID = new Map();
           for (const s of SURVEYS) SURVEYS_BY_ID.set(s.id, s);
 
-          // --- Phase 4: Custom options per survey ---
+          // --- Phase 4: Custom options per survey (genesis-gated) ---
           const optionsBySurvey = new Map();
           for (const { tx, memo } of parsed) {
             if (memo.type !== "add_option") continue;
+            if (!isGenesisAccount(tx.from)) continue;
             const sv = memo.survey == null ? null : String(memo.survey);
             const survey = SURVEYS_BY_ID.get(sv);
             if (!survey || !survey.allowCustomOptions) continue;
@@ -1178,10 +1184,11 @@
             survey.options = Array.from(existing.values());
           }
 
-          // --- Phase 5: Votes (latest per sender per survey) ---
+          // --- Phase 5: Votes (latest per sender per survey, genesis-gated) ---
           const voteMap = new Map();
           for (const { tx, memo } of parsed) {
             if (memo.type !== "vote") continue;
+            if (!isGenesisAccount(tx.from)) continue;
             const sv = memo.survey == null ? null : String(memo.survey);
             const survey = SURVEYS_BY_ID.get(sv);
             if (!survey) continue;
@@ -1798,6 +1805,9 @@
           }
           document.querySelectorAll("button, input, select").forEach(el => { if (!el.closest("#screenLeaderboard")) el.disabled = !!v; });
           if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) btn.disabled = true; }
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
+            const joinBtn = $("joinBtn"); if (joinBtn) joinBtn.disabled = true;
+          }
         }
 
         /* ================================================================
@@ -1917,20 +1927,23 @@
           const hint = $("surveyCooldownHint");
           if (hint) { setText(hint, onCooldown ? `You can create another question in ${remaining}.` : ""); show(hint, onCooldown); }
           const notJoined = me && !JOINED.has(me);
-          setDisabled($("saveSurveyBtn"), sending || onCooldown || notJoined);
-          setDisabled($("newSurveyTitle"), sending || onCooldown || notJoined);
-          setDisabled($("newSurveyQuestion"), sending || onCooldown || notJoined);
-          getSurveyOptionInputs().forEach(i => setDisabled(i, sending || onCooldown || notJoined));
-          setDisabled($("addSurveyOptionBtn"), sending || onCooldown || notJoined);
-          setDisabled($("newSurveyDuration"), sending || onCooldown || notJoined);
-          setDisabled($("newSurveyRevealInterval"), sending || onCooldown || notJoined);
-          setDisabled($("newSurveyAllowCustom"), sending || onCooldown || notJoined);
+          const notGenesis = isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me);
+          const blocked = sending || onCooldown || notJoined || notGenesis || !isAdmin;
+          setDisabled($("saveSurveyBtn"), blocked);
+          setDisabled($("newSurveyTitle"), blocked);
+          setDisabled($("newSurveyQuestion"), blocked);
+          getSurveyOptionInputs().forEach(i => setDisabled(i, blocked));
+          setDisabled($("addSurveyOptionBtn"), blocked);
+          setDisabled($("newSurveyDuration"), blocked);
+          setDisabled($("newSurveyRevealInterval"), blocked);
+          setDisabled($("newSurveyAllowCustom"), blocked);
         }
 
         /* ================================================================
          *  TX FLOWS
          * ================================================================ */
         async function joinFlow() {
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) throw new Error("Only genesis ledger participants can join");
           setSending(true);
           showPending("joinPending", "Joining...");
           const memo = makeMemo({ app: "opinion-market", type: "join" });
@@ -1939,6 +1952,7 @@
         }
 
         async function voteFlow(optionKey) {
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) throw new Error("Only genesis ledger participants can vote");
           const s = currentSurvey();
           if (!s) throw new Error("No question selected");
           if (s.archived) throw new Error("Archived questions are read-only");
@@ -1959,6 +1973,7 @@
         }
 
         async function addOptionFlow(labelRaw) {
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) throw new Error("Only genesis ledger participants can add options");
           const s = currentSurvey();
           if (!s) throw new Error("No question selected");
           if (s.archived) throw new Error("Archived questions are read-only");
@@ -2017,6 +2032,8 @@
         }
 
         async function createSurveyFlow() {
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) throw new Error("Only genesis ledger participants can create questions");
+          if (!isAdmin) throw new Error("You don't have permission to create questions");
           if (isSurveyCooldownActive()) throw new Error(`Please wait ${formatCooldownRemaining() || "some time"} before creating another question.`);
           if (me && !JOINED.has(me)) throw new Error("Join first to create questions");
           if (myCredits() < MARKET_ANTE) throw new Error(`You need at least ${MARKET_ANTE} credits to create a question (${MARKET_ANTE} goes to seed the betting pool).`);
@@ -2899,6 +2916,11 @@
             if (latestUsername) { myUsername = latestUsername; setText($("headerUsername"), myUsername); }
 
             rebuildState(txs);
+            if (_explicitAdminPubkey) {
+              isAdmin = !!me && me === _explicitAdminPubkey;
+            } else {
+              isAdmin = !!me && isGenesisAccount(me) && JOINED.has(me);
+            }
             updateCreditsDisplay();
 
             // Onboarding — show join screen and hide surveys until joined
@@ -2965,14 +2987,25 @@
             const cfgResp = await fetch("/__config/opinion-market");
             if (cfgResp.ok) {
               const cfg = await cfgResp.json();
+              if (Array.isArray(cfg.genesis_accounts) && cfg.genesis_accounts.length > 0) {
+                GENESIS_ACCOUNTS = new Set(cfg.genesis_accounts);
+                console.log(`[om] genesis accounts loaded: ${GENESIS_ACCOUNTS.size}`);
+              }
               if (cfg.admin_pubkey) {
+                _explicitAdminPubkey = cfg.admin_pubkey;
                 isAdmin = !!me && me === cfg.admin_pubkey;
+              } else {
+                isAdmin = !!me && isGenesisAccount(me) && JOINED.has(me);
               }
             }
           } catch (_) {}
           if (!isAdmin) {
             const btn = $("addSurveyBtn");
-            if (btn) { btn.disabled = true; btn.title = "Only the admin can create questions"; }
+            if (btn) { btn.disabled = true; btn.title = "Only eligible participants can create questions"; }
+          }
+          if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
+            const joinBtn = $("joinBtn");
+            if (joinBtn) { joinBtn.disabled = true; joinBtn.title = "Only genesis ledger participants can join"; }
           }
 
           const initialHash = location.hash || "";

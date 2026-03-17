@@ -552,6 +552,59 @@ async function discoverChainInfo(opts) {
   return result;
 }
 
+// ── Genesis accounts fetch ───────────────────────────────────────────────
+//
+// One-shot fetch of genesis-ledger accounts by querying the explorer for
+// genesis-type transactions (block height 0). Returns an array of unique
+// destination addresses that received genesis distributions.
+
+async function fetchGenesisAccounts(opts) {
+  const upstream = (opts && opts.upstream) || getExplorerUpstream();
+  const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
+
+  let chainId = opts && opts.chainId;
+  if (!chainId) {
+    try {
+      const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
+      chainId = data && data.chain_id;
+    } catch (e) {
+      console.warn(`[genesis] could not discover chain: ${e.message}`);
+      return [];
+    }
+  }
+  if (!chainId) return [];
+
+  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
+  const accounts = new Set();
+
+  try {
+    let cursor = null;
+    for (let page = 0; page < 20; page++) {
+      const body = { to_height: 1, limit: 200 };
+      if (cursor) body.cursor = cursor;
+      const resp = await httpsJson("POST", `${baseUrl}/transactions`, body);
+
+      const items = (resp && Array.isArray(resp.items)) ? resp.items
+        : (resp && Array.isArray(resp.transactions)) ? resp.transactions
+        : [];
+
+      for (const tx of items) {
+        if (tx.tx_type === "genesis" && tx.destination) {
+          accounts.add(tx.destination);
+        }
+      }
+
+      if (!resp || !resp.has_more || !resp.next_cursor) break;
+      cursor = resp.next_cursor;
+    }
+    console.log(`[genesis] found ${accounts.size} genesis account(s)`);
+  } catch (e) {
+    console.warn(`[genesis] could not fetch genesis accounts: ${e.message}`);
+  }
+
+  return Array.from(accounts);
+}
+
 // ── Path resolution ──────────────────────────────────────────────────────────
 
 function resolvePath(...candidates) {
@@ -571,6 +624,7 @@ module.exports = {
   createMockApi,
   createChainPoller,
   fetchAllTransactions,
+  fetchGenesisAccounts,
   discoverChainInfo,
   resolvePath,
 };
