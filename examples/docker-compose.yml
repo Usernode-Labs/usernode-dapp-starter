@@ -1,7 +1,6 @@
 services:
   dapp-examples:
     build: .
-    container_name: dapp-examples
     env_file:
       - path: ../.env
         required: false
@@ -21,6 +20,7 @@ services:
 
 volumes:
   sands-data:
+    name: sands-data
 
 networks:
   proxy-network:
