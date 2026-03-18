@@ -343,7 +343,11 @@
         amount,
         memo,
       });
-      const sendFailed = sendResult && (sendResult.error || sendResult.queued === false);
+      const sendError = sendResult && sendResult.error;
+      if (sendError) {
+        throw new Error(String(sendError));
+      }
+      const sendFailed = sendResult && sendResult.queued === false;
       const shouldWait =
         !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
       if (shouldWait) {
