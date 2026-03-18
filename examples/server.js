@@ -93,6 +93,15 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
   const crypto = require("crypto");
   const TEST_USER = "ut1_omt_test_user_000000000000000000000000000000000000000000000000";
   const now = new Date();
+  const joinTx = {
+    id: crypto.randomUUID(),
+    from_pubkey: TEST_USER,
+    destination_pubkey: OM_APP_PUBKEY,
+    amount: 1,
+    memo: JSON.stringify({ app: "opinion-market", type: "join" }),
+    created_at: new Date(now.getTime() - 2000).toISOString(),
+  };
+  mockApi.transactions.push(joinTx);
   const surveyTx = {
     id: crypto.randomUUID(),
     from_pubkey: TEST_USER,
@@ -105,7 +114,8 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
         id: "test-market",
         title: "Test Market",
         question: "Which option will win?",
-        active_duration_ms: 86400000,
+        active_duration_ms: 180000,
+        allow_custom_options: false,
         options: [
           { key: "yes", label: "Yes" },
           { key: "no", label: "No" },
@@ -116,7 +126,7 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
     created_at: new Date(now.getTime() - 1000).toISOString(),
   };
   mockApi.transactions.push(surveyTx);
-  console.log("[omt] Injected test market: \"Test Market\" (3 options, 24h) from", TEST_USER.slice(0, 20) + "…");
+  console.log("[omt] Injected test market: \"Test Market\" (3 options, 3min) from", TEST_USER.slice(0, 20) + "…");
 }
 
 // ── Falling-sands engine (async init — discovers chain genesis) ──────────────

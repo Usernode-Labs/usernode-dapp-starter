@@ -269,6 +269,157 @@
     return { creditsReceived: Math.max(0, creditsReceived), newPools: newPools };
   }
 
+  /**
+   * Multi-option Buy NO arbitrage (Manifold's calculateCpmmMultiArbitrageBetNo).
+   *
+   * Strategy: buy yesShares YES in each OTHER answer, then buy NO in target
+   * with remaining budget. Identity: YES in all (n-1) others = NO in target
+   * (no extra mana offset, unlike Buy YES which has n-2).
+   *
+   * Binary search finds yesShares such that all probabilities sum to 1.
+   */
+  function cpmmArbitrageNo(pools, targetOptKey, credits) {
+    var keys = Object.keys(pools);
+    if (keys.length === 0 || credits <= 0) return { sharesReceived: 0, newPools: clonePools(pools) };
+    if (!pools[targetOptKey]) return { sharesReceived: 0, newPools: clonePools(pools) };
+
+    if (keys.length === 1) {
+      var pool = pools[targetOptKey];
+      return {
+        sharesReceived: cpmmBuyNo(pool, credits),
+        newPools: { [targetOptKey]: cpmmBuyNoApply(pool, credits) },
+      };
+    }
+
+    var otherKeys = keys.filter(function (k) { return k !== targetOptKey; });
+    var TOL = 1e-9;
+
+    var yesPriceSum = 0;
+    for (var i = 0; i < otherKeys.length; i++) {
+      yesPriceSum += cpmmProb(pools[otherKeys[i]]);
+    }
+    var maxYes = (credits / Math.max(yesPriceSum, 0.001)) * 3;
+
+    var lo = 0, hi = maxYes;
+    for (var iter = 0; iter < 80; iter++) {
+      var mid = (lo + hi) / 2;
+      var totalYesCost = 0, valid = true;
+      var working = {};
+
+      for (var j = 0; j < otherKeys.length; j++) {
+        var k = otherKeys[j];
+        var amt = cpmmAmountForShares(pools[k], mid, "YES");
+        if (!Number.isFinite(amt) || amt < 0) { valid = false; break; }
+        totalYesCost += amt;
+        working[k] = cpmmBuyYesApply(pools[k], amt);
+      }
+      if (!valid) { hi = mid; continue; }
+
+      var noBudget = credits - totalYesCost;
+      if (noBudget < -TOL) { hi = mid; continue; }
+
+      working[targetOptKey] = cpmmBuyNoApply(pools[targetOptKey], Math.max(0, noBudget));
+
+      var pSum = 0;
+      for (var m = 0; m < keys.length; m++) pSum += cpmmProb(working[keys[m]]);
+
+      if (Math.abs(pSum - 1) < TOL) { lo = hi = mid; break; }
+      if (pSum < 1) lo = mid;
+      else hi = mid;
+    }
+
+    var yesShares = (lo + hi) / 2;
+    var finalYesCost = 0;
+    var newPools = {};
+    for (var j2 = 0; j2 < otherKeys.length; j2++) {
+      var k2 = otherKeys[j2];
+      var a = cpmmAmountForShares(pools[k2], yesShares, "YES");
+      finalYesCost += a;
+      newPools[k2] = cpmmBuyYesApply(pools[k2], a);
+    }
+    var finalNoBudget = Math.max(0, credits - finalYesCost);
+    var directNo = cpmmBuyNo(pools[targetOptKey], finalNoBudget);
+    newPools[targetOptKey] = cpmmBuyNoApply(pools[targetOptKey], finalNoBudget);
+
+    return { sharesReceived: yesShares + directNo, newPools: newPools };
+  }
+
+  /**
+   * Multi-option Sell NO arbitrage (Manifold's calculateCpmmMultiArbitrageSellNo).
+   *
+   * To sell `sharesToSell` NO shares of the target:
+   *   1. Binary search over `yesShares` (0..sharesToSell)
+   *   2. Buy `yesShares` YES in TARGET pool (pair with NO → mana)
+   *   3. Buy `noSharesInOthers = sharesToSell - yesShares` NO in EACH other pool
+   *   4. Redeem: complete NO sets → (n-1) mana per share;
+   *      net: redeemedMana = noSharesInOthers * (n-2)
+   *   5. creditsReceived = sharesToSell - yesAmount - netNoAmount
+   */
+  function cpmmSellArbitrageNo(pools, targetOptKey, sharesToSell) {
+    var keys = Object.keys(pools);
+    if (keys.length === 0 || sharesToSell <= 0) return { creditsReceived: 0, newPools: clonePools(pools) };
+    if (!pools[targetOptKey]) return { creditsReceived: 0, newPools: clonePools(pools) };
+
+    if (keys.length === 1) {
+      var g = cpmmSellNo(pools[targetOptKey], sharesToSell);
+      var sp = {};
+      sp[targetOptKey] = cpmmSellNoApply(pools[targetOptKey], sharesToSell);
+      return { creditsReceived: g, newPools: sp };
+    }
+
+    var otherKeys = [];
+    for (var i = 0; i < keys.length; i++) { if (keys[i] !== targetOptKey) otherKeys.push(keys[i]); }
+    var n = keys.length;
+    var TOL = 1e-9;
+
+    var lo = 0, hi = sharesToSell;
+    for (var iter = 0; iter < 80; iter++) {
+      var yesShares = (lo + hi) / 2;
+      var noSharesInOthers = sharesToSell - yesShares;
+
+      var yesAmount = cpmmAmountForShares(pools[targetOptKey], yesShares, "YES");
+      if (!Number.isFinite(yesAmount) || yesAmount < 0) { hi = yesShares; continue; }
+
+      var working = {};
+      working[targetOptKey] = cpmmBuyYesApply(pools[targetOptKey], yesAmount);
+
+      var valid = true;
+      for (var j = 0; j < otherKeys.length; j++) {
+        var noAmt = cpmmAmountForShares(pools[otherKeys[j]], noSharesInOthers, "NO");
+        if (!Number.isFinite(noAmt) || noAmt < 0) { valid = false; break; }
+        working[otherKeys[j]] = cpmmBuyNoApply(pools[otherKeys[j]], noAmt);
+      }
+      if (!valid) { lo = yesShares; continue; }
+
+      var pSum = 0;
+      for (var m = 0; m < keys.length; m++) pSum += cpmmProb(working[keys[m]]);
+
+      if (Math.abs(pSum - 1) < TOL) { lo = hi = yesShares; break; }
+      if (pSum > 1) hi = yesShares;
+      else lo = yesShares;
+    }
+
+    var finalYesShares = (lo + hi) / 2;
+    var finalNoInOthers = sharesToSell - finalYesShares;
+
+    var finalYesAmount = cpmmAmountForShares(pools[targetOptKey], finalYesShares, "YES");
+    var newPools = {};
+    newPools[targetOptKey] = cpmmBuyYesApply(pools[targetOptKey], finalYesAmount);
+
+    var totalNoAmount = 0;
+    for (var j2 = 0; j2 < otherKeys.length; j2++) {
+      var k2 = otherKeys[j2];
+      var na = cpmmAmountForShares(pools[k2], finalNoInOthers, "NO");
+      totalNoAmount += na;
+      newPools[k2] = cpmmBuyNoApply(pools[k2], na);
+    }
+
+    var redeemedMana = finalNoInOthers * Math.max(0, n - 2);
+    var netNoAmount = totalNoAmount - redeemedMana;
+    var creditsReceived = sharesToSell - finalYesAmount - netNoAmount;
+    return { creditsReceived: Math.max(0, creditsReceived), newPools: newPools };
+  }
+
   function clonePools(pools) {
     var out = {};
     for (var k in pools) { if (pools.hasOwnProperty(k)) out[k] = { yes: pools[k].yes, no: pools[k].no }; }
@@ -301,6 +452,8 @@
     cpmmAmountForShares: cpmmAmountForShares,
     cpmmArbitrage: cpmmArbitrage,
     cpmmSellArbitrage: cpmmSellArbitrage,
+    cpmmArbitrageNo: cpmmArbitrageNo,
+    cpmmSellArbitrageNo: cpmmSellArbitrageNo,
     cpmmInitPools: cpmmInitPools,
   };
 

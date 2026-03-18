@@ -230,23 +230,200 @@ All state is derived by scanning the full transaction history on each refresh:
 - **Display**: Ranked list with username, total earnings, win rate (markets won / markets bet on)
 - **Global**: Not per-survey. Persists across all surveys.
 
+## Option Colors
+
+Each option in a survey is assigned a color from a fixed 8-color palette by index. Colors are chosen to be distinguishable in both light and dark mode.
+
+```js
+const OPTION_COLORS = [
+  '#6ea8fe', '#ff6b6b', '#5dd39e', '#e6a817',
+  '#c084fc', '#f472b6', '#22d3ee', '#fb923c'
+];
+```
+
+Option colors are used consistently across:
+- The inline odds summary (colored dots)
+- The odds chart (line colors)
+- The vote indicator
+- The option list (colored dots)
+
+---
+
+## Probability History
+
+During state rebuild (Phase 6: market ops), the probability of each option is snapshotted after every `place_bet` and `sell_shares` transaction. This produces a time series suitable for charting.
+
+### Data Model
+
+```js
+mkt.history = [
+  { ts: <epochMs>, probs: { optKey1: 0.5, optKey2: 0.5 } },
+  // ... one entry per market operation
+]
+```
+
+- Seeded with initial equal probabilities at market creation time
+- Updated after each `place_bet` or `sell_shares` replayed in chronological order
+
+### Per-Option Volume
+
+Track total credits bet on each option:
+
+```js
+mkt.optionVolume = { optKey1: 250, optKey2: 480 }
+```
+
+Updated during `place_bet` replay. Sell transactions do not add to volume.
+
+---
+
 ## UI Screens
 
 ### Modified Screens
 
 1. **Header**: Add credit balance display (coin icon + number). Add leaderboard button.
 2. **Survey List**: Add badges for "next reveal in Xh" and "N credits in market". Active/archived split unchanged.
-3. **Survey Detail** — restructured into sections:
-  - **Question + Countdown**: Survey title, question, time to next reveal, time to expiry
-  - **Your Vote**: Option picker with "submitted, hidden until reveal" confirmation. Shows your current vote if already cast.
-  - **Results** (only for passed reveal checkpoints): Vote bar chart, same as today but only showing data up to the last reveal
-  - **Market**: For each option — implied probability (%), pool depth, share price. Your position (shares held, current value). Buy/sell controls. Shows "your potential payout if this wins."
-  - **Settled Market** (archived surveys only): Final results + winning option + payout amounts per shareholder + surprise index per option ("White was 12% more popular than the market predicted")
+
+### Active Survey Detail
+
+The active survey detail view is a single scrollable screen with these sections top-to-bottom:
+
+#### Header
+
+```
+Title
+Description / question text
+1,234c volume   42 votes
+```
+
+- **Title**: survey title
+- **Description**: survey question
+- **Total volume**: sum of `mkt.optionVolume` across all options, formatted as credits
+- **Total votes**: count of unique voters for this survey
+
+#### Odds Summary
+
+Inline row showing each option's current probability with its color dot:
+
+```
+●opt1 45.2%  ●opt2 32.1%  ●opt3 22.7%
+```
+
+- Colored dot uses the option's assigned color from the palette
+- Probability from `cpmmProb(pool)` for each option
+- Wraps naturally on narrow screens
+
+#### Odds Chart
+
+An inline SVG line chart showing probability over time since market creation:
+
+- X-axis: time from market creation to now
+- Y-axis: 0% to 100% probability
+- One polyline per option in its assigned color
+- Subtle gridlines at 25%, 50%, 75%
+- Responsive width (fills container), fixed aspect ratio
+- Data source: `mkt.history` (see Probability History section)
+- No external library — pure inline SVG
+
+#### Vote Section
+
+Conditional display based on whether the user has voted:
+
+- **If voted**: "Your vote: ● Option A" (with the option's color dot)
+- **If not voted**: "Select a checkbox to vote for an option."
+
+#### Option List
+
+Each option is a card/row containing:
+
+```
+● Option A                              [ ] (checkbox)
+  500c volume  |  12 shares
+  [Buy Yes 0.45c]
+```
+
+- **Color dot + name**: option's assigned color, option label
+- **Checkbox**: radio-style — selecting it triggers `voteFlow(opt.key)`. Shows checked state if this is the user's current vote.
+- **Volume**: per-option volume from `mkt.optionVolume[opt.key]`
+- **Position**: user's shares in this option (`mkt.userShares[me][opt.key]`), or "--" if none
+- **Buy Yes button**: shows the cost per share from `cpmmAmountForShares(pool, 1, "YES")`. Clicking opens the bottom sheet buy modal.
+
+#### Bottom Sheet Buy Modal
+
+When the user clicks "Buy Yes" on any option, a modal slides up from the bottom of the screen:
+
+- **Backdrop**: semi-transparent overlay covering the rest of the screen
+- **Sheet content**:
+  - Option name + color dot + current odds
+  - Number input for credits to spend
+  - Live preview: "You'll receive ~X shares" (computed via `cpmmArbitrage`)
+  - "Buy" button — triggers `placeBetFlow`, then closes modal on success
+  - Close/cancel button or tap-backdrop-to-dismiss
+- **Sell path**: if the user owns shares in this option, the modal also shows a "Sell" tab/toggle with:
+  - Shares input (with "Max" button)
+  - Live preview: "You'll receive ~X credits" (computed via `cpmmSellArbitrage`)
+  - "Sell" button — triggers `sellSharesFlow`
+- **Animation**: CSS `transform: translateY(100%)` -> `translateY(0)` transition
+- **While open**: disable background scroll
+
+### Settled Survey Detail (Archived)
+
+Unchanged from current: final results + winning option + payout amounts per shareholder + surprise index.
 
 ### New Screens
 
 1. **Leaderboard**: Ranked table — rank, username, lifetime earnings, markets participated, win rate
 2. **Join/Onboarding**: First-visit flow — "Welcome, you have 1000 credits" with explanation of voting vs betting
+
+---
+
+## Buy No — Implemented (Manifold-Matched)
+
+Users can now buy and sell NO shares on any option, matching Manifold Markets' multi-outcome CPMM arbitrage logic.
+
+### How It Works
+
+In a multi-outcome CPMM where all option probabilities sum to 1, two portfolio identities drive arbitrage:
+
+- **Buy YES** (existing): Buy NO in all other answers. Identity: `noShares NO in all (n-1) others = noShares YES in target + noShares * (n-2) mana`
+- **Buy NO** (new): Buy YES in all other answers. Identity: `yesShares YES in all (n-1) others = yesShares NO in target` (no extra mana offset)
+
+The asymmetry (n-2 mana for Buy YES, 0 for Buy NO) comes from the fact that NO is "more expensive" portfolio-equivalent than YES in multi-option markets.
+
+### Buy NO Algorithm (`cpmmArbitrageNo`)
+
+1. Binary search over `yesShares` to buy in each other answer
+2. `totalYesCost = sum(cpmmAmountForShares(otherPool, yesShares, "YES"))` for each other answer
+3. `noBudget = betAmount - totalYesCost` (rest buys NO directly in target)
+4. Apply: `cpmmBuyYes` in each other pool, `cpmmBuyNo` in target
+5. Constraint: `sum(probs) == 1`
+6. Total NO shares = `cpmmBuyNo(target, noBudget) + yesShares` (redemption)
+
+### Sell NO Algorithm (`cpmmSellArbitrageNo`)
+
+1. Binary search over `yesShares` in [0, sharesToSell]
+2. Buy `yesShares` YES in target (costs `yesAmount`)
+3. Buy `noSharesInOthers = sharesToSell - yesShares` NO in each other pool
+4. Redemption: `redeemedMana = noSharesInOthers * (n-2)`
+5. `creditsReceived = sharesToSell - yesAmount - netNoAmount`
+
+### Settlement
+
+- YES shareholders of the **winning** option: 1 credit per share (unchanged)
+- NO shareholders of **losing** options: 1 credit per share (their bet was correct)
+- NO shareholders of the **winning** option: 0 (their bet was wrong)
+- Tie/no-votes: all YES and NO shares are refunded at market value
+
+### Memo Format
+
+`place_bet` and `sell_shares` memos include an optional `side` field:
+
+```json
+{ "type": "place_bet", "survey": "id", "option": "key", "credits": 100, "side": "no" }
+{ "type": "sell_shares", "survey": "id", "option": "key", "shares": 5, "side": "no" }
+```
+
+`side` absent or `"yes"` = YES (backward compatible). `"no"` = NO.
 
 ## Example Questions
 
