@@ -349,12 +349,14 @@ function createChainPoller(opts) {
     const MAX_PAGES = maxPages;
     let cursor = null, totalItems = 0;
     const newTxs = [];
+    const fromHeight = lastHeight;
+    let maxHeight = lastHeight;
 
     try {
       for (let page = 0; page < MAX_PAGES; page++) {
         const body = { [queryField]: appPubkey, limit: 50 };
         if (cursor) body.cursor = cursor;
-        if (lastHeight != null) body.from_height = lastHeight;
+        if (fromHeight != null) body.from_height = fromHeight;
         const resp = await httpsJson("POST", url, body);
 
         if (pollCount <= 2 && page === 0) {
@@ -383,8 +385,8 @@ function createChainPoller(opts) {
           newTxs.push(tx);
 
           const bh = tx.block_height;
-          if (typeof bh === "number" && (lastHeight == null || bh > lastHeight)) {
-            lastHeight = bh;
+          if (typeof bh === "number" && (maxHeight == null || bh > maxHeight)) {
+            maxHeight = bh;
           }
         }
 
@@ -394,6 +396,8 @@ function createChainPoller(opts) {
         if (!hasMore || !nextCursor) break;
         cursor = nextCursor;
       }
+
+      if (maxHeight != null) lastHeight = maxHeight;
 
       // Bound seenTxIds to prevent unbounded memory growth.
       if (seenTxIds.size > seenIdsCap) {

@@ -2741,7 +2741,7 @@
           function buildCard(s, badgeText) {
             const b = document.createElement("button");
             b.className = "btn";
-            b.style.cssText = "display:grid;grid-template-columns:1fr auto auto;gap:6px 12px;align-items:baseline;";
+            b.style.cssText = "display:grid;grid-template-columns:minmax(0,2fr) auto minmax(0,1fr);gap:6px 12px;align-items:baseline;";
 
             const mkt = MARKETS.get(s.id);
             const hasMarket = mkt && cpmmTotalLiquidity(mkt) > 0;
@@ -2758,7 +2758,7 @@
             tradersEl.textContent = traderCount === 1 ? "1 trader" : traderCount + " traders";
 
             const topOptEl = document.createElement("div");
-            topOptEl.style.cssText = "font-size:12px;white-space:nowrap;text-align:right;font-weight:600;";
+            topOptEl.style.cssText = "font-size:12px;text-align:right;font-weight:600;min-width:0;display:flex;align-items:baseline;justify-content:flex-end;gap:4px;";
             if (hasMarket && s.options && s.options.length > 0) {
               let topProb = -1, topIdx = 0;
               for (let i = 0; i < s.options.length; i++) {
@@ -2767,11 +2767,16 @@
                 if (p > topProb) { topProb = p; topIdx = i; }
               }
               const dot = document.createElement("span");
-              dot.style.cssText = "display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;background:" + optionColor(topIdx);
+              dot.style.cssText = "flex:0 0 8px;width:8px;height:8px;border-radius:50%;align-self:center;background:" + optionColor(topIdx);
               topOptEl.appendChild(dot);
               const nameSpan = document.createElement("span");
-              nameSpan.textContent = s.options[topIdx].label + " " + formatPct(topProb);
+              nameSpan.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+              nameSpan.textContent = s.options[topIdx].label;
               topOptEl.appendChild(nameSpan);
+              const pctSpan = document.createElement("span");
+              pctSpan.style.cssText = "flex:0 0 auto;white-space:nowrap;";
+              pctSpan.textContent = formatPct(topProb);
+              topOptEl.appendChild(pctSpan);
             }
 
             b.appendChild(titleEl);
@@ -2793,7 +2798,7 @@
 
             const countdownEl = document.createElement("div");
             countdownEl.className = "muted";
-            countdownEl.style.cssText = "font-size:11px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;";
+            countdownEl.style.cssText = "font-size:11px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;min-width:0;";
             if (badgeText) {
               countdownEl.textContent = badgeText;
               if (s.expiresAtMs && !s.archived) { countdownEl.classList.add("countdownTick"); countdownEl.dataset.expires = s.expiresAtMs; }
@@ -3164,6 +3169,9 @@
          * ================================================================ */
         function renderSurveyDetail(res) {
           if (!res || !res.survey) return;
+          const _scrollEl = $("scrollRoot");
+          const _scrollY = _scrollEl ? _scrollEl.scrollTop : 0;
+
           const s = res.survey;
           const mkt = MARKETS.get(s.id);
           const settlement = SETTLEMENTS.get(s.id);
@@ -3185,6 +3193,8 @@
           // --- Vote options (new unified layout for active surveys) ---
           const voteList = $("voteOptionsList");
           if (voteList && !(_isFocusedInput && voteList.contains(_focusEl))) {
+            const _vpEl = voteList.querySelector("#votePending");
+            if (_vpEl) _vpEl.remove();
             voteList.textContent = "";
 
             if (!s.archived) {
@@ -3337,9 +3347,9 @@
                 voteList.appendChild(card);
               }
 
-              // Vote tx progress
-              const votePending = $("votePending");
-              if (votePending) voteList.appendChild(votePending);
+              // Vote tx progress — use saved ref since getElementById can't find detached nodes
+              const votePendingEl = _vpEl || $("votePending");
+              if (votePendingEl) voteList.appendChild(votePendingEl);
             } else {
               // Archived: show final odds chart
               if (hasMarket && mkt.history && mkt.history.length > 0) {
@@ -3546,6 +3556,8 @@
           const optInp = $("newOptionInput");
           if (optInp) setDisabled(optInp, !!res.myAddedOption || sending || s.archived);
           setDisabled($("saveOptionBtn"), !!res.myAddedOption || sending || s.archived);
+
+          if (_scrollEl) _scrollEl.scrollTop = _scrollY;
         }
 
         /* ================================================================
