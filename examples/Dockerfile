@@ -11,6 +11,8 @@ RUN cd sandspiel && wasm-pack build crate --target nodejs
 # ── Stage 2: Node.js runtime ────────────────────────────────────────────────
 FROM node:20-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package.json package-lock.json* ./

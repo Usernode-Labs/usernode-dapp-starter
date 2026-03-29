@@ -39,24 +39,57 @@ jobs:
             git pull --recurse-submodules
             git submodule update --init --recursive
 
-            echo "==> Stopping old containers..."
-            docker compose down || true
-            cd "$REPO_DIR/examples/falling-sands"
-            docker compose down 2>/dev/null || true
-            docker stop falling-sands 2>/dev/null || true
-            docker rm falling-sands 2>/dev/null || true
-
-            echo "==> Deploying combined examples server..."
+            echo "==> Preparing build context..."
             cd "$REPO_DIR/examples"
             cp "$REPO_DIR/usernode-bridge.js" .
             cp "$REPO_DIR/usernode-usernames.js" .
             cp "$REPO_DIR/index.html" .
             ls -la usernode-bridge.js usernode-usernames.js index.html
-            docker compose down || true
-            docker compose up -d --build 2>&1
-            docker compose ps
-            echo "==> Combined examples server started."
 
-            echo "==> All running containers:"
+            # ── Blue-green deploy ──────────────────────────────────────────
+            # Determine which slot is currently active
+            if docker compose -p dapp-blue ps --status running -q 2>/dev/null | grep -q .; then
+              OLD_SLOT=blue
+              NEW_SLOT=green
+            else
+              OLD_SLOT=green
+              NEW_SLOT=blue
+            fi
+            echo "==> Blue-green: old=$OLD_SLOT, deploying new=$NEW_SLOT"
+
+            # Build and start the new slot alongside the old
+            docker compose -p "dapp-${NEW_SLOT}" build
+            docker compose -p "dapp-${NEW_SLOT}" up -d
+
+            # Poll health endpoint until the engine is fully initialized
+            NEW_CID=$(docker compose -p "dapp-${NEW_SLOT}" ps -q dapp-examples)
+            echo "==> Waiting for new container to become healthy..."
+            HEALTHY=false
+            for i in $(seq 1 60); do
+              if docker exec "$NEW_CID" curl -sf http://localhost:8000/__health >/dev/null 2>&1; then
+                HEALTHY=true
+                echo "==> New container healthy after ~$((i * 5))s"
+                break
+              fi
+              sleep 5
+            done
+
+            if [ "$HEALTHY" != "true" ]; then
+              echo "==> ERROR: new container not healthy after 5 minutes, rolling back"
+              docker compose -p "dapp-${NEW_SLOT}" logs --tail=50
+              docker compose -p "dapp-${NEW_SLOT}" down || true
+              exit 1
+            fi
+
+            # New container is live — stop old slot and any legacy containers
+            docker compose -p "dapp-${OLD_SLOT}" down 2>/dev/null || true
+            docker compose down 2>/dev/null || true
+            cd "$REPO_DIR"
+            docker compose down 2>/dev/null || true
+            cd "$REPO_DIR/examples/falling-sands"
+            docker compose down 2>/dev/null || true
+            docker stop falling-sands 2>/dev/null || true
+            docker rm falling-sands 2>/dev/null || true
+
+            echo "==> Deploy complete! Active slot: $NEW_SLOT"
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            echo "==> Deploy complete!"
