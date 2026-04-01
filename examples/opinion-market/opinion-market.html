@@ -510,6 +510,14 @@
         gap: 8px;
         margin: 4px 0 0 18px;
       }
+      .optionCard-betRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 0 18px;
+        padding-top: 6px;
+        border-top: 1px solid var(--border);
+      }
       .optionCard-voteLabel {
         margin-left: auto;
         display: flex;
@@ -756,17 +764,15 @@
       <div class="scrollArea-inner">
             <!-- Onboarding -->
             <div class="panel onboarding hide" id="onboardingPanel">
-              <h2>Welcome to Opinion Market</h2>
-              <p>Answer questions, predict the crowd, and earn credits for being right.</p>
+              <h2>Opinion Market</h2>
+              <p>Predict what the crowd will choose. Earn credits if you're right.</p>
               <div style="text-align:left;max-width:420px;margin:16px auto;">
-                <p style="font-size:13px;line-height:1.6;margin:0 0 8px;"><strong>How it works:</strong></p>
-                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Vote</strong> on questions for free &mdash; express your honest opinion.</p>
-                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Bet credits</strong> on which option you think will get the most votes.</p>
-                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Who wins?</strong> When a question ends, votes are counted. The option with the most votes wins. Everyone who bet on the winner splits the entire betting pool &mdash; proportional to how much they bet.</p>
-                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Voter dividends:</strong> A small fee from every bet goes to a dividend pool, split equally among everyone who voted &mdash; so you earn credits just for participating.</p>
-                <p style="font-size:13px;line-height:1.6;margin:0 0 0;"><strong>Getting credits:</strong> Join now to receive <strong>1,000 credits</strong>. Spend them betting on outcomes, earn more by predicting correctly or voting. Create questions for 50 credits (you earn a share of trading fees back).</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Vote</strong> &mdash; Share your honest opinion for free.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 6px;"><strong>Bet</strong> &mdash; Use credits to predict what others will choose.</p>
+                <p style="font-size:13px;line-height:1.6;margin:0 0 0;"><strong>Win</strong> &mdash; Correct predictions earn from the pool. Voters earn a small reward too.</p>
               </div>
               <button class="btn primary" id="joinBtn" type="button" style="margin-top:16px;">Join &amp; Get 1,000 Credits</button>
+              <p class="muted" style="font-size:11px;margin:8px 0 0;">Credits are for this dapp only.</p>
               <div id="joinPending" class="tx-progress hide" role="status" aria-live="polite">
                 <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
                 <div class="tx-progress-label">Joining...</div>
@@ -796,10 +802,10 @@
             <!-- Active survey list -->
             <div class="panel" id="screenActiveList">
               <div class="row" style="justify-content: space-between; align-items: baseline;">
-                <h2>Active questions</h2>
+                <h2>Live now</h2>
                 <button class="btn small" id="addSurveyBtn" type="button">+ New question</button>
               </div>
-              <p style="margin: 2px 0 0;">Pick a question to vote and trade.</p>
+              <p style="margin: 2px 0 0;">Vote on what you think, bet on what others will choose.</p>
 
               <div class="panel hide" id="addSurveyPanel" style="margin-top: 10px;">
                 <h3>Create question</h3>
@@ -865,7 +871,7 @@
             </div>
 
             <div class="panel archivedDock hide" id="screenArchivedList">
-              <h3>Archived questions</h3>
+              <h3>Recently settled</h3>
               <div id="archivedSurveyList" style="display: grid; gap: 10px;"></div>
             </div>
 
@@ -2268,8 +2274,8 @@
               if (el) { el.classList.add("hide"); resetProgressBar(el); }
             });
           }
-          document.querySelectorAll("button, input, select").forEach(el => { if (!el.closest("#screenLeaderboard")) el.disabled = !!v; });
-          if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) btn.style.display = "none"; }
+          document.querySelectorAll("button, input, select").forEach(el => { if (!el.closest("#screenLeaderboard") && el.id !== "addSurveyBtn") el.disabled = !!v; });
+          if (!isAdmin) { const btn = $("addSurveyBtn"); if (btn) { btn.style.opacity = "0.45"; btn.style.cursor = "not-allowed"; btn.title = "Only admins can create questions for now"; } }
           if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
             const joinBtn = $("joinBtn"); if (joinBtn) joinBtn.disabled = true;
           }
@@ -2622,13 +2628,13 @@
               if (nextCp) {
                 revealEl.className = "revealNotice";
                 revealEl.style.fontSize = "";
-                revealEl.textContent = "Votes are hidden between reveals. Next reveal: " + formatCountdown(nextCp);
+                revealEl.textContent = "Vote results are hidden until the next reveal. Percentages shown are market odds from betting, not vote counts. Next reveal: " + formatCountdown(nextCp);
                 show(revealEl, true);
               } else {
                 show(revealEl, false);
               }
             } else if (s.revealIntervalMs === null && !s.archived) {
-              revealEl.textContent = "Results hidden until the survey ends. The market will settle to the winning survey option.";
+              revealEl.textContent = "Vote results are hidden until this question ends. Percentages shown are market odds from betting, not vote counts.";
               revealEl.className = "muted";
               revealEl.style.fontSize = "12px";
               show(revealEl, true);
@@ -2741,24 +2747,19 @@
           function buildCard(s, badgeText) {
             const b = document.createElement("button");
             b.className = "btn";
-            b.style.cssText = "display:grid;grid-template-columns:minmax(0,2fr) auto minmax(0,1fr);gap:6px 12px;align-items:baseline;";
+            b.style.cssText = "display:grid;gap:4px;text-align:left;";
 
             const mkt = MARKETS.get(s.id);
             const hasMarket = mkt && cpmmTotalLiquidity(mkt) > 0;
 
-            // --- Row 1 ---
+            // Row 1: title + leading option odds pill
+            const row1 = document.createElement("div");
+            row1.style.cssText = "display:flex;justify-content:space-between;align-items:baseline;gap:8px;";
             const titleEl = document.createElement("div");
-            titleEl.style.cssText = "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            titleEl.style.cssText = "font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3;";
             titleEl.textContent = s.title;
+            row1.appendChild(titleEl);
 
-            const traderCount = hasMarket ? Object.keys(mkt.grossBetsByUser).length : 0;
-            const tradersEl = document.createElement("div");
-            tradersEl.className = "muted";
-            tradersEl.style.cssText = "font-size:11px;white-space:nowrap;text-align:left;";
-            tradersEl.textContent = traderCount === 1 ? "1 trader" : traderCount + " traders";
-
-            const topOptEl = document.createElement("div");
-            topOptEl.style.cssText = "font-size:12px;text-align:right;font-weight:600;min-width:0;display:flex;align-items:baseline;justify-content:flex-end;gap:4px;";
             if (hasMarket && s.options && s.options.length > 0) {
               let topProb = -1, topIdx = 0;
               for (let i = 0; i < s.options.length; i++) {
@@ -2766,47 +2767,44 @@
                 const p = pool && CPMM.cpmmProb ? CPMM.cpmmProb(pool) : 0;
                 if (p > topProb) { topProb = p; topIdx = i; }
               }
+              const pill = document.createElement("span");
+              pill.style.cssText = "flex:0 0 auto;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;";
+              pill.title = "Market odds from betting, not vote results";
               const dot = document.createElement("span");
-              dot.style.cssText = "flex:0 0 8px;width:8px;height:8px;border-radius:50%;align-self:center;background:" + optionColor(topIdx);
-              topOptEl.appendChild(dot);
-              const nameSpan = document.createElement("span");
-              nameSpan.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
-              nameSpan.textContent = s.options[topIdx].label;
-              topOptEl.appendChild(nameSpan);
-              const pctSpan = document.createElement("span");
-              pctSpan.style.cssText = "flex:0 0 auto;white-space:nowrap;";
-              pctSpan.textContent = formatPct(topProb);
-              topOptEl.appendChild(pctSpan);
+              dot.style.cssText = "width:8px;height:8px;border-radius:50%;background:" + optionColor(topIdx);
+              pill.appendChild(dot);
+              const lbl = document.createElement("span");
+              lbl.textContent = formatPct(topProb);
+              pill.appendChild(lbl);
+              row1.appendChild(pill);
             }
+            b.appendChild(row1);
 
-            b.appendChild(titleEl);
-            b.appendChild(tradersEl);
-            b.appendChild(topOptEl);
+            // Row 2: question text (2-line clamp)
+            const questionEl = document.createElement("div");
+            questionEl.className = "muted";
+            questionEl.style.cssText = "font-size:12px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;";
+            questionEl.textContent = s.question;
+            b.appendChild(questionEl);
 
-            // --- Row 2 ---
-            const subEl = document.createElement("div");
-            subEl.className = "muted";
-            subEl.style.cssText = "font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-            const creator = GLOBAL_USERNAMES.get(s.createdBy) || deriveDefaultUsername(s.createdBy || "");
-            subEl.textContent = s.question + " \u00b7 " + creator;
-
+            // Row 3: stats line
             const votes = countUniqueVoters(latestTxs, s.id);
-            const votersEl = document.createElement("div");
-            votersEl.className = "muted";
-            votersEl.style.cssText = "font-size:11px;white-space:nowrap;text-align:left;";
-            votersEl.textContent = votes === 1 ? "1 voter" : votes + " voters";
-
-            const countdownEl = document.createElement("div");
-            countdownEl.className = "muted";
-            countdownEl.style.cssText = "font-size:11px;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;min-width:0;";
+            const totalVol = (hasMarket && mkt.optionVolume) ? Object.values(mkt.optionVolume).reduce((a, c) => a + c, 0) : 0;
+            const statsEl = document.createElement("div");
+            statsEl.className = "muted";
+            statsEl.style.cssText = "font-size:11px;font-variant-numeric:tabular-nums;";
+            const parts = [];
+            parts.push(votes === 1 ? "1 vote" : votes + " votes");
+            if (totalVol > 0) parts.push(formatCredits(totalVol) + "c volume");
+            statsEl.textContent = parts.length > 0 ? parts.join(" \u00B7 ") : "";
             if (badgeText) {
-              countdownEl.textContent = badgeText;
-              if (s.expiresAtMs && !s.archived) { countdownEl.classList.add("countdownTick"); countdownEl.dataset.expires = s.expiresAtMs; }
+              if (parts.length > 0) statsEl.appendChild(document.createTextNode(" \u00B7 "));
+              const cdSpan = document.createElement("span");
+              cdSpan.textContent = badgeText;
+              if (s.expiresAtMs && !s.archived) { cdSpan.classList.add("countdownTick"); cdSpan.dataset.expires = s.expiresAtMs; }
+              statsEl.appendChild(cdSpan);
             }
-
-            b.appendChild(subEl);
-            b.appendChild(votersEl);
-            b.appendChild(countdownEl);
+            b.appendChild(statsEl);
 
             b.addEventListener("click", () => { navigateToSurvey(s.id); refreshLoopOnce(); });
             return b;
@@ -3131,7 +3129,7 @@
           sp.className = _bsSide === "no" ? "err" : "ok";
           sp.textContent = `~${simShares.toFixed(1)} ${_bsSide} shares`;
           preview.appendChild(sp);
-          preview.appendChild(document.createTextNode(` @ ${pricePerShare}c/share (${mult.toFixed(2)}x) \u00B7 Fee: ${formatCredits(fee)} (${(FEE_RATE * 100).toFixed(0)}%)`));
+          preview.appendChild(document.createTextNode(` @ ${pricePerShare}c/share (${mult.toFixed(2)}x) \u00B7 Fee: ${formatCredits(fee)} (${(FEE_RATE * 100).toFixed(0)}%) \u2014 goes to voter rewards + question creator`));
         }
 
         function updateSellPreview() {
@@ -3161,7 +3159,7 @@
           const fee = gross * FEE_RATE;
           const net = gross - fee;
           const pricePerShare = (net / sh).toFixed(2);
-          setText(preview, `You receive: ${formatCredits(net)} (${pricePerShare}c/share) \u00B7 Fee: ${formatCredits(fee)} (${(FEE_RATE * 100).toFixed(0)}%)`);
+          setText(preview, `You receive: ${formatCredits(net)} (${pricePerShare}c/share) \u00B7 Fee: ${formatCredits(fee)} (${(FEE_RATE * 100).toFixed(0)}%) \u2014 goes to voter rewards + question creator`);
         }
 
         /* ================================================================
@@ -3188,7 +3186,7 @@
 
           // --- Header area: volume + votes ---
           const totalVolume = (hasMarket && mkt.optionVolume) ? Object.values(mkt.optionVolume).reduce((a, b) => a + b, 0) : 0;
-          setText($("surveyVoterCount"), `${formatCredits(totalVolume)}c volume \u00B7 ${vc} vote${vc !== 1 ? "s" : ""}`);
+          setText($("surveyVoterCount"), `${formatCredits(totalVolume)}c total volume \u00B7 ${vc} vote${vc !== 1 ? "s" : ""}`);
 
           // --- Vote options (new unified layout for active surveys) ---
           const voteList = $("voteOptionsList");
@@ -3200,6 +3198,11 @@
             if (!s.archived) {
               // Odds summary row
               if (hasMarket) {
+                const oddsHeader = document.createElement("div");
+                oddsHeader.className = "muted";
+                oddsHeader.style.cssText = "font-size:11px;margin-bottom:4px;";
+                oddsHeader.textContent = "Market odds";
+                voteList.appendChild(oddsHeader);
                 const summary = document.createElement("div");
                 summary.className = "oddsSummary";
                 for (let oi = 0; oi < s.options.length; oi++) {
@@ -3252,6 +3255,22 @@
               }
               voteList.appendChild(voteStatus);
 
+              // Section hint: betting
+              if (hasMarket && canBet) {
+                const betHeader = document.createElement("div");
+                betHeader.className = "muted";
+                betHeader.style.cssText = "font-size:11px;margin:8px 0 2px;";
+                betHeader.textContent = "Each option has Vote (free) and Bet (use credits) actions.";
+                voteList.appendChild(betHeader);
+                if (!localStorage.getItem("om:bettingHintSeen")) {
+                  const hint = document.createElement("div");
+                  hint.style.cssText = "font-size:12px;color:var(--muted);padding:6px 10px;border-radius:8px;background:var(--border);margin-bottom:6px;cursor:pointer;";
+                  hint.textContent = "Shares cost between 0c and 100c. If your outcome wins, each share pays 100c. Buy low, win big. (tap to dismiss)";
+                  hint.addEventListener("click", () => { hint.remove(); localStorage.setItem("om:bettingHintSeen", "1"); });
+                  voteList.appendChild(hint);
+                }
+              }
+
               // Option cards
               for (let oi = 0; oi < s.options.length; oi++) {
                 const opt = s.options[oi];
@@ -3300,15 +3319,21 @@
                 // Meta: volume + position (YES and NO shares)
                 const meta = document.createElement("div");
                 meta.className = "optionCard-meta";
-                let metaText = `${formatCredits(optVol)}c vol`;
-                if (myShares > 0) metaText += ` \u00B7 ${myShares.toFixed(1)} yes shares`;
-                if (myNoShrs > 0) metaText += ` \u00B7 ${myNoShrs.toFixed(1)} no shares`;
+                let metaText = `${formatCredits(optVol)}c volume`;
+                if (myShares > 0) {
+                  const potentialWin = myShares * 1.0;
+                  metaText += ` \u00B7 ${myShares.toFixed(1)} yes shares \u2192 ${formatCredits(potentialWin)}c if wins`;
+                }
+                if (myNoShrs > 0) {
+                  const potentialWin = myNoShrs * 1.0;
+                  metaText += ` \u00B7 ${myNoShrs.toFixed(1)} no shares \u2192 ${formatCredits(potentialWin)}c if loses`;
+                }
                 meta.textContent = metaText;
                 card.appendChild(meta);
 
-                // Actions row: radio + buy yes + buy no
-                const actions = document.createElement("div");
-                actions.className = "optionCard-actions";
+                // Vote row
+                const voteRow = document.createElement("div");
+                voteRow.className = "optionCard-actions";
                 const radio = document.createElement("input");
                 radio.type = "radio";
                 radio.name = "voteOpt_" + s.id;
@@ -3320,29 +3345,37 @@
                   try { await voteFlow(opt.key); setSending(false, true); }
                   catch (e) { setSending(false, false); showInlineError(e.message || e); }
                 });
+                const voteLabel = document.createElement("label");
+                voteLabel.className = "optionCard-voteLabel";
+                voteLabel.style.marginLeft = "0";
+                voteLabel.appendChild(radio);
+                voteLabel.appendChild(document.createTextNode(" Vote"));
+                voteRow.appendChild(voteLabel);
+                card.appendChild(voteRow);
+
+                // Bet row
                 if (canBet && hasMarket && pool) {
+                  const betRow = document.createElement("div");
+                  betRow.className = "optionCard-betRow";
                   const costPerShare = CPMM.cpmmAmountForShares ? CPMM.cpmmAmountForShares(pool, 1, "YES") : 0;
                   const buyBtn = document.createElement("button");
                   buyBtn.className = "optionCard-buyBtn";
                   buyBtn.disabled = sending;
-                  buyBtn.textContent = "Yes " + formatCredits(costPerShare) + "c";
+                  buyBtn.textContent = "Yes " + formatCredits(costPerShare) + "c/share";
+                  buyBtn.title = "Cost per share. Pays 1.00c if this option wins.";
                   buyBtn.addEventListener("click", () => openBottomSheet(s.id, opt.key, oi, "yes"));
-                  actions.appendChild(buyBtn);
+                  betRow.appendChild(buyBtn);
 
                   const noCostPerShare = CPMM.cpmmAmountForShares ? CPMM.cpmmAmountForShares(pool, 1, "NO") : 0;
                   const buyNoBtn = document.createElement("button");
                   buyNoBtn.className = "optionCard-buyBtn optionCard-buyNoBtn";
                   buyNoBtn.disabled = sending;
-                  buyNoBtn.textContent = "No " + formatCredits(noCostPerShare) + "c";
+                  buyNoBtn.textContent = "No " + formatCredits(noCostPerShare) + "c/share";
+                  buyNoBtn.title = "Cost per share. Pays 1.00c if this option loses.";
                   buyNoBtn.addEventListener("click", () => openBottomSheet(s.id, opt.key, oi, "no"));
-                  actions.appendChild(buyNoBtn);
+                  betRow.appendChild(buyNoBtn);
+                  card.appendChild(betRow);
                 }
-                const voteLabel = document.createElement("label");
-                voteLabel.className = "optionCard-voteLabel";
-                voteLabel.appendChild(radio);
-                voteLabel.appendChild(document.createTextNode(" Vote"));
-                actions.appendChild(voteLabel);
-                card.appendChild(actions);
 
                 voteList.appendChild(card);
               }
@@ -3517,8 +3550,12 @@
               if (surpriseKeys.length > 0) {
                 const sTitle = document.createElement("div");
                 sTitle.style.cssText = "font-size:12px;color:var(--muted);margin:12px 0 4px;";
-                sTitle.textContent = "Surprise Index:";
+                sTitle.textContent = "Surprise Index";
                 settledContent.appendChild(sTitle);
+                const sExplain = document.createElement("div");
+                sExplain.style.cssText = "font-size:11px;color:var(--muted);margin-bottom:4px;";
+                sExplain.textContent = "How much the actual votes differed from what bettors predicted. Positive means more popular than expected.";
+                settledContent.appendChild(sExplain);
                 for (const [key, val] of surpriseKeys) {
                   const opt = s.options.find(o => o.key === key);
                   const parsed = opt ? parseOptionLabel(opt.label) : null;
@@ -3718,7 +3755,7 @@
               isAdmin = !!me && !!_firstJoiner && me === _firstJoiner;
             }
             const addBtn = $("addSurveyBtn");
-            if (addBtn) addBtn.style.display = isAdmin ? "" : "none";
+            if (addBtn) { addBtn.style.opacity = isAdmin ? "" : "0.45"; addBtn.style.cursor = isAdmin ? "" : "not-allowed"; addBtn.title = isAdmin ? "" : "Only admins can create questions for now"; }
             updateCreditsDisplay();
 
             // Onboarding — show join screen and hide surveys until joined
@@ -3799,7 +3836,7 @@
           } catch (_) {}
           if (!isAdmin) {
             const btn = $("addSurveyBtn");
-            if (btn) btn.style.display = "none";
+            if (btn) { btn.style.opacity = "0.45"; btn.style.cursor = "not-allowed"; btn.title = "Only admins can create questions for now"; }
           }
           if (isGenesisGated() && me && !GENESIS_ACCOUNTS.has(me)) {
             const joinBtn = $("joinBtn");
@@ -3910,6 +3947,7 @@
           $("addSurveyOptionBtn").addEventListener("click", () => addSurveyOptionField(""));
 
           $("addSurveyBtn").addEventListener("click", () => {
+            if (!isAdmin) { showInlineError("Only admins can create questions for now"); return; }
             const panel = $("addSurveyPanel");
             const opening = panel && panel.classList.contains("hide");
             show(panel, !!opening);
@@ -3960,6 +3998,7 @@
             if (c > maxBuy) { setText($("bsBuyError"), "Max is " + maxBuy + " credits"); return; }
             try {
               await placeBetFlow(_bsSurveyId, _bsOptKey, c, _bsSide);
+              localStorage.setItem("om:bettingHintSeen", "1");
               setSending(false, true);
               closeBottomSheet();
             } catch (e) {
