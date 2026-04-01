@@ -1667,7 +1667,7 @@ btnSend.addEventListener("click", async () => {
     setSending(true);
     const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
     const memo = JSON.stringify({ app: "falling-sands", type: "draw", s: strokes });
-    await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
+    await sendTransaction(APP_PUBKEY, 1, memo, { ...TX_SEND_OPTS, confirmTitle: "Save your drawing", confirmSubtitle: "Record your strokes on-chain." });
     sentStrokes = pendingStrokes;
     sentMemoJson = memo;
     sentStrokesApplyTick = null;

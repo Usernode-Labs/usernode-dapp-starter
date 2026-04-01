@@ -100,12 +100,26 @@ Sends a transaction. **Returns only after the tx is confirmed on-chain** (visibl
 | `opts.timeoutMs` | number | Max wait for inclusion (default 20s; **recommend 90s** for real chains) |
 | `opts.pollIntervalMs` | number | Poll interval (default 750ms; **recommend 1500ms** for real chains) |
 | `opts.waitForInclusion` | boolean | Set `false` to fire-and-forget (default `true`) |
+| `opts.confirmTitle` | string | Custom title for the native confirmation screen (default `"Confirm Transaction"`) |
+| `opts.confirmSubtitle` | string | Custom subtitle for the native confirmation screen (default `"A dapp is requesting to send a transaction."`) |
 
 **Recommended send options** — define once and reuse everywhere:
 
 ```js
 const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
 ```
+
+**Custom confirmation screen** — when running inside the Flutter WebView, `sendTransaction` shows a native confirmation dialog before submitting. Customize its title and subtitle via `opts` to match the action the user is taking:
+
+```js
+await sendTransaction(APP_PUBKEY, 1, memo, {
+  ...TX_SEND_OPTS,
+  confirmTitle: "Place your bet",
+  confirmSubtitle: "This bet is recorded on-chain and cannot be undone.",
+});
+```
+
+Both fields are optional. When omitted the app shows the default "Confirm Transaction" / "A dapp is requesting to send a transaction." text. Always provide context-specific titles — "Confirm your vote" is far better UX than the generic default.
 
 **Return value** — shape `{ queued: true, tx: { id, from_pubkey, destination_pubkey, amount, memo, created_at } }`. The `tx` sub-object mirrors what the mock server stores.
 
@@ -1672,6 +1686,7 @@ This is a starting-point checklist based on the patterns above. Not every item a
 
 **Transaction sending:**
 - [ ] Use `TX_SEND_OPTS` with `timeoutMs: 90000` and `pollIntervalMs: 1500`
+- [ ] Pass `confirmTitle` and `confirmSubtitle` in opts to customize the native confirmation screen per action
 - [ ] Show the transaction progress bar during sends (not a simple spinner)
 - [ ] Disable interactive elements while sending to prevent double-submit
 - [ ] Refresh state after every `sendTransaction` for immediate UI updates

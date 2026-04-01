@@ -342,6 +342,8 @@
         destination_pubkey,
         amount,
         memo,
+        ...(opts && opts.confirmTitle ? { confirm_title: opts.confirmTitle } : {}),
+        ...(opts && opts.confirmSubtitle ? { confirm_subtitle: opts.confirmSubtitle } : {}),
       });
       const sendError = sendResult && sendResult.error;
       if (sendError) {
