@@ -266,17 +266,12 @@
     #debug-hash.visible { display: inline; }
 
     #info-btn {
-      margin-left: auto;
-      padding: 2px 8px;
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 6px;
-      background: transparent;
+      font-size: 16px;
+      font-weight: 700;
       color: #8896ab;
-      font-size: 11px;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
+      background: #1e2736;
+      border-radius: 50%;
     }
-    #info-btn:hover { border-color: rgba(255,255,255,0.3); color: #cdd6e4; }
 
     #info-overlay {
       display: none;
@@ -365,7 +360,6 @@
   <span id="status">Loading WASM...</span>
   <span id="fps-display"></span>
   <span id="debug-hash"></span>
-  <button id="info-btn" type="button">&#x2753; Info</button>
 </div>
 
 <div id="toolbar">
@@ -377,6 +371,7 @@
   <div class="quick-bar" id="quick-bar"></div>
   <label id="brush-label">Brush</label>
   <input id="brush-size" type="range" min="1" max="15" value="4" />
+  <button class="quick-btn" id="info-btn" type="button" title="Help">?</button>
   <div class="tb-right" id="fab-bar">
     <div id="budget-meter">
       <div id="budget-fill"></div>
@@ -404,7 +399,7 @@
       <li><strong>Send</strong> your strokes (tap the check mark) to commit them on-chain as a transaction</li>
       <li>Everyone runs the same deterministic simulation locally</li>
     </ul>
-    <p>Each stroke is stored as a transaction memo on the Usernode blockchain. Your device runs the physics engine (WASM) locally &mdash; no video streaming needed.</p>
+    <p>Each stroke is stored as a transaction memo on the Usernode blockchain. Your device runs the physics engine (WASM) locally.</p>
     <p class="muted">Tap anywhere outside this panel to close.</p>
   </div>
 </div>
@@ -1245,6 +1240,13 @@ function handleMessage(event) {
       statusEl.textContent = "Running locally";
       dismissLoader();
 
+      if (!localStorage.getItem("sands:introDismissed")) {
+        setTimeout(() => {
+          const ov = document.getElementById("info-overlay");
+          if (ov) ov.classList.add("open");
+        }, 600);
+      }
+
       if (simInterval) clearInterval(simInterval);
       simInterval = setInterval(simTick30Hz, 1000 / TICK_HZ);
 
@@ -1722,7 +1724,10 @@ window.addEventListener("touchend", endPaint);
   if (!btn || !overlay) return;
   btn.addEventListener("click", () => overlay.classList.add("open"));
   overlay.addEventListener("click", (e) => {
-    if (!content.contains(e.target)) overlay.classList.remove("open");
+    if (!content.contains(e.target)) {
+      overlay.classList.remove("open");
+      try { localStorage.setItem("sands:introDismissed", "1"); } catch (_) {}
+    }
   });
 })();
 </script>
