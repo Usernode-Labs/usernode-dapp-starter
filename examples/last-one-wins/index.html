@@ -38,8 +38,22 @@
       border-bottom: 1px solid var(--border); text-align: center;
       background: var(--card);
     }
-    .topBar h1 { margin: 0; font-size: 20px; letter-spacing: 0.3px; }
-    .topBar .round { font-size: 13px; color: var(--muted); }
+    .topBar .round { font-size: 14px; font-weight: 600; }
+    .header-pill {
+      padding: 3px 10px; border-radius: 12px; font-size: 12px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--accent); font-weight: 500; cursor: pointer;
+      max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .header-pill:hover { border-color: var(--accent); background: rgba(110,168,254,0.08); }
+    .header-icon {
+      width: 28px; height: 28px; border-radius: 8px; font-size: 13px; font-weight: 700;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .header-icon:hover { border-color: var(--accent); color: var(--accent); }
     .scrollArea {
       flex: 1 1 auto; overflow-y: auto; min-height: 0;
       padding: 0 16px;
@@ -62,15 +76,17 @@
     .countdown.waiting { color: var(--muted); font-size: 24px; font-weight: 500; }
     .hero-label { font-size: 13px; color: var(--muted); margin-top: 6px; }
     .pot {
-      font-size: 32px; font-weight: 700; margin: 12px 0 4px;
-      color: var(--gold);
+      font-size: 40px; font-weight: 800; margin: 0 0 2px;
+      color: var(--gold); line-height: 1.1;
     }
     .pot-label { font-size: 13px; color: var(--muted); }
-    .last-sender {
-      margin-top: 10px; font-size: 13px; color: var(--muted);
-      word-break: break-all;
+    .hero-copy { font-size: 13px; color: var(--muted); margin-top: 8px; }
+    .personal-status {
+      margin-top: 14px; font-size: 14px; font-weight: 500; min-height: 20px;
     }
-    .last-sender strong { color: var(--fg); font-weight: 600; }
+    .personal-status.leading { color: var(--ok); }
+    .personal-status.trailing { color: var(--accent); }
+    .personal-status.won { color: var(--gold); }
 
     hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 
@@ -157,17 +173,6 @@
     .status-dot.err { background: var(--danger); }
     .status-dot.pending { background: var(--gold); }
 
-    /* Username pill */
-    .username-pill {
-      display: inline-block; padding: 4px 12px; border-radius: 16px;
-      border: 1px solid var(--border); background: transparent;
-      color: var(--accent); font-size: 13px; font-weight: 500;
-      cursor: pointer; transition: border-color 0.15s, background 0.15s;
-      margin-top: 6px;
-    }
-    .username-pill:hover { border-color: var(--accent); background: rgba(110,168,254,0.08); }
-    .username-pill code { font-family: inherit; font-weight: 600; }
-
     /* Username edit panel */
     .username-panel { margin-top: 12px; display: none; }
     .username-panel.open { display: block; }
@@ -203,16 +208,13 @@
 <body>
   <!-- Header -->
   <header class="topBar">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <h1>Last One Wins</h1>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <div class="round" id="roundLabel">Round 1</div>
-        <button class="btn-sm secondary" id="infoToggle" type="button" style="padding:4px 10px;font-size:12px;">&#x2753;</button>
+    <div style="display:flex;justify-content:center;align-items:center;position:relative;">
+      <div class="round" id="roundLabel">Round 1</div>
+      <div style="position:absolute;right:0;display:flex;align-items:center;gap:6px;">
+        <button class="header-pill" id="usernamePill" type="button" title="Change username"><span id="usernameDisplay">...</span></button>
+        <button class="header-icon" id="infoToggle" type="button" title="How to play">?</button>
       </div>
     </div>
-    <button class="username-pill" id="usernamePill" type="button">
-      <code id="usernameDisplay">(loading...)</code>
-    </button>
     <div class="username-panel" id="usernamePanel">
       <div style="font-size:13px;color:var(--muted);margin-bottom:6px;">Set your display name</div>
       <div class="inputAffix">
@@ -229,26 +231,29 @@
       </div>
     </div>
     <div id="infoPanel" class="hide" style="margin-top:12px;text-align:left;font-size:13px;line-height:1.6;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 6%, transparent);">
-      <p style="margin:0 0 6px;font-weight:600;">How it works</p>
-      <p style="margin:0 0 6px;">Last One Wins is a token game on the Usernode blockchain. Players send tokens to the game pot. If nobody sends for 24 hours, the <strong>last sender wins the entire pot</strong>.</p>
-      <ul style="margin:0 0 6px;padding-left:18px;">
-        <li>Send any amount of tokens to enter</li>
-        <li>Each entry resets the countdown timer</li>
-        <li>When the timer runs out, the last sender gets the full pot</li>
-        <li>A new round starts automatically after each payout</li>
+      <p style="margin:0 0 8px;font-weight:700;font-size:15px;">Last person to enter before time runs out wins everything.</p>
+      <ul style="margin:0 0 8px;padding-left:18px;">
+        <li>Send any amount of tokens to enter the game</li>
+        <li>Every entry resets the countdown and grows the pot</li>
+        <li>When the timer hits zero, the last person to enter wins the entire pot</li>
+        <li>A new round starts automatically &mdash; jump back in!</li>
       </ul>
-      <p style="margin:0;color:var(--muted);">All game state is derived from on-chain transactions. The server tracks the timer and sends automated payouts.</p>
+      <p style="margin:0 0 8px;font-style:italic;color:var(--muted);">Timing is everything. Enter too early and risk getting replaced. Enter too late and miss your chance.</p>
+      <p style="margin:0 0 8px;color:var(--muted);font-size:12px;">All game state lives on the Usernode blockchain. The server tracks the timer and sends automated payouts.</p>
+      <button class="btn-sm" id="infoDismiss" type="button" style="margin-top:4px;">Got it</button>
     </div>
   </header>
 
   <!-- Scrollable content -->
   <div class="scrollArea">
     <div class="hero">
-      <div class="countdown waiting" id="countdown">Waiting for first entry...</div>
-      <div class="hero-label" id="countdownLabel"></div>
       <div class="pot" id="potDisplay">0</div>
       <div class="pot-label">tokens in the pot</div>
-      <div class="last-sender" id="lastSender"></div>
+      <div class="hero-copy">Every entry increases the prize</div>
+      <div class="countdown waiting" id="countdown">Waiting for first entry...</div>
+      <div class="hero-label" id="countdownLabel"></div>
+      <div class="hero-copy" id="mechanicLabel">Each entry resets the timer &mdash; last one wins</div>
+      <div class="personal-status" id="personalStatus"></div>
     </div>
 
     <hr />
@@ -263,7 +268,7 @@
   <footer class="bottomBar">
     <div class="send-row">
       <input id="amountInput" type="number" min="1" value="1" placeholder="Amt" />
-      <button class="btn" id="sendBtn">Send Tokens</button>
+      <button class="btn" id="sendBtn">Enter Now</button>
     </div>
     <div class="error-msg" id="errorMsg"></div>
     <div class="tx-progress hide" id="txProgress">
@@ -288,7 +293,8 @@
     const countdownEl = document.getElementById("countdown");
     const countdownLabel = document.getElementById("countdownLabel");
     const potDisplay = document.getElementById("potDisplay");
-    const lastSenderEl = document.getElementById("lastSender");
+    const personalStatusEl = document.getElementById("personalStatus");
+    const mechanicLabelEl = document.getElementById("mechanicLabel");
     const amountInput = document.getElementById("amountInput");
     const sendBtn = document.getElementById("sendBtn");
     const errorMsg = document.getElementById("errorMsg");
@@ -446,36 +452,45 @@
       roundLabel.textContent = "Round " + gameData.roundNumber;
       potDisplay.textContent = String(gameData.potBalance);
 
+      const isLeading = myAddress && gameData.lastSender === myAddress;
+
       if (!gameData.lastSender) {
         countdownEl.textContent = "Waiting for first entry...";
         countdownEl.className = "countdown waiting";
         countdownLabel.textContent = "";
-        lastSenderEl.innerHTML = "";
+        mechanicLabelEl.textContent = "";
+        personalStatusEl.textContent = "";
+        personalStatusEl.className = "personal-status";
+        sendBtn.textContent = "Enter Now";
       } else if (gameData.timerExpired) {
         countdownEl.textContent = "TIMER EXPIRED";
         countdownEl.className = "countdown expired";
         countdownLabel.textContent = gameData.payoutInProgress ? "Payout in progress..." : "Payout imminent!";
-        lastSenderEl.innerHTML = "";
-        const w = document.createElement("span");
-        w.textContent = "Winner: ";
-        const s = document.createElement("strong");
-        s.textContent = displayName(gameData.lastSender);
-        lastSenderEl.appendChild(w);
-        lastSenderEl.appendChild(s);
+        mechanicLabelEl.textContent = "";
+        sendBtn.textContent = "Enter Now";
+        if (isLeading) {
+          personalStatusEl.textContent = "You won! Payout incoming...";
+          personalStatusEl.className = "personal-status won";
+        } else {
+          personalStatusEl.textContent = displayName(gameData.lastSender) + " won this round!";
+          personalStatusEl.className = "personal-status won";
+        }
       } else {
         countdownEl.textContent = formatCountdown(gameData.timeRemainingMs);
         countdownEl.className = "countdown";
         countdownLabel.textContent = "until pot is claimed";
-        lastSenderEl.innerHTML = "";
-        const w = document.createElement("span");
-        w.textContent = "Last sender: ";
-        const s = document.createElement("strong");
-        s.textContent = displayName(gameData.lastSender);
-        lastSenderEl.appendChild(w);
-        lastSenderEl.appendChild(s);
+        mechanicLabelEl.textContent = "Each entry resets the timer \u2014 last one wins";
+        if (isLeading) {
+          personalStatusEl.textContent = "You\u2019re the last entry \u2014 hold until time runs out to win!";
+          personalStatusEl.className = "personal-status leading";
+          sendBtn.textContent = "Enter Again";
+        } else {
+          personalStatusEl.textContent = displayName(gameData.lastSender) + " is in the lead \u2014 enter now!";
+          personalStatusEl.className = "personal-status trailing";
+          sendBtn.textContent = "Enter Now";
+        }
       }
 
-      // Entries + past rounds combined
       entryList.innerHTML = "";
       const items = [];
 
@@ -490,7 +505,7 @@
       if (items.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty-state";
-        empty.textContent = "No entries yet — be the first!";
+        empty.textContent = "No entries yet \u2014 be the first!";
         entryList.appendChild(empty);
         return;
       }
@@ -502,10 +517,13 @@
         const left = document.createElement("div");
         const fromEl = document.createElement("div");
         fromEl.className = "entry-from";
+        const name = displayName(item.from);
+        const isSelf = myAddress && item.from === myAddress;
         if (item.type === "payout") {
-          fromEl.textContent = "Round " + item.round + " payout → " + displayName(item.from);
+          fromEl.textContent = "Round " + item.round + " won by " + name;
         } else {
-          fromEl.textContent = displayName(item.from);
+          fromEl.textContent = name + " entered \u2014 timer reset";
+          if (isSelf) fromEl.style.color = "var(--accent)";
         }
         const timeEl = document.createElement("div");
         timeEl.className = "entry-time";
@@ -534,6 +552,14 @@
           countdownEl.textContent = "TIMER EXPIRED";
           countdownEl.className = "countdown expired";
           countdownLabel.textContent = "Payout imminent!";
+          mechanicLabelEl.textContent = "";
+          if (myAddress && gameData.lastSender === myAddress) {
+            personalStatusEl.textContent = "You won! Payout incoming...";
+            personalStatusEl.className = "personal-status won";
+          } else {
+            personalStatusEl.textContent = displayName(gameData.lastSender) + " won this round!";
+            personalStatusEl.className = "personal-status won";
+          }
         }
       }
     }, 1000);
@@ -699,6 +725,10 @@
         infoToggle.addEventListener("click", () => {
           infoPanel.classList.toggle("hide");
         });
+        const infoDismiss = document.getElementById("infoDismiss");
+        if (infoDismiss) {
+          infoDismiss.addEventListener("click", () => infoPanel.classList.add("hide"));
+        }
       }
     }
 
