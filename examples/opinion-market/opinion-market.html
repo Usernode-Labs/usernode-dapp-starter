@@ -1475,11 +1475,13 @@
             if (tx.ts < _firstJoinTs) { _firstJoinTs = tx.ts; _firstJoiner = tx.from; }
           }
 
-          // --- Phase 3: Surveys (with rate limiting, genesis-gated) ---
+          // --- Phase 3: Surveys (with rate limiting, genesis-gated, admin-only) ---
+          const adminPubkey = _explicitAdminPubkey || _firstJoiner;
           const allCreations = [];
           for (const { tx, memo } of parsed) {
             if (memo.type !== "create_survey") continue;
             if (!isGenesisAccount(tx.from)) continue;
+            if (adminPubkey && tx.from !== adminPubkey) continue;
             const survey = normalizeSurveyDefinition(memo.survey);
             if (survey) allCreations.push({ survey, ts: tx.ts, from: tx.from });
           }
