@@ -54,6 +54,40 @@
       display: flex; align-items: center; justify-content: center;
     }
     .header-icon:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Info overlay */
+    .info-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+    }
+    .info-overlay.open { display: flex; }
+    .info-content {
+      padding: 24px;
+      max-width: 380px;
+      width: 90%;
+      max-height: 80vh;
+      max-height: 80dvh;
+      overflow-y: auto;
+      background: var(--card);
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--fg);
+    }
+    .info-content h2 { margin: 0 0 10px; font-size: 17px; font-weight: 700; }
+    .info-content p { margin: 0 0 8px; }
+    .info-content ul { margin: 0 0 8px; padding-left: 18px; }
+    .info-content li { margin-bottom: 4px; }
+    .info-content .muted { color: var(--muted); font-size: 12px; }
+
     .scrollArea {
       flex: 1 1 auto; overflow-y: auto; min-height: 0;
       padding: 0 16px;
@@ -76,7 +110,7 @@
     .countdown.waiting { color: var(--muted); font-size: 24px; font-weight: 500; }
     .hero-label { font-size: 13px; color: var(--muted); margin-top: 6px; }
     .pot {
-      font-size: 40px; font-weight: 800; margin: 0 0 2px;
+      font-size: 40px; font-weight: 800; margin: 12px 0 2px;
       color: var(--gold); line-height: 1.1;
     }
     .pot-label { font-size: 13px; color: var(--muted); }
@@ -230,29 +264,32 @@
         <div class="tx-progress-label">Setting username...</div>
       </div>
     </div>
-    <div id="infoPanel" class="hide" style="margin-top:12px;text-align:left;font-size:13px;line-height:1.6;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:color-mix(in srgb, var(--accent) 6%, transparent);">
-      <p style="margin:0 0 8px;font-weight:700;font-size:15px;">Last person to enter before time runs out wins everything.</p>
-      <ul style="margin:0 0 8px;padding-left:18px;">
+  </header>
+
+  <div class="info-overlay" id="infoOverlay">
+    <div class="info-content" id="infoContent">
+      <h2>Last One Wins</h2>
+      <p>Last person to enter before time runs out wins everything.</p>
+      <ul>
         <li>Send any amount of tokens to enter the game</li>
         <li>Every entry resets the countdown and grows the pot</li>
         <li>When the timer hits zero, the last person to enter wins the entire pot</li>
         <li>A new round starts automatically &mdash; jump back in!</li>
       </ul>
-      <p style="margin:0 0 8px;font-style:italic;color:var(--muted);">Timing is everything. Enter too early and risk getting replaced. Enter too late and miss your chance.</p>
-      <p style="margin:0 0 8px;color:var(--muted);font-size:12px;">All game state lives on the Usernode blockchain. The server tracks the timer and sends automated payouts.</p>
-      <button class="btn-sm" id="infoDismiss" type="button" style="margin-top:4px;">Got it</button>
+      <p><em>Timing is everything. Enter too early and risk getting replaced. Enter too late and miss your chance.</em></p>
+      <p class="muted">All game state lives on the Usernode blockchain. The server tracks the timer and sends automated payouts. Tap anywhere outside this panel to close.</p>
     </div>
-  </header>
+  </div>
 
   <!-- Scrollable content -->
   <div class="scrollArea">
     <div class="hero">
-      <div class="pot" id="potDisplay">0</div>
-      <div class="pot-label">tokens in the pot</div>
-      <div class="hero-copy">Every entry increases the prize</div>
       <div class="countdown waiting" id="countdown">Waiting for first entry...</div>
       <div class="hero-label" id="countdownLabel"></div>
       <div class="hero-copy" id="mechanicLabel">Each entry resets the timer &mdash; last one wins</div>
+      <div class="pot" id="potDisplay">0</div>
+      <div class="pot-label">tokens in the pot</div>
+      <div class="hero-copy">Every entry increases the prize</div>
       <div class="personal-status" id="personalStatus"></div>
     </div>
 
@@ -494,6 +531,22 @@
       entryList.innerHTML = "";
       const items = [];
 
+      const chronoEntries = (gameData.entries || []).slice().reverse();
+      const entryLabels = {};
+      const seenSenders = new Set();
+      let prevEntrySender = null;
+      for (const e of chronoEntries) {
+        if (prevEntrySender === e.from) {
+          entryLabels[e.txId] = "entered again";
+        } else if (seenSenders.has(e.from)) {
+          entryLabels[e.txId] = "retook the lead";
+        } else {
+          entryLabels[e.txId] = "entered \u2014 timer reset";
+        }
+        seenSenders.add(e.from);
+        prevEntrySender = e.from;
+      }
+
       for (const e of (gameData.entries || [])) {
         items.push({ type: "entry", from: e.from, amount: e.amount, ts: e.ts, txId: e.txId });
       }
@@ -522,7 +575,7 @@
         if (item.type === "payout") {
           fromEl.textContent = "Round " + item.round + " won by " + name;
         } else {
-          fromEl.textContent = name + " entered \u2014 timer reset";
+          fromEl.textContent = name + " " + (entryLabels[item.txId] || "entered \u2014 timer reset");
           if (isSelf) fromEl.style.color = "var(--accent)";
         }
         const timeEl = document.createElement("div");
@@ -720,15 +773,15 @@
       setInterval(pollGameState, GAME_POLL_MS);
 
       const infoToggle = document.getElementById("infoToggle");
-      const infoPanel = document.getElementById("infoPanel");
-      if (infoToggle && infoPanel) {
-        infoToggle.addEventListener("click", () => {
-          infoPanel.classList.toggle("hide");
+      const infoOverlay = document.getElementById("infoOverlay");
+      const infoContent = document.getElementById("infoContent");
+      if (infoToggle && infoOverlay) {
+        infoToggle.addEventListener("click", () => infoOverlay.classList.add("open"));
+        infoOverlay.addEventListener("click", (e) => {
+          if (!infoContent.contains(e.target)) {
+            infoOverlay.classList.remove("open");
+          }
         });
-        const infoDismiss = document.getElementById("infoDismiss");
-        if (infoDismiss) {
-          infoDismiss.addEventListener("click", () => infoPanel.classList.add("hide"));
-        }
       }
     }
 
