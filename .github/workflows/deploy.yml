@@ -48,11 +48,9 @@ jobs:
 
             echo "==> Deploying combined examples server..."
             cd "$REPO_DIR/examples"
-            cp "$REPO_DIR/usernode-bridge.js" .
-            cp "$REPO_DIR/usernode-usernames.js" .
-            cp "$REPO_DIR/index.html" .
-            ls -la usernode-bridge.js usernode-usernames.js index.html
             docker compose down || true
+            echo "==> Pulling latest node sidecar image..."
+            docker compose pull node
             docker compose up -d --build 2>&1
             docker compose ps
             echo "==> Combined examples server started."

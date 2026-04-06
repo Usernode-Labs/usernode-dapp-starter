@@ -209,7 +209,7 @@ function createVoteEncryption(opts) {
         amount: 1,
         to_pk_hash: appPubkey,
         fee: 0,
-        memo: memoStr,
+        memo: Buffer.from(memoStr).toString("base64url"),
       });
       if (resp && resp.queued) return true;
       console.error("[vote-enc] send failed:", resp);

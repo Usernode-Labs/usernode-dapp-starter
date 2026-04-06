@@ -1,12 +1,28 @@
 services:
+  node:
+    image: usernodelabs/usernode:latest
+    container_name: dapp-node
+    environment:
+      USERNODE_GENESIS_URL: ${GENESIS_URL:-https://static.usernodelabs.org/testnet/genesis.json}
+      PEER_LIST_URL: ${SEEDLIST_URL:-https://static.usernodelabs.org/testnet/seedlist.txt}
+      RUST_LOG: info
+    volumes:
+      - node-data:/var/lib/usernode
+    networks:
+      - proxy-network
+    restart: unless-stopped
+
   dapp-examples:
-    build: .
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
     container_name: dapp-examples
     env_file:
       - path: ../.env
         required: false
     environment:
       PORT: "8000"
+      NODE_RPC_URL: "http://node:3000"
       SNAPSHOT_DIR: "/app/data"
       VIRTUAL_HOST: "dapps.usernodelabs.org"
       VIRTUAL_PORT: "8000"
@@ -21,6 +37,7 @@ services:
 
 volumes:
   sands-data:
+  node-data:
 
 networks:
   proxy-network:

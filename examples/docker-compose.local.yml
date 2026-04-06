@@ -1,7 +1,17 @@
 services:
+  node:
+    profiles:
+      - linux-node
+    ports:
+      - "3000:3000"
+    networks:
+      - default
+
   dapp-examples:
     ports:
       - "8000:8000"
+    environment:
+      NODE_RPC_URL: "http://host.docker.internal:3000"
     networks:
       - default
 

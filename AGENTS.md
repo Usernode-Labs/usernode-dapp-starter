@@ -76,7 +76,7 @@ Test with multiple users by opening an incognito/private window alongside a norm
 | Server-side chain polling | Section 12 |
 | Server-side payouts via RPC | Section 13 |
 | Keypair generation & `.env` details | Section 14 |
-| Docker deployment | Section 18 |
+| Docker deployment & sidecar node | Section 18 |
 | Connecting to a localnet | Section 19 |
 | Full checklist | Section 20 |
 
@@ -1162,6 +1162,8 @@ function httpsJson(method, urlStr, body) {
 
 Some dapps need the server to send transactions programmatically (e.g., automated payouts, prize distribution). This is done via the node's RPC wallet endpoints.
 
+> **Recommended**: Run a sidecar node in your Docker deployment rather than calling a shared public node. The `examples/docker-compose.yml` includes a `node` service that runs `usernodelabs/usernode` on the internal Docker network. This keeps wallet endpoints private and eliminates dependency on external infrastructure. See Section 18 for details.
+
 ### How It Works
 
 1. **Configure an in-process signer** — `POST /wallet/signer` with the app's secret key. This tells the node to sign transactions for that address.
@@ -1227,7 +1229,7 @@ APP_PUBKEY=ut1...
 APP_SECRET_KEY=...
 ```
 
-`NODE_RPC_URL` defaults to `https://alpha2.usernodelabs.org` and only needs to be set in `.env` if you're pointing at a different node.
+`NODE_RPC_URL` defaults to `https://alpha2.usernodelabs.org` in JS code as a fallback, but in Docker deployments the `docker-compose.yml` sets `NODE_RPC_URL=http://node:3000` to use the sidecar node. You only need to set `NODE_RPC_URL` in `.env` if you're running outside Docker and pointing at a specific node.
 
 See Section 14 for how to generate these, load them, and back them up via GitHub secrets.
 
@@ -1286,7 +1288,14 @@ APP_SECRET_KEY=...
 TIMER_DURATION_MS=86400000
 ```
 
-`NODE_RPC_URL` defaults to `https://alpha2.usernodelabs.org` in both `examples/server.js` and `examples/last-one-wins/server.js`, so it only needs to be in `.env` if you're targeting a different node.
+`NODE_RPC_URL` defaults to `https://alpha2.usernodelabs.org` in JS code, but Docker deployments override it to `http://node:3000` (the sidecar node). You only need to set it in `.env` when running outside Docker.
+
+The sidecar node also reads genesis and seedlist URLs. These have sensible defaults in `docker-compose.yml` and only need overriding if you're targeting a different network:
+
+```
+GENESIS_URL=https://static.usernodelabs.org/testnet/genesis.json
+SEEDLIST_URL=https://static.usernodelabs.org/testnet/seedlist.txt
+```
 
 Load the `.env` in your server with:
 
@@ -1555,6 +1564,14 @@ localStorage.setItem("myapp:app_pubkey", "ut1_my_custom_pubkey");
 
 ## 18. Docker Deployment
 
+### Sidecar Node Architecture
+
+Dapps that send transactions server-side (payouts, automated actions) run a **sidecar node** — a `usernodelabs/usernode` container on the internal Docker network. The dapp server talks to `http://node:3000` for wallet operations. Wallet endpoints (`/wallet/send`, `/wallet/signer`) are never exposed to the public internet.
+
+The sidecar node joins the network via P2P using the genesis and seedlist URLs. On first start it needs to sync the chain, which takes a few minutes. The dapp server handles temporary unavailability via try/catch and retry logic (see `game-logic.js`).
+
+Read-only dapps (no server-side payouts) don't need the sidecar — they use the explorer API proxy for chain reads, and client-side transactions go through the Flutter WebView bridge.
+
 ### Production (Combined Examples Server)
 
 The showcase deployment uses the combined `examples/` server. The GitHub Actions workflow (`.github/workflows/deploy.yml`) handles this automatically:
@@ -1562,23 +1579,39 @@ The showcase deployment uses the combined `examples/` server. The GitHub Actions
 1. Writes `.env` from GitHub Actions secrets (`APP_PUBKEY`, `APP_SECRET_KEY`) — see Section 14 for setup
 2. Pulls latest code and submodules
 3. Copies `usernode-bridge.js` and `index.html` from the repo root into `examples/`
-4. Runs `docker compose up -d --build` in `examples/`
-5. One container serves all example apps on `dapps.usernodelabs.org`
+4. Pulls the latest `usernodelabs/usernode` sidecar image
+5. Runs `docker compose up -d --build` in `examples/`
+6. Two containers start: the dapp server on `dapps.usernodelabs.org` and the sidecar node on the internal network
 
-The deploy is triggered manually via `workflow_dispatch` (GitHub Actions UI or API). Required repository secrets: `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_KEY`, `DEPLOY_PATH`, `APP_PUBKEY`, `APP_SECRET_KEY`.
+The deploy is triggered on push to `main` or manually via `workflow_dispatch` (GitHub Actions UI or API). Required repository secrets: `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_KEY`, `DEPLOY_PATH`, `APP_PUBKEY`, `APP_SECRET_KEY`.
 
 ### Local Testing (Combined Server)
 
+The sidecar node uses WebRTC for P2P, which **does not work inside Docker Desktop for Mac** (the VM's network stack can't complete WebRTC ICE negotiation). On Mac, run the node natively and let the dapp container reach it via `host.docker.internal`.
+
+**Mac local dev** (two terminals):
+
+```bash
+# Terminal 1: run node natively (requires: cd ../usernode && cargo build --release -p usernode-cli)
+make node
+
+# Terminal 2: start dapp-examples (connects to native node on host)
+make examples-up
+```
+
+The `make node` target runs the usernode binary from `../usernode/target/release/usernode` with the testnet genesis and seedlist. The `make examples-up` target starts only the `dapp-examples` container with `NODE_RPC_URL=http://host.docker.internal:3000`.
+
+**Linux local dev** (single command — Docker P2P works natively on Linux):
+
 ```bash
 cd examples
-cp ../usernode-bridge.js .
-cp ../index.html .
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml \
+  --profile linux-node up --build
 ```
 
 Then open `http://localhost:8000/`, `http://localhost:8000/opinion-market`, or `http://localhost:8000/falling-sands`.
 
-Stop with `Ctrl+C`, then `docker compose -f docker-compose.yml -f docker-compose.local.yml down`.
+Stop with `make examples-down` or `docker compose -f docker-compose.yml -f docker-compose.local.yml down`.
 
 ### Local Testing (Standalone Sub-Apps)
 
@@ -1714,6 +1747,8 @@ This is a starting-point checklist based on the patterns above. Not every item a
 **Server-side payouts (if your app sends transactions programmatically):**
 - [ ] Generate keypair with `node scripts/generate-keypair.js --env` to create `.env`
 - [ ] Back up `APP_PUBKEY` and `APP_SECRET_KEY` as GitHub Actions repository secrets (see Section 14)
+- [ ] Ensure `docker-compose.yml` includes the `node` sidecar service (already present in `examples/docker-compose.yml`)
+- [ ] Verify `NODE_RPC_URL` is set to `http://node:3000` in the compose environment (not a public endpoint)
 - [ ] Configure signer via `POST /wallet/signer` with `APP_SECRET_KEY` before sending
 - [ ] Send payouts via `POST /wallet/send` with `fee: 0`
 - [ ] Handle single-UTXO constraint: if payout fails, consolidate UTXOs and retry

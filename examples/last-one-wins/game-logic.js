@@ -198,7 +198,7 @@ function createLastOneWins(opts) {
   }
 
   async function sendPayout(toPkHash, amount, round) {
-    const memo = JSON.stringify({ app: APP_ID, type: "payout", round, winner: toPkHash });
+    const memo = Buffer.from(JSON.stringify({ app: APP_ID, type: "payout", round, winner: toPkHash })).toString("base64url");
     try {
       const resp = await httpJson("POST", `${nodeRpcUrl}/wallet/send`, {
         from_pk_hash: appPubkey, amount, to_pk_hash: toPkHash, fee: 0, memo,
@@ -219,7 +219,7 @@ function createLastOneWins(opts) {
     try {
       await httpJson("POST", `${nodeRpcUrl}/wallet/send`, {
         from_pk_hash: appPubkey, amount: state.potBalance, to_pk_hash: appPubkey, fee: 0,
-        memo: JSON.stringify({ app: APP_ID, type: "consolidate" }),
+        memo: Buffer.from(JSON.stringify({ app: APP_ID, type: "consolidate" })).toString("base64url"),
       });
       console.log("[payout] UTXO consolidation sent");
       return true;

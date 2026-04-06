@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y curl pkg-config libssl-dev && rm -rf /v
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
 WORKDIR /build
-COPY falling-sands/sandspiel/ sandspiel/
+COPY examples/falling-sands/sandspiel/ sandspiel/
 RUN cd sandspiel && wasm-pack build crate --target nodejs
 
 # ── Stage 2: Node.js runtime ────────────────────────────────────────────────
@@ -13,33 +13,33 @@ FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
+COPY examples/package.json examples/package-lock.json* ./
 RUN [ -f package-lock.json ] && npm ci --omit=dev || npm install --omit=dev
 
 # Shared library modules
-COPY lib/ lib/
+COPY examples/lib/ lib/
 
 # Combined server
-COPY server.js ./
+COPY examples/server.js ./
 
-# Shared bridge and identity module (copied into examples/ by deploy script)
+# Shared bridge and identity module (from repo root)
 COPY usernode-bridge.js ./
 COPY usernode-usernames.js ./
 
 # HTML files for all apps
 COPY index.html ./
-COPY opinion-market/opinion-market.html opinion-market/
-COPY opinion-market/opinion-market-core.js opinion-market/
-COPY opinion-market/vote-encryption.js opinion-market/
-COPY falling-sands/index.html falling-sands/
-COPY last-one-wins/index.html last-one-wins/
-COPY last-one-wins/game-logic.js last-one-wins/
+COPY examples/opinion-market/opinion-market.html opinion-market/
+COPY examples/opinion-market/opinion-market-core.js opinion-market/
+COPY examples/opinion-market/vote-encryption.js opinion-market/
+COPY examples/falling-sands/index.html falling-sands/
+COPY examples/last-one-wins/index.html last-one-wins/
+COPY examples/last-one-wins/game-logic.js last-one-wins/
 
 # Falling-sands engine + WASM loaders (node + browser) + built WASM package
-COPY falling-sands/engine.js falling-sands/
-COPY falling-sands/seed-content.js falling-sands/
-COPY falling-sands/wasm-loader.js falling-sands/
-COPY falling-sands/wasm-browser.js falling-sands/
+COPY examples/falling-sands/engine.js falling-sands/
+COPY examples/falling-sands/seed-content.js falling-sands/
+COPY examples/falling-sands/wasm-loader.js falling-sands/
+COPY examples/falling-sands/wasm-browser.js falling-sands/
 COPY --from=wasm-builder /build/sandspiel/crate/pkg/ falling-sands/sandspiel/crate/pkg/
 
 RUN mkdir -p /app/data
