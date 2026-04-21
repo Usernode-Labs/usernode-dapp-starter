@@ -127,7 +127,7 @@ async function checkExplorer(chainId, txId, memo) {
     const { data, elapsedMs } = await timedFetch(
       "POST",
       explorerUrl(`/${chainId}/transactions`),
-      { sender: APP_PUBKEY, limit: 20 },
+      { sender: APP_PUBKEY, limit: 20, include_orphaned: true },
     );
     const items = data.items || [];
     const matchById = txId ? items.find((t) => (t.tx_id || t.id) === txId) : null;
@@ -175,6 +175,18 @@ async function main() {
     process.exit(1);
   }
 
+  // Step 1.5: Ensure node tracks our wallet for UTXO hydration
+  console.log(`[${ts()}] Adding wallet owner for UTXO tracking...`);
+  try {
+    const { data, elapsedMs } = await timedFetch("POST", `${NODE_RPC_URL}/wallet/tracked_owner/add`, {
+      owner: APP_PUBKEY,
+    });
+    const tracked = (data.tracked_owners || []).length;
+    console.log(`[${ts()}]   ✓ wallet owner added (${ms(elapsedMs)}) tracked_owners=${tracked}`);
+  } catch (e) {
+    console.warn(`[${ts()}]   ⚠ wallet owner add failed (${ms(e.elapsedMs || 0)}): ${e.message} — continuing anyway`);
+  }
+
   // Step 2: Send self-transfer
   const nonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const memoJson = JSON.stringify({ app: "latency-debug", type: "ping", nonce });
@@ -188,6 +200,8 @@ async function main() {
   };
 
   console.log(`[${ts()}] Sending self-transfer (nonce: ${nonce})...`);
+  console.log(`[${ts()}]   memo_json: ${memoJson}`);
+  console.log(`[${ts()}]   memo_b64u: ${memo}`);
   const sendStart = performance.now();
   let txId = null;
   try {

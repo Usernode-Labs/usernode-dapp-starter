@@ -1570,6 +1570,8 @@ Dapps that send transactions server-side (payouts, automated actions) run a **si
 
 The sidecar node joins the network via P2P using the genesis and seedlist URLs. On first start it needs to sync the chain, which takes a few minutes. The dapp server handles temporary unavailability via try/catch and retry logic (see `game-logic.js`).
 
+**Wallet owner tracking**: For `/wallet/send` to work, the sidecar must track UTXOs for the app's address. The `docker-compose.yml` passes `--wallet-owner ${APP_PUBKEY}` to the node at startup (reads `APP_PUBKEY` from `.env`). You can also add wallet owners at runtime via `POST /wallet/tracked_owner/add { "owner": "ut1..." }`.
+
 Read-only dapps (no server-side payouts) don't need the sidecar — they use the explorer API proxy for chain reads, and client-side transactions go through the Flutter WebView bridge.
 
 ### Production (Combined Examples Server)
@@ -1747,9 +1749,10 @@ This is a starting-point checklist based on the patterns above. Not every item a
 **Server-side payouts (if your app sends transactions programmatically):**
 - [ ] Generate keypair with `node scripts/generate-keypair.js --env` to create `.env`
 - [ ] Back up `APP_PUBKEY` and `APP_SECRET_KEY` as GitHub Actions repository secrets (see Section 14)
-- [ ] Ensure `docker-compose.yml` includes the `node` sidecar service (already present in `examples/docker-compose.yml`)
+- [ ] Ensure `docker-compose.yml` includes the `node` sidecar service with `--wallet-owner ${APP_PUBKEY}` (already present in `examples/docker-compose.yml`)
 - [ ] Verify `NODE_RPC_URL` is set to `http://node:3000` in the compose environment (not a public endpoint)
 - [ ] Configure signer via `POST /wallet/signer` with `APP_SECRET_KEY` before sending
+- [ ] If not using `--wallet-owner` at startup, call `POST /wallet/tracked_owner/add` with `APP_PUBKEY` at runtime before sending
 - [ ] Send payouts via `POST /wallet/send` with `fee: 0`
 - [ ] Handle single-UTXO constraint: if payout fails, consolidate UTXOs and retry
 - [ ] After successful RPC payout, inject synthetic transaction to update game state immediately
