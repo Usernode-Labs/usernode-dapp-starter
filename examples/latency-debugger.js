@@ -149,6 +149,10 @@ async function checkExplorer(chainId, txId, memo) {
   }
 }
 
+function isExplorerConfirmed(status) {
+  return status === "confirmed" || status === "canonical";
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
   if (!APP_PUBKEY || !APP_SECRET_KEY) {
@@ -258,7 +262,7 @@ async function main() {
       nodeChainConfirmed = true;
       nodeChainTs = sinceSend;
     }
-    if (explorer.found && explorer.status === "confirmed" && !explorerConfirmed) {
+    if (explorer.found && isExplorerConfirmed(explorer.status) && !explorerConfirmed) {
       explorerConfirmed = true;
       explorerTs = sinceSend;
     }
