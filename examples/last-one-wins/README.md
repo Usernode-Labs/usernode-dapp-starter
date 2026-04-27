@@ -66,7 +66,7 @@ The client polls this endpoint every 4 seconds for UI updates.
 | `PORT` | `3333` | HTTP port |
 | `APP_PUBKEY` | — | Game pot address |
 | `APP_SECRET_KEY` | — | Secret key for payout signing |
-| `NODE_RPC_URL` | `https://alpha2.usernodelabs.org` | Node RPC endpoint |
+| `NODE_RPC_URL` | `https://alpha1.usernodelabs.org` | Node RPC endpoint |
 | `TIMER_DURATION_MS` | `86400000` (24h) | Countdown duration |
 
 ## Files

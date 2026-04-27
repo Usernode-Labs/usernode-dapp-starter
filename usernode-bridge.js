@@ -437,4 +437,26 @@
       return mockGetTransactions(filterOptions);
     };
   }
+
+  /**
+   * signMessage(message) — requests a cryptographic signature from the wallet.
+   *
+   * In native mode: calls the Flutter bridge which shows a confirmation dialog
+   * and signs with the user's private key (Blake3 hash + Grumpkin Schnorr).
+   * In mock mode: returns a deterministic fake signature for testing.
+   *
+   * Returns: { pubkey: string, signature: string }
+   */
+  if (typeof window.signMessage !== "function") {
+    window.signMessage = async function signMessage(message) {
+      if (window.usernode.isNative) {
+        return callNative("signMessage", { message });
+      }
+      const pubkey = await window.getNodeAddress();
+      return {
+        pubkey,
+        signature: "mock_signature_" + btoa(message).replace(/=+$/, ""),
+      };
+    };
+  }
 })();

@@ -91,7 +91,7 @@ When the server runs `--local-dev`, the bridge probes `GET /__mock/enabled` once
 
 ### Explorer API proxy
 
-The server proxies `/explorer-api/*` to `https://alpha2.usernodelabs.org/explorer/api/*` so clients avoid CORS issues. Note that this proxy works even in `--local-dev` — see `AGENTS.md` Section 17 for how to avoid bypassing mock mode.
+The server proxies `/explorer-api/*` to `https://alpha1.usernodelabs.org/explorer/api/*` so clients avoid CORS issues. Note that this proxy works even in `--local-dev` — see `AGENTS.md` Section 17 for how to avoid bypassing mock mode.
 
 ### dapp mode (Flutter WebView)
 

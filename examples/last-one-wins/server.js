@@ -13,7 +13,7 @@
  *   PORT             — HTTP port (default 3333)
  *   APP_PUBKEY       — game pot address (required for chain mode)
  *   APP_SECRET_KEY   — secret key for payout signing (required for chain mode)
- *   NODE_RPC_URL     — node RPC base URL (default https://alpha2.usernodelabs.org)
+ *   NODE_RPC_URL     — node RPC base URL (default https://alpha1.usernodelabs.org)
  *   TIMER_DURATION_MS — countdown duration in ms (default 86400000 = 24h)
  */
 
@@ -32,7 +32,7 @@ const PORT = parseInt(process.env.PORT, 10) || 3333;
 // ── Game config ──────────────────────────────────────────────────────────────
 const APP_PUBKEY = process.env.APP_PUBKEY || "ut1_lastwin_default_pubkey";
 const APP_SECRET_KEY = process.env.APP_SECRET_KEY || "";
-const NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha2.usernodelabs.org";
+const NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernodelabs.org";
 const TIMER_DURATION_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000;
 
 // ── Static file paths ────────────────────────────────────────────────────────

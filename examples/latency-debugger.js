@@ -22,8 +22,8 @@ loadEnvFile();
 
 const APP_PUBKEY = process.env.APP_PUBKEY;
 const APP_SECRET_KEY = process.env.APP_SECRET_KEY;
-const NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha2.usernodelabs.org";
-const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+const NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernodelabs.org";
+const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha1.usernodelabs.org";
 const EXPLORER_UPSTREAM_BASE =
   process.env.EXPLORER_UPSTREAM_BASE != null ? process.env.EXPLORER_UPSTREAM_BASE : "/api";
 

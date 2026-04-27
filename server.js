@@ -317,7 +317,7 @@ const server = http.createServer((req, res) => {
   // Proxies requests to the remote block explorer to avoid CORS issues
   // when the page is loaded inside a WebView or from a different origin.
   const EXPLORER_PROXY_PREFIX = "/explorer-api/";
-  const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+  const EXPLORER_UPSTREAM = process.env.EXPLORER_UPSTREAM || "alpha1.usernodelabs.org";
   const EXPLORER_UPSTREAM_BASE = process.env.EXPLORER_UPSTREAM_BASE != null
     ? process.env.EXPLORER_UPSTREAM_BASE
     : "/api";

@@ -41,7 +41,7 @@ function loadEnvFile(filePath) {
 }
 
 function getExplorerUpstream() {
-  return process.env.EXPLORER_UPSTREAM || "alpha2.usernodelabs.org";
+  return process.env.EXPLORER_UPSTREAM || "alpha1.usernodelabs.org";
 }
 function getExplorerUpstreamBase() {
   return process.env.EXPLORER_UPSTREAM_BASE != null
@@ -269,6 +269,12 @@ function createMockApi(opts) {
   return { transactions, handleRequest };
 }
 
+// ── Confirmation status ──────────────────────────────────────────────────────
+
+function isExplorerConfirmed(status) {
+  return status === "confirmed" || status === "canonical";
+}
+
 // ── Chain poller ─────────────────────────────────────────────────────────────
 //
 // Polls the explorer API for new transactions and calls onTransaction(tx) for
@@ -285,6 +291,7 @@ function createChainPoller(opts) {
   const maxPages = opts.maxPages || 200;
   const seenIdsCap = opts.seenIdsCap || 5000;
   const recheckIntervalPolls = opts.recheckIntervalPolls || 10;
+  const skipOrphaned = opts.skipOrphaned !== false;
 
   let chainId = null;
   const seenTxIds = new Set();
@@ -380,6 +387,7 @@ function createChainPoller(opts) {
           const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash;
           if (!txId) continue;
           if (seenTxIds.has(txId)) continue;
+          if (skipOrphaned && tx.status && !isExplorerConfirmed(tx.status)) continue;
           allSeen = false;
           seenTxIds.add(txId);
           newTxs.push(tx);
@@ -631,6 +639,7 @@ module.exports = {
   httpsJson,
   handleExplorerProxy,
   createMockApi,
+  isExplorerConfirmed,
   createChainPoller,
   fetchAllTransactions,
   fetchGenesisAccounts,
