@@ -73,6 +73,23 @@
     return [];
   }
 
+  /**
+   * Merge the matched on-chain transaction (returned by waitForTransactionVisible)
+   * into the sendResult so dapp code can extract the on-chain tx id via
+   * sendResult.tx.tx_id even when the underlying transport (e.g. the Flutter
+   * native bridge) only resolved with `{ queued, error }`. Without this, dapps
+   * that need to correlate their submission with server-side state by tx id
+   * can't, because the transport's response gets propagated unchanged.
+   */
+  function attachMatchedTx(sendResult, matchedTx) {
+    if (!matchedTx) return sendResult;
+    if (sendResult == null) return { queued: true, tx: matchedTx };
+    if (typeof sendResult !== "object") return sendResult;
+    if (sendResult.tx) return sendResult;
+    sendResult.tx = matchedTx;
+    return sendResult;
+  }
+
   function extractTxId(sendResult) {
     if (!sendResult) return null;
     var candidates = [];
@@ -847,7 +864,7 @@
             destination_pubkey: destination_pubkey == null ? null : String(destination_pubkey),
             from_pubkey: from ? String(from).trim() : null,
             amount: amount,
-          }, opts).then(function () { return sendResult; });
+          }, opts).then(function (matchedTx) { return attachMatchedTx(sendResult, matchedTx); });
         });
       });
     };
@@ -879,7 +896,7 @@
           destination_pubkey: destination_pubkey == null ? null : String(destination_pubkey),
           from_pubkey: from_pubkey || null,
           amount: amount,
-        }, opts).then(function () { return sendResult; });
+        }, opts).then(function (matchedTx) { return attachMatchedTx(sendResult, matchedTx); });
       });
     }
 

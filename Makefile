@@ -31,16 +31,17 @@ ps:
 
 # Run usernode natively (required for Mac local dev; Docker P2P can't sync on Mac).
 # Build first: cd ../usernode && cargo build --release -p usernode-cli
-# Pass WALLET_OWNER=ut1... to track UTXOs for wallet/send (reads APP_PUBKEY from .env if set).
-WALLET_OWNER ?= $(shell grep -s '^APP_PUBKEY=' .env | head -1 | cut -d= -f2)
-WALLET_OWNER_FLAG = $(if $(WALLET_OWNER),--wallet-owner $(WALLET_OWNER),)
+# Auto-tracks every PUBKEY-shaped variable in .env (APP_PUBKEY, ECHO_APP_PUBKEY, ...)
+# so /wallet/send works for each dapp. Override with WALLET_OWNERS="ut1... ut1..." if needed.
+WALLET_OWNERS ?= $(shell grep -sE '^[A-Z0-9_]*PUBKEY=' .env | cut -d= -f2 | sort -u)
+WALLET_OWNER_FLAGS = $(foreach o,$(WALLET_OWNERS),--wallet-owner $(o))
 
 node:
 	$(USERNODE_BIN) node \
 		--genesis-url $(GENESIS_URL) \
 		--peer-list-url $(SEEDLIST_URL) \
 		--port $(NODE_PORT) \
-		$(WALLET_OWNER_FLAG)
+		$(WALLET_OWNER_FLAGS)
 
 # Local dev: start dapp-examples container (connects to native node on host).
 # Run `make node` in a separate terminal first.

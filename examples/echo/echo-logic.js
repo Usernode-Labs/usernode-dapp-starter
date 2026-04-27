@@ -108,6 +108,11 @@ function createEcho(opts) {
   const seenTxIds = new Set();
   // Outstanding echoes (avoid double-send if poller sees same tx twice in flight)
   const inFlight = new Set();
+  // Serializes /wallet/send calls. The sidecar enforces "one wallet send pending
+  // per owner", so concurrent sends from the same address get rejected with
+  // "wallet send already pending for owner …". We chain them off this promise so
+  // a startup burst from the chain poller drains one-at-a-time instead of racing.
+  let sendChain = Promise.resolve();
   let signerConfigured = false;
   let trackedOwnerAdded = false;
 
@@ -190,7 +195,12 @@ function createEcho(opts) {
     if (inFlight.has(tx.id)) return;
     inFlight.add(tx.id);
 
-    sendEchoFor(tx, event).finally(() => inFlight.delete(tx.id));
+    // Chain off sendChain so concurrent incoming requests serialize at our layer
+    // instead of racing the sidecar's per-owner "already pending" guard.
+    sendChain = sendChain
+      .catch(() => {}) // never let one failure poison the chain
+      .then(() => sendEchoFor(tx, event))
+      .finally(() => inFlight.delete(tx.id));
   }
 
   function handleOutgoing(tx) {

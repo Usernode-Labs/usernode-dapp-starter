@@ -119,11 +119,37 @@
     .tx-progress-fill.ok { background: var(--ok); }
     .tx-progress-fill.warn { background: var(--warn); }
     .tx-progress-fill.err { background: var(--err); }
+    /* Echo-wait phase: amber bar with diagonal moving stripes so the user can
+       see *something* is still happening even though chain confirmation can
+       take 30-60s and we have no incremental progress signal until the echo
+       lands. */
+    .tx-progress-fill.echoing {
+      background:
+        repeating-linear-gradient(
+          -45deg,
+          var(--warn) 0,
+          var(--warn) 8px,
+          rgba(255, 255, 255, 0.25) 8px,
+          rgba(255, 255, 255, 0.25) 16px
+        );
+      background-size: 22.6px 22.6px;
+      animation: echoStripes 1s linear infinite;
+    }
+    @keyframes echoStripes {
+      from { background-position: 0 0; }
+      to   { background-position: 22.6px 0; }
+    }
     .tx-progress-label {
       font-size: 12px; color: var(--muted); margin-top: 6px;
+      display: flex; align-items: center; gap: 6px;
     }
     .tx-progress-label.warn { color: var(--warn); }
     .tx-progress-label.err { color: var(--err); }
+    .tx-progress-label .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: currentColor; flex: 0 0 auto;
+      animation: echoPulse 1.4s ease-in-out infinite;
+    }
 
     /* Result tile (most recent) */
     .timing {
@@ -358,11 +384,32 @@
       try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, HISTORY_MAX))); } catch (_) {}
     }
 
-    /* ── Progress bar ─────────────────────────────────────── */
-    const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
-    let _pbRaf = null, _pbStart = 0;
+    /* ── Progress bar ─────────────────────────────────────────
+       The bar covers the *full* round-trip in two phases:
 
-    function pbPercent(s) {
+         phase "sending":  user-tx submit → on-chain confirmation
+                           (blue, eased ramp 0% → ~95% over ~30s)
+         phase "echoing":  confirmation → echo-tx seen by server
+                           (amber striped bar pinned at 95% with a
+                            live "Waiting for echo… 12.3s" label)
+         phase "done":     green 100% bar with total round-trip,
+                           auto-hides after a moment
+
+       This matters because chain confirmation is ~30-60s; without a
+       persistent visual after the user's tx confirms, the UI looks
+       frozen even though the echo round-trip is the longest part. */
+    const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
+    let _pbRaf = null;
+    let _pbPhase = "idle"; // "idle" | "sending" | "echoing" | "done"
+    let _pbSendStart = 0;
+    let _pbEchoStart = 0;
+    let _pbHideTimer = null;
+    // The requestTxId the bar is currently tracking. Lets us ignore late
+    // server-state updates for stale entries when the user has already
+    // started a new send.
+    let _pbTrackingTxId = null;
+
+    function pbSendPercent(s) {
       if (s <= TX_PB_EXPECTED_S) {
         const t = s / TX_PB_EXPECTED_S;
         return 95 * (1 - Math.pow(1 - t, 3));
@@ -370,63 +417,196 @@
       return 95 + 5 * (1 - Math.exp(-(s - TX_PB_EXPECTED_S) / 120));
     }
 
-    function pbApply(pct, s) {
-      const el = document.getElementById("txProgress");
-      if (!el) return;
-      const fill = el.querySelector(".tx-progress-fill");
-      const label = el.querySelector(".tx-progress-label");
-      if (fill) {
-        fill.style.width = pct + "%";
-        fill.className = "tx-progress-fill" +
-          (s >= TX_PB_ERR_S ? " err" : s >= TX_PB_WARN_S ? " warn" : "");
+    function pbEl() { return document.getElementById("txProgress"); }
+    function pbFill() { const e = pbEl(); return e && e.querySelector(".tx-progress-fill"); }
+    function pbLabel() { const e = pbEl(); return e && e.querySelector(".tx-progress-label"); }
+
+    // Cached label state so we never thrash the DOM on every frame. Without
+    // this, calling pbSetLabel inside a 60fps tick destroys + rebuilds the
+    // pulsing dot element each frame, which (a) prevents the CSS animation
+    // from running and (b) caused the fill-bar transition to stop visibly
+    // updating because the constant child-removal in the flex label kept
+    // invalidating layout faster than the browser could paint.
+    const _pbLabel = { text: null, className: null, withDot: null, textNode: null };
+
+    function pbSetLabel(text, className, withDot) {
+      const label = pbLabel();
+      if (!label) return;
+      const structureChanged = _pbLabel.withDot !== withDot;
+      if (_pbLabel.className !== className) {
+        label.className = className;
+        _pbLabel.className = className;
       }
-      if (label) {
-        if (s >= TX_PB_ERR_S) { label.textContent = "Taking longer than it should"; label.className = "tx-progress-label err"; }
-        else if (s >= TX_PB_WARN_S) { label.textContent = "Taking longer than expected"; label.className = "tx-progress-label warn"; }
-        else { label.textContent = "Sending..."; label.className = "tx-progress-label"; }
+      if (structureChanged) {
+        label.textContent = "";
+        if (withDot) {
+          const dot = document.createElement("span");
+          dot.className = "dot";
+          label.appendChild(dot);
+        }
+        const textNode = document.createTextNode(text);
+        label.appendChild(textNode);
+        _pbLabel.withDot = withDot;
+        _pbLabel.text = text;
+        _pbLabel.textNode = textNode;
+        return;
+      }
+      if (_pbLabel.text !== text) {
+        if (_pbLabel.textNode) _pbLabel.textNode.nodeValue = text;
+        else { label.appendChild(document.createTextNode(text)); }
+        _pbLabel.text = text;
       }
     }
+
+    function pbResetLabelCache() {
+      _pbLabel.text = null;
+      _pbLabel.className = null;
+      _pbLabel.withDot = null;
+      _pbLabel.textNode = null;
+    }
+
+    function pbCancelHide() {
+      if (_pbHideTimer != null) { clearTimeout(_pbHideTimer); _pbHideTimer = null; }
+    }
+
+    /* Tick at ~8 Hz. The CSS `transition: width 0.4s ease-out` smooths
+       between samples, so 120ms is plenty smooth visually and ~8× less
+       layout work than rAF. */
+    const PB_TICK_MS = 120;
 
     function startProgressBar() {
-      stopProgressBar();
-      const el = document.getElementById("txProgress");
-      if (el) {
-        el.classList.remove("hide");
-        const fill = el.querySelector(".tx-progress-fill");
-        const label = el.querySelector(".tx-progress-label");
-        if (fill) { fill.style.width = "0%"; fill.className = "tx-progress-fill"; }
-        if (label) { label.textContent = "Sending..."; label.className = "tx-progress-label"; }
+      pbCancelHide();
+      stopProgressTick();
+      pbResetLabelCache();
+      _pbPhase = "sending";
+      const el = pbEl();
+      if (el) el.classList.remove("hide");
+      const fill = pbFill();
+      if (fill) {
+        fill.className = "tx-progress-fill";
+        // Force a reflow before setting width so the 0% baseline is
+        // committed; otherwise the first transition target may be
+        // batched away and the bar appears to "jump" instead of grow.
+        // eslint-disable-next-line no-unused-expressions
+        fill.offsetHeight;
+        fill.style.width = "0%";
       }
-      _pbStart = performance.now();
-      (function tick() {
-        const s = (performance.now() - _pbStart) / 1000;
-        pbApply(pbPercent(s), s);
-        _pbRaf = requestAnimationFrame(tick);
-      })();
+      pbSetLabel("Sending…", "tx-progress-label", true);
+      _pbSendStart = performance.now();
+      const tick = () => {
+        if (_pbPhase !== "sending") return;
+        const s = (performance.now() - _pbSendStart) / 1000;
+        const f = pbFill();
+        if (f) {
+          const newClass = "tx-progress-fill" +
+            (s >= TX_PB_ERR_S ? " err" : s >= TX_PB_WARN_S ? " warn" : "");
+          if (f.className !== newClass) f.className = newClass;
+          f.style.width = pbSendPercent(s) + "%";
+        }
+        if (s >= TX_PB_ERR_S)      pbSetLabel("Taking longer than it should", "tx-progress-label err", false);
+        else if (s >= TX_PB_WARN_S) pbSetLabel("Taking longer than expected", "tx-progress-label warn", true);
+        else                         pbSetLabel("Sending…", "tx-progress-label", true);
+        _pbRaf = setTimeout(tick, PB_TICK_MS);
+      };
+      // First sample after one tick interval — the CSS transition kicks in
+      // animating from 0% to that width, so the user sees an immediate
+      // visible movement instead of waiting a frame.
+      _pbRaf = setTimeout(tick, PB_TICK_MS);
     }
 
-    function completeProgressBar() {
-      stopProgressBar();
-      const el = document.getElementById("txProgress");
+    /* Transition from the "user tx confirmed" milestone into the
+       "waiting for echo" phase. Bar stays visible, button stays
+       enabled — the user can queue more sends if they want. */
+    function startEchoPhaseProgressBar(trackingTxId) {
+      pbCancelHide();
+      stopProgressTick();
+      pbResetLabelCache();
+      _pbPhase = "echoing";
+      _pbTrackingTxId = trackingTxId || null;
+      const el = pbEl();
+      if (el) el.classList.remove("hide");
+      const fill = pbFill();
+      if (fill) {
+        fill.className = "tx-progress-fill echoing";
+        fill.style.width = "95%";
+      }
+      _pbEchoStart = performance.now();
+      const tick = () => {
+        if (_pbPhase !== "echoing") return;
+        const s = (performance.now() - _pbEchoStart) / 1000;
+        const text = "Waiting for echo… " + (s < 10 ? s.toFixed(1) : Math.round(s)) + "s";
+        pbSetLabel(text, "tx-progress-label warn", true);
+        _pbRaf = setTimeout(tick, PB_TICK_MS);
+      };
+      tick();
+    }
+
+    /* Echo arrived — show green completion + total round-trip, then hide. */
+    function completeEchoPhaseProgressBar(totalRoundTripMs) {
+      stopProgressTick();
+      pbResetLabelCache();
+      _pbPhase = "done";
+      _pbTrackingTxId = null;
+      const el = pbEl();
       if (!el) return;
-      const fill = el.querySelector(".tx-progress-fill");
-      const label = el.querySelector(".tx-progress-label");
+      const fill = pbFill();
       if (fill) { fill.className = "tx-progress-fill ok"; fill.style.width = "100%"; }
-      if (label) { label.textContent = "Confirmed!"; label.className = "tx-progress-label"; }
-      setTimeout(() => el.classList.add("hide"), 1200);
+      const txt = totalRoundTripMs != null
+        ? "Echo received! Round trip " + (totalRoundTripMs / 1000).toFixed(2) + "s"
+        : "Echo received!";
+      pbSetLabel(txt, "tx-progress-label", false);
+      pbCancelHide();
+      _pbHideTimer = setTimeout(() => {
+        if (_pbPhase === "done") el.classList.add("hide");
+      }, 3500);
     }
 
-    function stopProgressBar() {
-      if (_pbRaf) { cancelAnimationFrame(_pbRaf); _pbRaf = null; }
+    function failProgressBar(message) {
+      stopProgressTick();
+      pbResetLabelCache();
+      _pbPhase = "done";
+      _pbTrackingTxId = null;
+      const el = pbEl();
+      if (!el) return;
+      const fill = pbFill();
+      if (fill) { fill.className = "tx-progress-fill err"; fill.style.width = "100%"; }
+      pbSetLabel(message || "Echo failed", "tx-progress-label err", false);
+      pbCancelHide();
+      _pbHideTimer = setTimeout(() => {
+        if (_pbPhase === "done") el.classList.add("hide");
+      }, 4000);
+    }
+
+    function stopProgressTick() {
+      if (_pbRaf) { clearTimeout(_pbRaf); _pbRaf = null; }
+    }
+
+    function hideProgressBarNow() {
+      stopProgressTick();
+      pbCancelHide();
+      pbResetLabelCache();
+      _pbPhase = "idle";
+      _pbTrackingTxId = null;
+      const el = pbEl();
+      if (el) el.classList.add("hide");
     }
 
     function setSending(v, ok) {
       sending = !!v;
       amountInput.disabled = !!v;
       sendBtn.disabled = !!v;
-      if (v) startProgressBar();
-      else if (ok) completeProgressBar();
-      else { stopProgressBar(); document.getElementById("txProgress").classList.add("hide"); }
+      if (v) {
+        // Starting a fresh send always resets the bar — even if a previous
+        // echo is still pending. The previous entry's eventual confirmation
+        // will be ignored by the bar (tracking-id mismatch) but is still
+        // recorded in history.
+        startProgressBar();
+      } else if (!ok) {
+        hideProgressBarNow();
+      }
+      // If ok=true the bar stays in the "sending" phase; the click handler
+      // will transition it to the "echoing" phase once it has a requestTxId
+      // to track. (We can't transition here because we don't have the id yet.)
     }
 
     function showError(msg) {
@@ -490,6 +670,12 @@
       persistHistory();
       renderLatest(entry);
       renderHistory();
+
+      // Transition the progress bar from "sending" → "waiting for echo".
+      // The bar stays visible with a striped amber fill and a live elapsed
+      // counter until pollServerState() sees the echo land.
+      if (entry.status === "echoing") startEchoPhaseProgressBar(entry.requestTxId);
+      else hideProgressBarNow();
     });
 
     /* ── Render ───────────────────────────────────────────── */
@@ -627,11 +813,15 @@
 
       let dirty = false;
       let latestUpdated = null;
+      // Outcomes that should update the progress bar — but only if it's
+      // still tracking the same requestTxId (user might have queued a new
+      // send already, in which case the bar is owned by that newer attempt).
+      let pbOutcome = null; // { kind: "ok" | "fail", txId, totalMs?, message? }
+
       for (const [txId, entry] of pendingByTxId) {
         const ev = byId.get(txId);
         if (!ev) continue;
 
-        // Update echo amount + status
         if (ev.echoAmount != null) entry.echoAmount = ev.echoAmount;
 
         if (ev.status === "skipped") {
@@ -640,6 +830,7 @@
           pendingByTxId.delete(txId);
           dirty = true;
           if (history[0] === entry) latestUpdated = entry;
+          pbOutcome = { kind: "fail", txId, message: "Skipped: " + entry.error };
           continue;
         }
         if (ev.status === "failed") {
@@ -648,11 +839,11 @@
           pendingByTxId.delete(txId);
           dirty = true;
           if (history[0] === entry) latestUpdated = entry;
+          pbOutcome = { kind: "fail", txId, message: "Echo failed: " + entry.error };
           continue;
         }
 
         if (ev.echoConfirmedAtServerMs != null) {
-          // Echo has been confirmed on chain (or in mock store).
           if (entry.echoLatencyMs == null) {
             entry.echoLatencyMs = performance.now() - entry._confirmedAtPerf;
             entry.totalLatencyMs = entry.sentLatencyMs + entry.echoLatencyMs;
@@ -669,6 +860,7 @@
           pendingByTxId.delete(txId);
           dirty = true;
           if (history[0] === entry) latestUpdated = entry;
+          pbOutcome = { kind: "ok", txId, totalMs: entry.totalLatencyMs };
         } else if (ev.status === "echoing" && entry.status !== "echoing") {
           entry.status = "echoing";
           dirty = true;
@@ -681,6 +873,14 @@
         if (latestUpdated) renderLatest(latestUpdated);
         renderHistory();
       }
+
+      // Update the progress bar only if it's still tracking the txId that
+      // just settled. After a fresh send, _pbTrackingTxId points at the
+      // newer attempt, so older confirmations harmlessly fall through here.
+      if (pbOutcome && pbOutcome.txId === _pbTrackingTxId) {
+        if (pbOutcome.kind === "ok") completeEchoPhaseProgressBar(pbOutcome.totalMs);
+        else failProgressBar(pbOutcome.message);
+      }
     }
 
     /* ── Init ─────────────────────────────────────────────── */
@@ -688,6 +888,17 @@
       loadHistory();
       renderHistory();
       if (history[0]) renderLatest(history[0]);
+
+      // If we were reloaded mid-echo, restore the progress bar so the user
+      // gets the same persistent visual instead of looking at a frozen UI.
+      const top = history[0];
+      if (top && top.status === "echoing" && top.confirmedAtWall != null) {
+        const elapsedMs = Date.now() - top.confirmedAtWall;
+        startEchoPhaseProgressBar(top.requestTxId);
+        // Backdate the phase start so the displayed counter reflects the
+        // real wall-clock wait, not just time-since-reload.
+        _pbEchoStart = performance.now() - elapsedMs;
+      }
 
       // Mode pill (mock vs chain) + configure transactionsBaseUrl for the bridge.
       // The bridge's sendTransaction polls /transactions for inclusion after submit;
