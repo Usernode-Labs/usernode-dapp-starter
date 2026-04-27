@@ -149,6 +149,19 @@
     .status.skipped  { background: var(--border); color: var(--muted); }
     .status.failed   { background: rgba(200, 30, 30, 0.15); color: var(--err); }
 
+    @keyframes echoPulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.55; }
+    }
+    .status.echoing { animation: echoPulse 1.4s ease-in-out infinite; }
+    .live-timer { font-variant-numeric: tabular-nums; color: var(--warn); }
+    .live-timer::after {
+      content: "…";
+      display: inline-block;
+      animation: echoPulse 1.4s ease-in-out infinite;
+      margin-left: 1px;
+    }
+
     /* History list */
     .history-empty {
       font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0;
@@ -467,6 +480,7 @@
         echoAmount: null,
         error: null,
         server: null,
+        confirmedAtWall: Date.now(),
         _confirmedAtPerf: confirmedAtMs,
       };
 
@@ -491,11 +505,13 @@
 
       latencySend.textContent = fmtMs(entry.sentLatencyMs);
       latencyEcho.textContent = fmtMs(entry.echoLatencyMs);
+      latencyEcho.className = "val";
       latencyTotal.textContent = fmtMs(
         entry.sentLatencyMs != null && entry.echoLatencyMs != null
           ? entry.sentLatencyMs + entry.echoLatencyMs
           : null
       );
+      latencyTotal.className = "val";
 
       if (entry.server) {
         serverTimingSection.style.display = "block";
@@ -511,6 +527,49 @@
         latestError.textContent = entry.error;
       } else {
         latestError.style.display = "none";
+      }
+
+      // Run the live timer only while the *top* entry is still echoing.
+      if (entry === history[0] && entry.status === "echoing") startEchoTicker();
+      else stopEchoTicker();
+    }
+
+    /* ── Live "waiting for echo" timer ────────────────────── */
+    let _echoTickerRaf = null;
+
+    function getEchoElapsedMs(entry) {
+      if (entry._confirmedAtPerf != null) return performance.now() - entry._confirmedAtPerf;
+      if (entry.confirmedAtWall != null) return Date.now() - entry.confirmedAtWall;
+      return null;
+    }
+
+    function tickEchoTimer() {
+      const top = history[0];
+      if (!top || top.status !== "echoing") {
+        _echoTickerRaf = null;
+        return;
+      }
+      const elapsed = getEchoElapsedMs(top);
+      if (elapsed != null) {
+        latencyEcho.textContent = fmtMs(elapsed);
+        latencyEcho.className = "val live-timer";
+        if (top.sentLatencyMs != null) {
+          latencyTotal.textContent = fmtMs(top.sentLatencyMs + elapsed);
+          latencyTotal.className = "val live-timer";
+        }
+      }
+      _echoTickerRaf = requestAnimationFrame(tickEchoTimer);
+    }
+
+    function startEchoTicker() {
+      if (_echoTickerRaf != null) return;
+      _echoTickerRaf = requestAnimationFrame(tickEchoTimer);
+    }
+
+    function stopEchoTicker() {
+      if (_echoTickerRaf != null) {
+        cancelAnimationFrame(_echoTickerRaf);
+        _echoTickerRaf = null;
       }
     }
 
