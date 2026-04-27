@@ -270,6 +270,7 @@
     const HISTORY_KEY = "echo:history:v1";
     const HISTORY_MAX = 20;
     const STATE_POLL_MS = 2000;
+    const EXPLORER_BASE = window.location.origin + "/explorer-api";
 
     /* ── Standard helpers ─────────────────────────────────── */
     function extractTxId(sendResult) {
@@ -629,14 +630,30 @@
       renderHistory();
       if (history[0]) renderLatest(history[0]);
 
-      // Mode pill (mock vs chain)
+      // Mode pill (mock vs chain) + configure transactionsBaseUrl for the bridge.
+      // The bridge's sendTransaction polls /transactions for inclusion after submit;
+      // in live-chain mode that requires window.usernode.transactionsBaseUrl to be set.
+      let isMock = false;
       try {
-        const isMock = window.usernode &&
+        isMock = window.usernode &&
           typeof window.usernode.isMockEnabled === "function"
           ? await window.usernode.isMockEnabled()
           : false;
-        modePill.textContent = isMock ? "mock mode" : "live chain";
-      } catch (_) { modePill.textContent = "live chain"; }
+      } catch (_) { isMock = false; }
+      modePill.textContent = isMock ? "mock mode" : "live chain";
+
+      if (!isMock) {
+        try {
+          const resp = await fetch(EXPLORER_BASE + "/active_chain");
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data && data.chain_id) {
+              window.usernode = window.usernode || {};
+              window.usernode.transactionsBaseUrl = EXPLORER_BASE + "/" + data.chain_id;
+            }
+          }
+        } catch (_) {}
+      }
 
       setInterval(pollServerState, STATE_POLL_MS);
       pollServerState();
