@@ -16,6 +16,8 @@ services:
       - "3000"
       - "--wallet-owner"
       - "${APP_PUBKEY}"
+      - "--wallet-owner"
+      - "${ECHO_APP_PUBKEY}"
     volumes:
       - node-data:/var/lib/usernode
     networks:

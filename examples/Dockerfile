@@ -34,6 +34,8 @@ COPY examples/opinion-market/vote-encryption.js opinion-market/
 COPY examples/falling-sands/index.html falling-sands/
 COPY examples/last-one-wins/index.html last-one-wins/
 COPY examples/last-one-wins/game-logic.js last-one-wins/
+COPY examples/echo/index.html echo/
+COPY examples/echo/echo-logic.js echo/
 
 # Falling-sands engine + WASM loaders (node + browser) + built WASM package
 COPY examples/falling-sands/engine.js falling-sands/

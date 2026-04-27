@@ -26,6 +26,7 @@ loadEnvFile();
 const createEngine = require("./falling-sands/engine");
 const createLastOneWins = require("./last-one-wins/game-logic");
 const createVoteEncryption = require("./opinion-market/vote-encryption");
+const createEcho = require("./echo/echo-logic");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
 const LOCAL_DEV = process.argv.includes("--local-dev");
@@ -58,6 +59,7 @@ const INDEX_HTML = resolvePath(path.join(__dirname, "index.html"), path.join(__d
 const OPINION_MARKET_HTML = path.join(__dirname, "opinion-market", "opinion-market.html");
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
 const LASTWIN_HTML = path.join(__dirname, "last-one-wins", "index.html");
+const ECHO_HTML = path.join(__dirname, "echo", "index.html");
 
 // ── Game config (Last One Wins) ──────────────────────────────────────────────
 const LASTWIN_APP_PUBKEY = process.env.APP_PUBKEY || "ut1_lastwin_default_pubkey";
@@ -69,6 +71,11 @@ const LASTWIN_TIMER_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000
 const OM_APP_PUBKEY = "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
 const OM_ADMIN_PUBKEY = process.env.OM_ADMIN_PUBKEY || "";
 const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
+
+// ── Echo config (latency-test dapp) ─────────────────────────────────────────
+const ECHO_APP_PUBKEY = process.env.ECHO_APP_PUBKEY || "ut1_echo_default_pubkey";
+const ECHO_APP_SECRET_KEY = process.env.ECHO_APP_SECRET_KEY || "";
+const ECHO_NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernodelabs.org";
 
 // Genesis accounts (fetched once on startup; empty in local-dev)
 let omGenesisAccounts = [];
@@ -261,6 +268,34 @@ const lastwinPayoutPoller = createChainPoller({
 });
 if (!LOCAL_DEV) { lastwinEntryPoller.start(); lastwinPayoutPoller.start(); }
 
+// ── Echo (latency test) ─────────────────────────────────────────────────────
+const echo = createEcho({
+  appPubkey: ECHO_APP_PUBKEY,
+  appSecretKey: ECHO_APP_SECRET_KEY,
+  nodeRpcUrl: ECHO_NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+echo.start();
+
+function resetEcho(newId, oldId) {
+  console.log(`[echo] chain reset ${oldId} -> ${newId}, resetting state`);
+  echo.reset();
+}
+const echoIncomingPoller = createChainPoller({
+  appPubkey: ECHO_APP_PUBKEY,
+  queryField: "recipient",
+  onTransaction: echo.processTransaction,
+  onChainReset: resetEcho,
+});
+const echoOutgoingPoller = createChainPoller({
+  appPubkey: ECHO_APP_PUBKEY,
+  queryField: "sender",
+  onTransaction: echo.processTransaction,
+  onChainReset: resetEcho,
+});
+if (!LOCAL_DEV) { echoIncomingPoller.start(); echoOutgoingPoller.start(); }
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 function send(res, code, headers, body) {
@@ -337,6 +372,9 @@ const server = http.createServer((req, res) => {
   // Last One Wins game state API
   if (lastOneWins.handleRequest(req, res, pathname)) return;
 
+  // Echo (latency test) state API
+  if (echo.handleRequest(req, res, pathname)) return;
+
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;
 
@@ -375,6 +413,8 @@ const server = http.createServer((req, res) => {
     "/falling-sands/":   SANDS_HTML,
     "/last-one-wins":    LASTWIN_HTML,
     "/last-one-wins/":   LASTWIN_HTML,
+    "/echo":             ECHO_HTML,
+    "/echo/":            ECHO_HTML,
   };
 
   const htmlFile = staticRoutes[pathname];
@@ -397,6 +437,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`  /opinion-market — Opinion Market`);
   console.log(`  /falling-sands  — Falling Sands (client-side WASM + server relay)`);
   console.log(`  /last-one-wins  — Last One Wins token game`);
+  console.log(`  /echo           — Echo (sidecar latency test)`);
   console.log(`  Mock API (--local-dev): ${LOCAL_DEV ? "ENABLED" : "disabled"}`);
   if (LOCAL_DEV && TX_DELAY_MS != null) {
     console.log(`  Mock tx delay: ${TX_DELAY_MS / 1000}s (-t / --tx-delay)`);
