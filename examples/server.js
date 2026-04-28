@@ -20,6 +20,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
@@ -60,6 +61,27 @@ const OPINION_MARKET_HTML = path.join(__dirname, "opinion-market", "opinion-mark
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
 const LASTWIN_HTML = path.join(__dirname, "last-one-wins", "index.html");
 const ECHO_HTML = path.join(__dirname, "echo", "index.html");
+
+// ── Build version (per-page) ─────────────────────────────────────────────────
+// Hash the HTML file plus the shared bridge files it loads, so any edit to
+// the page or to the runtime it pulls in produces a new version. Surfaced
+// to clients three ways:
+//   1. Substituted into __BUILD_VERSION__ placeholders inside the HTML
+//      (used both for ?v=… cache-busters on <script src=…> tags and for a
+//      visible "Build XXXXXXXX" footer label so users can confirm at a
+//      glance which version they have loaded).
+//   2. Echoed in the X-App-Version response header.
+//   3. Returned by GET /__build?page=/echo for scripted health checks.
+// Hashes are recomputed on each request: they read three small files,
+// which is cheap, and it means edits during local-dev are picked up
+// without restarting the server.
+function buildVersionFor(htmlPath) {
+  const hash = crypto.createHash("sha1");
+  for (const p of [htmlPath, BRIDGE_PATH, USERNAMES_PATH]) {
+    try { hash.update(p).update(fs.readFileSync(p)); } catch (_) {}
+  }
+  return hash.digest("hex").slice(0, 8);
+}
 
 // ── Game config (Last One Wins) ──────────────────────────────────────────────
 const LASTWIN_APP_PUBKEY = process.env.APP_PUBKEY || "ut1_lastwin_default_pubkey";
@@ -420,10 +442,38 @@ const server = http.createServer((req, res) => {
   const htmlFile = staticRoutes[pathname];
   if (htmlFile) {
     try {
-      const buf = fs.readFileSync(htmlFile);
-      return send(res, 200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }, buf);
+      // Read each request — both because TX_DELAY_MS and other dev-loop
+      // edits should show up immediately, and because the per-page
+      // version hash needs to track the file's current contents.
+      const raw = fs.readFileSync(htmlFile, "utf8");
+      const version = buildVersionFor(htmlFile);
+      const rendered = raw.includes("__BUILD_VERSION__")
+        ? raw.split("__BUILD_VERSION__").join(version)
+        : raw;
+      return send(res, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-App-Version": version,
+      }, rendered);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read file: " + e.message);
+    }
+  }
+
+  // Build-info endpoint for scripted health checks. Returns the version
+  // for whichever HTML route the caller specifies (e.g. ?page=/echo); falls
+  // back to the root index. Public on purpose — it's just a hash.
+  if (pathname === "/__build") {
+    try {
+      const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      const page = url.searchParams.get("page") || "/";
+      const target = staticRoutes[page] || INDEX_HTML;
+      return send(res, 200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      }, JSON.stringify({ version: buildVersionFor(target), page, localDev: LOCAL_DEV }));
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Build info error: " + e.message);
     }
   }
 
