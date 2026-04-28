@@ -50,11 +50,16 @@ jobs:
 
             echo "==> Deploying combined examples server..."
             cd "$REPO_DIR/examples"
-            docker compose down || true
+            # --env-file ../.env feeds compose-time ${VAR} substitution (e.g.
+            # --wallet-owner ${APP_PUBKEY}). Without it, compose only reads
+            # examples/.env (doesn't exist) and substitutes empty strings,
+            # which crashes the node sidecar with a bech32 parse error.
+            COMPOSE="docker compose --env-file ../.env"
+            $COMPOSE down || true
             echo "==> Pulling latest node sidecar image..."
-            docker compose pull node
-            docker compose up -d --build 2>&1
-            docker compose ps
+            $COMPOSE pull node
+            $COMPOSE up -d --build 2>&1
+            $COMPOSE ps
             echo "==> Combined examples server started."
 
             echo "==> All running containers:"
