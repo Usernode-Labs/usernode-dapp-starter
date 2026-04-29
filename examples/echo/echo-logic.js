@@ -79,7 +79,19 @@ function httpJson(method, urlStr, body) {
       res.on("end", () => {
         const text = Buffer.concat(chunks).toString();
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 300)}`));
+          // Redirects on POST are almost always a misconfiguration (e.g.
+          // NODE_RPC_URL points at http:// when the upstream is behind an
+          // HTTPS reverse proxy). Surface the Location header + request URL
+          // so it's immediately diagnosable instead of an empty `HTTP 302:`.
+          if (res.statusCode >= 300 && res.statusCode < 400) {
+            const loc = res.headers && res.headers.location;
+            reject(new Error(
+              `HTTP ${res.statusCode} from ${method} ${urlStr}` +
+              (loc ? ` → Location: ${loc}` : " (no Location header)")
+            ));
+            return;
+          }
+          reject(new Error(`HTTP ${res.statusCode} from ${method} ${urlStr}: ${text.slice(0, 300)}`));
           return;
         }
         try { resolve(JSON.parse(text)); }
