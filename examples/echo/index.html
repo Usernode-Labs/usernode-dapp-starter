@@ -679,8 +679,6 @@
       }
 
       const memo = JSON.stringify({ app: APP_ID, type: "send" });
-      const sentAtMs = performance.now();
-      const sentAtWall = Date.now();
 
       // Insert the entry up-front in "sending" status so the Latest
       // Attempt card swaps to *this* attempt immediately and shows a
@@ -688,12 +686,18 @@
       // inclusion. Without this, the previous attempt's results stay
       // frozen on screen for ~30-60s while the new tx is in flight,
       // which makes the UI look stuck.
+      //
+      // _sentAtPerf and sentAtWall are reset inside onSubmitted below
+      // so the live timer and the final sentLatencyMs measure pure
+      // submit → inclusion latency — excluding however long the user
+      // spent on the native confirm dialog, which would otherwise
+      // contaminate every send-phase number.
       const entry = {
         requestTxId: null,
         sentAmount: amount,
         expectedEcho: Math.max(1, amount - 1),
-        sentAtWall,
-        _sentAtPerf: sentAtMs,
+        sentAtWall: Date.now(),
+        _sentAtPerf: performance.now(),
         sentLatencyMs: null,
         echoLatencyMs: null,
         totalLatencyMs: null,
@@ -717,6 +721,16 @@
           ...TX_SEND_OPTS,
           confirmTitle: "Echo test",
           confirmSubtitle: `Send ${amount} tokens; ${amount - 1} will return.`,
+          // Bridge fires this the moment the wallet returns "queued"
+          // (post-dialog accept, pre-inclusion polling). Reset our
+          // send-clock so the live "Send → confirmed" timer ticks
+          // from real submission, not from the click that opened the
+          // confirm dialog.
+          onSubmitted: () => {
+            entry._sentAtPerf = performance.now();
+            entry.sentAtWall = Date.now();
+            persistHistory();
+          },
         });
         setSending(false, true);
       } catch (e) {
@@ -733,7 +747,7 @@
       const confirmedAtMs = performance.now();
       const requestTxId = extractTxId(result);
       entry.requestTxId = requestTxId || ("local-" + Date.now());
-      entry.sentLatencyMs = confirmedAtMs - sentAtMs;
+      entry.sentLatencyMs = confirmedAtMs - entry._sentAtPerf;
       entry.confirmedAtWall = Date.now();
       entry._confirmedAtPerf = confirmedAtMs;
       entry.status = requestTxId ? "echoing" : "pending";

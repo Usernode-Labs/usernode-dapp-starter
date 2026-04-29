@@ -103,6 +103,7 @@ Sends a transaction. **Returns only after the tx is confirmed on-chain** (visibl
 | `opts.waitForInclusion` | boolean | Set `false` to fire-and-forget (default `true`) |
 | `opts.confirmTitle` | string | Custom title for the native confirmation screen (default `"Confirm Transaction"`) |
 | `opts.confirmSubtitle` | string | Custom subtitle for the native confirmation screen (default `"A dapp is requesting to send a transaction."`) |
+| `opts.onSubmitted` | function | Optional `(sendResult) => void` callback fired the moment the wallet returns "queued" (post user-accept, pre inclusion polling). Use it to reset latency clocks so they exclude confirm-dialog dwell time. Not fired for the QR transport (no separate submit inflection point). Thrown errors are logged but do not fail the send. |
 
 **Recommended send options** — define once and reuse everywhere:
 

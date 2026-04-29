@@ -3039,6 +3039,20 @@
   // =====================================================================
   //  Public API: sendTransaction
   // =====================================================================
+
+  // Fired once after a successful submit (queued onto the chain or written
+  // to the mock store), before inclusion polling begins. Lets latency-sensitive
+  // dapps mark the moment the tx actually left the bridge so they can exclude
+  // confirm-dialog dwell time from their own timers. A thrown callback is
+  // logged but does not fail the send. Not fired for the QR transport, which
+  // has no separate "submitted" inflection point — it only learns about the
+  // tx via on-chain polling.
+  function fireOnSubmitted(opts, sendResult) {
+    if (!opts || typeof opts.onSubmitted !== "function") return;
+    try { opts.onSubmitted(sendResult); }
+    catch (e) { console.warn("[usernode-bridge] onSubmitted callback threw:", e); }
+  }
+
   if (typeof window.sendTransaction !== "function") {
     function mockSendTransaction(destination_pubkey, amount, memo, opts) {
       var startedAt = Date.now();
@@ -3119,6 +3133,7 @@
         return resp.json();
       }).then(function (sendResult) {
         var sendFailed = sendResult && (sendResult.error || sendResult.queued === false);
+        if (!sendFailed) fireOnSubmitted(opts, sendResult);
         var shouldWait =
           !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
         if (!shouldWait) return sendResult;
@@ -3152,6 +3167,7 @@
         var sendError = sendResult && sendResult.error;
         if (sendError) throw new Error(String(sendError));
         var sendFailed = sendResult && sendResult.queued === false;
+        if (!sendFailed) fireOnSubmitted(opts, sendResult);
         var shouldWait =
           !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
         if (!shouldWait) return sendResult;
