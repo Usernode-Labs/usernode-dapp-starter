@@ -1163,8 +1163,19 @@ const WS_ROUND_TIMEOUT = 800;
 const WS_ROUND_GAP     = 100;
 const WS_MAX_ROUNDS    = 20;
 
+// Application-level heartbeat. The browser WS API doesn't surface
+// protocol-level pings/pongs to JS, so we send our own. Server already
+// replies "pong" to a "ping" string (see engine.js ws.on("message")). If
+// no message arrives within WS_HEARTBEAT_TIMEOUT_MS we treat the socket as
+// silently dead (laptop sleep, NAT timeout, network switch) and force a
+// reconnect — otherwise the WS stays in OPEN state forever and tx
+// broadcasts vanish into the void, with the only fix being a page refresh.
+const WS_HEARTBEAT_INTERVAL_MS = 25_000;
+const WS_HEARTBEAT_TIMEOUT_MS  = 60_000;
+
 let wsRound = 0;
 let wsTotalAttempts = 0;
+let lastWsActivityMs = 0;
 
 const debugLines = [];
 function dbg(msg) {
@@ -1177,7 +1188,13 @@ function dbg(msg) {
 }
 
 function handleMessage(event) {
+  // Any inbound message — including server's "pong" reply — counts as
+  // liveness. Stamp before short-circuiting so the heartbeat watchdog
+  // sees activity even on non-JSON traffic.
+  lastWsActivityMs = Date.now();
+
   if (typeof event.data !== "string") return; // only JSON messages now
+  if (event.data === "pong") return;           // heartbeat reply, no body
 
   try {
     const msg = JSON.parse(event.data);
@@ -1211,6 +1228,19 @@ function handleMessage(event) {
         for (const tx of msg.transactions) {
           const tick = timestampToTick(tx.timestamp_ms);
           pendingTxs.push({ tick, memo: tx.memo, from: tx.from });
+          // Reconnects (heartbeat-triggered or otherwise) deliver
+          // confirmed txs via init.transactions instead of live "tx"
+          // messages. Match the user's outstanding send here too so the
+          // pending overlay clears as soon as the sim catches up, rather
+          // than waiting on the 60s sentStrokesDeadline.
+          if (sentStrokes.length > 0 && sentMemoJson) {
+            try {
+              if (JSON.stringify(tx.memo) === sentMemoJson) {
+                sentStrokesApplyTick = tick;
+                sentMemoJson = null;
+              }
+            } catch (_) {}
+          }
         }
         pendingTxs.sort((a, b) => a.tick - b.tick);
       }
@@ -1327,6 +1357,7 @@ function startRound() {
       won = true;
       cleanup(sock);
       ws = sock;
+      lastWsActivityMs = Date.now();
       dbg(`R${rid}.${idx} connected`);
       if (canOverwriteStatus()) statusEl.className = "ok";
       try { sock.send(JSON.stringify({ type: "ready" })); }
@@ -1403,6 +1434,20 @@ function startRound() {
 function scheduleConnect() {
   requestAnimationFrame(() => setTimeout(startRound, 50));
 }
+
+// Heartbeat watchdog (set up once at load — survives reconnects).
+// Sends "ping" to the active socket; force-closes if the server has gone
+// silent for longer than WS_HEARTBEAT_TIMEOUT_MS. The existing onclose
+// handler will reconnect via startRound().
+setInterval(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (lastWsActivityMs && Date.now() - lastWsActivityMs > WS_HEARTBEAT_TIMEOUT_MS) {
+    dbg("heartbeat timeout — closing for reconnect");
+    try { ws.close(); } catch (_) {}
+    return;
+  }
+  try { ws.send("ping"); } catch (_) {}
+}, WS_HEARTBEAT_INTERVAL_MS);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && (!ws || ws.readyState !== WebSocket.OPEN)) {
