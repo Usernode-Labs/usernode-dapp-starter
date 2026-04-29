@@ -758,7 +758,7 @@
       latestSentAmount.textContent = entry.sentAmount + " tokens";
       latestEchoAmount.textContent = entry.echoAmount != null
         ? entry.echoAmount + " tokens"
-        : "(expected " + entry.expectedEcho + ")";
+        : "(expecting " + entry.expectedEcho + ")";
 
       // Three latency rows. Each is either:
       //   • a final value (fmtMs of a recorded duration)
