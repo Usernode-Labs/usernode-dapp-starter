@@ -1840,11 +1840,18 @@ function setSending(v, txSucceeded) {
     if (sendProgressEl) sendProgressEl.classList.remove("hide");
     fabBar.classList.add("visible");
     startTxProgress();
-  } else if (txSucceeded) {
-    completeTxProgress();
   } else {
-    stopTxProgress();
-    if (sendProgressEl) sendProgressEl.classList.add("hide");
+    if (txSucceeded) {
+      completeTxProgress();
+    } else {
+      stopTxProgress();
+      if (sendProgressEl) sendProgressEl.classList.add("hide");
+    }
+    // After a send completes, FAB visibility is purely a function of
+    // pendingStrokes — succeeded sends empty pendingStrokes (so hide), and
+    // failed sends restore them (so show). Re-derive here so callers don't
+    // have to remember a separate refreshFabs() at every exit point.
+    refreshFabs();
   }
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
