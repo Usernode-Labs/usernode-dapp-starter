@@ -20,10 +20,49 @@
 
 (function () {
   window.usernode = window.usernode || {};
-  // "dapp mode" (inside the Flutter WebView) exposes a JS channel object named
-  // `Usernode` with a `postMessage` function.
-  window.usernode.isNative =
+
+  // ── Native + iframe-relay detection ───────────────────────────────────
+  //
+  // "dapp mode" (top frame inside the Flutter WebView) exposes a JS channel
+  // object named `Usernode` with a `postMessage` function.
+  //
+  // When a dapp is embedded inside another page (e.g. the social-vibecoding
+  // platform loads dapps in cross-origin iframes), Flutter's WebView only
+  // injects `window.Usernode` into the top frame — child frames see
+  // `window.Usernode === undefined`. To keep dapps working transparently
+  // inside iframes, we relay native calls through the parent window via
+  // `postMessage`. The parent's copy of this bridge installs a listener
+  // (further down) that forwards relayed requests to `Usernode.postMessage`
+  // and routes responses back to the originating iframe.
+  //
+  // Detection:
+  //   * If we have direct access to `window.Usernode` → use it (top frame).
+  //   * Else if we're inside an iframe → ask the parent via a `discover`
+  //     postMessage whether it has a native channel. The parent only ACKs
+  //     when it actually does, at which point we flip into relay mode.
+  //     Without an ACK we stay in regular non-native mode, so a dapp
+  //     embedded in a plain desktop browser still falls through to the
+  //     existing QR-code flow.
+  var _hasNativeChannel =
     !!window.Usernode && typeof window.Usernode.postMessage === "function";
+  var _inIframe = false;
+  try { _inIframe = window !== window.parent; } catch (_) { _inIframe = false; }
+
+  // Android WebView injects `window.Usernode` into ALL frames, including
+  // cross-origin iframes. Outgoing `Usernode.postMessage` from an iframe
+  // works, but Flutter resolves promises via `runJavaScript`, which only
+  // evaluates in the top frame — so iframe-issued promises never resolve
+  // (the resolution lands in the top frame's pending-id map, not the
+  // iframe's). Force iframes through the parent relay so both legs of
+  // the round-trip route through the top frame.
+  if (_inIframe && _hasNativeChannel) {
+    _hasNativeChannel = false;
+  }
+
+  // Optimistic: only true once the parent has positively confirmed it has a
+  // native channel for us to relay through.
+  var _useIframeRelay = false;
+  window.usernode.isNative = _hasNativeChannel;
 
   // ── Configuration for QR/desktop mode ─────────────────────────────────
   // Apps call window.usernode.configure({ address: "ut1..." }) to set the
@@ -47,16 +86,155 @@
     else entry.resolve(value);
   };
 
+  // 15 s is well above the Flutter confirm-screen turnaround (single
+  // digits of ms in the relay leg + however long the user takes to
+  // approve), so a timeout firing means the parent never picked up the
+  // request — surface it as an actual error instead of an infinite hang.
+  var _RELAY_TIMEOUT_MS = 15000;
+
   function callNative(method, args) {
     var id = String(Date.now()) + "-" + Math.random().toString(16).slice(2);
     return new Promise(function (resolve, reject) {
       window.__usernodeBridge.pending[id] = { resolve: resolve, reject: reject };
-      if (!window.usernode.isNative) {
-        delete window.__usernodeBridge.pending[id];
-        reject(new Error("Usernode native bridge not available"));
+      var payload = { method: method, id: id, args: args || {} };
+      if (_useIframeRelay) {
+        var timer = setTimeout(function () {
+          var entry = window.__usernodeBridge.pending[id];
+          if (!entry) return;
+          delete window.__usernodeBridge.pending[id];
+          console.warn("[usernode-bridge] relay timeout for", method, "id", id);
+          reject(new Error(
+            "Usernode relay timed out (parent page never responded). " +
+            "Reload the host page so it picks up the latest bridge."
+          ));
+        }, _RELAY_TIMEOUT_MS);
+        // Wrap resolve/reject so the timeout is cleared on completion.
+        var origEntry = window.__usernodeBridge.pending[id];
+        window.__usernodeBridge.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); origEntry.resolve(v); },
+          reject: function (e) { clearTimeout(timer); origEntry.reject(e); },
+        };
+        try {
+          console.log("[usernode-bridge] relay → parent:", method, "id", id);
+          window.parent.postMessage(
+            { __usernode_relay: "request", id: id, method: method, args: args || {} },
+            "*"
+          );
+        } catch (err) {
+          clearTimeout(timer);
+          delete window.__usernodeBridge.pending[id];
+          reject(err);
+        }
         return;
       }
-      window.Usernode.postMessage(JSON.stringify({ method: method, id: id, args: args || {} }));
+      if (_hasNativeChannel) {
+        window.Usernode.postMessage(JSON.stringify(payload));
+        return;
+      }
+      delete window.__usernodeBridge.pending[id];
+      reject(new Error("Usernode native bridge not available"));
+    });
+  }
+
+  // ── Iframe-relay client: discover parent + receive responses ──────────
+  //
+  // When loaded inside a cross-origin iframe, kick off a `discover`
+  // handshake with the parent. The parent's bridge replies with
+  // `discover-ack` only if it has access to `window.Usernode`. On ack we
+  // flip `_useIframeRelay = true` and update `window.usernode.isNative`
+  // so subsequent dispatchers (`sendTransaction`, `signMessage`, etc.)
+  // route through the relay. With no ack we leave native off and the
+  // dapp falls through to its regular QR / mock paths.
+  //
+  // The same listener also funnels relayed responses
+  //   { __usernode_relay: "response", id, value, error }
+  // into the existing `__usernodeResolve` plumbing so the rest of the
+  // bridge does not need to know about the relay path.
+  if (_inIframe && !_hasNativeChannel) {
+    window.addEventListener("message", function (e) {
+      if (e.source !== window.parent) return;
+      var data = e.data;
+      if (!data) return;
+      if (data.__usernode_relay === "discover-ack") {
+        if (!_useIframeRelay) {
+          console.log("[usernode-bridge] iframe relay activated (parent ack received)");
+          _useIframeRelay = true;
+          window.usernode.isNative = true;
+        }
+        return;
+      }
+      if (data.__usernode_relay === "response") {
+        console.log("[usernode-bridge] relay ← parent response id", data.id);
+        window.__usernodeResolve(data.id, data.value, data.error);
+      }
+    });
+    try {
+      console.log("[usernode-bridge] sending discover ping to parent");
+      window.parent.postMessage({ __usernode_relay: "discover" }, "*");
+    } catch (_) { /* parent unreachable, stay non-native */ }
+  }
+
+  // ── Iframe-relay server: forward child-iframe requests to native ──────
+  //
+  // When this bridge runs in the top frame and the native channel is
+  // available, respond to `discover` pings with a `discover-ack`, and
+  // forward `request` payloads straight through to the Flutter JS
+  // channel. This deliberately bypasses the parent page's own dispatch
+  // wrappers (mock detection, QR fallback) — the iframe already runs
+  // its own copy of this bridge and is responsible for those decisions
+  // in its own origin. The parent only relays raw Usernode.postMessage
+  // payloads, which keeps cross-origin behaviour predictable.
+  if (_hasNativeChannel) {
+    console.log("[usernode-bridge] parent: native channel available, relay listener installed");
+    window.addEventListener("message", function (e) {
+      var data = e.data;
+      if (!data || !e.source) return;
+      var origin = e.origin || "*";
+      var source = e.source;
+      if (data.__usernode_relay === "discover") {
+        console.log("[usernode-bridge] parent ← discover from", origin, "→ acking");
+        try {
+          source.postMessage({ __usernode_relay: "discover-ack" }, origin);
+        } catch (_) { /* iframe gone, ignore */ }
+        return;
+      }
+      if (data.__usernode_relay !== "request") return;
+      var origId = data.id;
+      var nativeId = "relay-" + String(Date.now()) + "-" +
+        Math.random().toString(16).slice(2);
+      console.log(
+        "[usernode-bridge] parent ← relay request",
+        data.method,
+        "id", origId, "→ native id", nativeId
+      );
+      function reply(value, error) {
+        try {
+          source.postMessage(
+            { __usernode_relay: "response", id: origId, value: value, error: error },
+            origin
+          );
+        } catch (_) { /* iframe gone, ignore */ }
+      }
+      window.__usernodeBridge.pending[nativeId] = {
+        resolve: function (v) {
+          console.log("[usernode-bridge] parent native resolve →", nativeId);
+          reply(v, null);
+        },
+        reject: function (err) {
+          console.log("[usernode-bridge] parent native reject →", nativeId, err);
+          reply(null, (err && err.message) || String(err));
+        },
+      };
+      try {
+        window.Usernode.postMessage(JSON.stringify({
+          method: data.method,
+          id: nativeId,
+          args: data.args || {},
+        }));
+      } catch (err) {
+        delete window.__usernodeBridge.pending[nativeId];
+        reply(null, (err && err.message) || String(err));
+      }
     });
   }
 
