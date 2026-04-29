@@ -514,7 +514,7 @@ let TICK_EPOCH = 1767225600000;
 function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
 
 const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
-const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
 
 const EXPLORER_BASE = window.location.origin + "/explorer-api";
 (async function setupExplorer() {
@@ -1783,9 +1783,9 @@ function localPaint(e) {
 // ── Sending state ────────────────────────────────────────────────────────────
 let sending = false;
 const sendProgressEl = document.getElementById("send-progress");
-const TX_PROGRESS_EXPECTED_S = 30;
-const TX_PROGRESS_WARN_S    = 45;
-const TX_PROGRESS_ERR_S     = 90;
+const TX_PROGRESS_EXPECTED_S = 60;
+const TX_PROGRESS_WARN_S    = 120;
+const TX_PROGRESS_ERR_S     = 180;
 let _txRaf = null;
 let _txStart = 0;
 

@@ -403,8 +403,11 @@
   }
 
   function waitForTransactionVisible(expected, opts) {
+    // 180s default: chain inclusion on the live network can take a couple
+    // of minutes during slow mempool periods. Dapps that want a tighter
+    // ceiling can pass opts.timeoutMs explicitly. See AGENTS.md §2.
     var timeoutMs =
-      opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 20000;
+      opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 180000;
     var pollIntervalMs =
       opts && typeof opts.pollIntervalMs === "number" ? opts.pollIntervalMs : 750;
     var limit = opts && typeof opts.limit === "number" ? opts.limit : 50;
@@ -2938,7 +2941,7 @@
 
   // ── QR sendTransaction ─────────────────────────────────────────────────
   function qrSendTransaction(destination_pubkey, amount, memo, opts) {
-    var timeoutMs = (opts && typeof opts.timeoutMs === "number") ? opts.timeoutMs : 90000;
+    var timeoutMs = (opts && typeof opts.timeoutMs === "number") ? opts.timeoutMs : 180000;
     var pollIntervalMs = (opts && typeof opts.pollIntervalMs === "number") ? opts.pollIntervalMs : 2000;
 
     var payload = {

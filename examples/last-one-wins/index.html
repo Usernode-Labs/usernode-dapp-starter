@@ -322,7 +322,7 @@
   (function () {
     /* ── Config ─────────────────────────────────────────────── */
     const GAME_POLL_MS = 4000;
-    const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+    const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
     const EXPLORER_BASE = window.location.origin + "/explorer-api";
 
     /* ── DOM refs ───────────────────────────────────────────── */
@@ -417,7 +417,7 @@
     }
 
     /* ── Progress bar (reusable for any .tx-progress container) ── */
-    const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
+    const TX_PB_EXPECTED_S = 60, TX_PB_WARN_S = 120, TX_PB_ERR_S = 180;
     let _pbRaf = null, _pbStart = 0, _pbTarget = null;
 
     function pbPercent(s) {

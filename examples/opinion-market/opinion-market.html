@@ -1117,7 +1117,7 @@
         window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
 
         const EXPLORER_BASE = window.location.origin + "/explorer-api";
-        const TX_SEND_OPTS = { timeoutMs: 90_000, pollIntervalMs: 1500 };
+        const TX_SEND_OPTS = { timeoutMs: 180_000, pollIntervalMs: 1500 };
         const INITIAL_CREDITS = 1000;
         const FEE_RATE = 0.05;
         const LIQUIDITY_FEE_RATE = 0.02;
@@ -2170,7 +2170,7 @@
         /* ================================================================
          *  TX PROGRESS BAR
          * ================================================================ */
-        const TX_PROGRESS_EXPECTED_S = 30, TX_PROGRESS_WARN_S = 45, TX_PROGRESS_ERR_S = 90;
+        const TX_PROGRESS_EXPECTED_S = 60, TX_PROGRESS_WARN_S = 120, TX_PROGRESS_ERR_S = 180;
         let _txProgressRaf = null, _txProgressStart = 0;
         const pendingEls = () => ["setUsernamePending", "addSurveyPending", "votePending", "joinPending", "betPending", "deletePending", "bsBuyProgress", "bsSellProgress"].map($).filter(el => el && !el.classList.contains("hide"));
 

@@ -322,7 +322,7 @@
     window.usernode = window.usernode || {};
     window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
 
-    const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+    const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
     // Bump STORAGE_VERSION whenever the persisted history shape changes
     // (or any other echo:* key's shape changes). loadHistory() purges
     // older versions on startup so stale entries from previous deploys —
@@ -451,7 +451,7 @@
        This matters because chain confirmation is ~30-60s; without a
        persistent visual after the user's tx confirms, the UI looks
        frozen even though the echo round-trip is the longest part. */
-    const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
+    const TX_PB_EXPECTED_S = 60, TX_PB_WARN_S = 120, TX_PB_ERR_S = 180;
     let _pbRaf = null;
     let _pbPhase = "idle"; // "idle" | "sending" | "echoing" | "done"
     let _pbSendStart = 0;

@@ -38,7 +38,7 @@ Your new `index.html` should:
 - Include `<script src="/usernode-bridge.js"></script>` and `<script src="/usernode-usernames.js"></script>` in the `<head>`
 - Define `const APP_PUBKEY = "..."` using the address from Step 1 (with a `localStorage` override for dev — see Section 3)
 - Set `window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY` so the bridge's inclusion polling reuses your server cache instead of re-polling the explorer per client (see Section 7 → Bridge Inclusion Polling Reuses the Same Cache)
-- Define `const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };`
+- Define `const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };` (3-min ceiling — chain inclusion can take a couple of minutes during slow mempool periods)
 - Include the four standard helpers: `parseMemo`, `extractTimestamp`, `normalizeTx`, `parseAppTx` (copy-paste block in Section 3 — replace `"myapp"` with your app identifier)
 - Include the transaction progress bar (copy-paste block in Section 6)
 - Check `isMockEnabled()` before `discoverChainId()` (pattern in Section 17)
@@ -98,7 +98,7 @@ Sends a transaction. **Returns only after the tx is confirmed on-chain** (visibl
 | `destination_pubkey` | string | Your app's public key (the "app address") |
 | `amount` | number | Token amount — always use `1` (type discrimination is done via memo) |
 | `memo` | string | JSON-encoded payload — **max 1024 characters** — this is where your app data lives |
-| `opts.timeoutMs` | number | Max wait for inclusion (default 20s; **recommend 90s** for real chains) |
+| `opts.timeoutMs` | number | Max wait for inclusion (default 180s — chain inclusion can take a couple of minutes during slow mempool periods; lower it if you want a tighter ceiling for fire-and-forget UX) |
 | `opts.pollIntervalMs` | number | Poll interval (default 750ms; **recommend 1500ms** for real chains) |
 | `opts.waitForInclusion` | boolean | Set `false` to fire-and-forget (default `true`) |
 | `opts.confirmTitle` | string | Custom title for the native confirmation screen (default `"Confirm Transaction"`) |
@@ -108,7 +108,7 @@ Sends a transaction. **Returns only after the tx is confirmed on-chain** (visibl
 **Recommended send options** — define once and reuse everywhere:
 
 ```js
-const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
 ```
 
 **Custom confirmation screen** — when running inside the Flutter WebView, `sendTransaction` shows a native confirmation dialog before submitting. Customize its title and subtitle via `opts` to match the action the user is taking:
@@ -513,9 +513,13 @@ Blockchain transactions can take 30–90+ seconds. A simple spinner gives users 
 **JS controller** — three time thresholds drive the bar color and label:
 
 ```js
-const TX_PB_EXPECTED_S = 30;  // bar reaches ~95% here (normal case)
-const TX_PB_WARN_S    = 45;  // bar turns amber + "Taking longer than expected"
-const TX_PB_ERR_S     = 90;  // bar turns red + "check Discord"
+// Aligned with TX_SEND_OPTS.timeoutMs = 180000 so the UI doesn't claim
+// the tx failed while the bridge is still legitimately polling for
+// inclusion. Bar reaches ~95% at EXPECTED_S, turns amber at WARN_S,
+// red at ERR_S — and ERR_S matches the hard timeout.
+const TX_PB_EXPECTED_S = 60;   // bar reaches ~95% here (normal case)
+const TX_PB_WARN_S    = 120;  // bar turns amber + "Taking longer than expected"
+const TX_PB_ERR_S     = 180;  // bar turns red + "check Discord"
 let _pbRaf = null, _pbStart = 0;
 
 // Eased curve: cubic ease-out to 95%, then asymptotic approach to 100%
@@ -633,7 +637,7 @@ The HTML, CSS, and JS above are shown separately for explanation. Here is the co
 </style>
 
 <script>
-const TX_PB_EXPECTED_S = 30, TX_PB_WARN_S = 45, TX_PB_ERR_S = 90;
+const TX_PB_EXPECTED_S = 60, TX_PB_WARN_S = 120, TX_PB_ERR_S = 180;
 let _pbRaf = null, _pbStart = 0;
 
 function pbPercent(s) {
@@ -1782,7 +1786,7 @@ This is a starting-point checklist based on the patterns above. Not every item a
 - [ ] If your app has rules (rate limits, uniqueness, etc.), enforce them during **reads**, not just writes
 
 **Transaction sending:**
-- [ ] Use `TX_SEND_OPTS` with `timeoutMs: 90000` and `pollIntervalMs: 1500`
+- [ ] Use `TX_SEND_OPTS` with `timeoutMs: 180000` and `pollIntervalMs: 1500`, and align the progress-bar `TX_PB_*` thresholds to `60 / 120 / 180` so `ERR_S` matches the hard timeout
 - [ ] Pass `confirmTitle` and `confirmSubtitle` in opts to customize the native confirmation screen per action
 - [ ] Show the transaction progress bar during sends (not a simple spinner)
 - [ ] Disable interactive elements while sending to prevent double-submit

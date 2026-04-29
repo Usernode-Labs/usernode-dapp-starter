@@ -23,7 +23,7 @@
     window.localStorage.getItem("usernode:usernames_pubkey") ||
     "ut1p0p7y8ujacndc60r4a7pzk45dufdtarp6satvc0md7866633u8sqagm3az";
 
-  var TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
+  var TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
   var CACHE_TTL_MS = 30000;
   var SERVER_CACHE_URL = "/__usernames/state";
 
