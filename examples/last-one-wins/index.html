@@ -624,7 +624,14 @@
         const resp = await fetch("/__game/state");
         if (!resp.ok) throw new Error("status " + resp.status);
         gameData = await resp.json();
-        if (!appPubkey && gameData.appPubkey) appPubkey = gameData.appPubkey;
+        if (!appPubkey && gameData.appPubkey) {
+          appPubkey = gameData.appPubkey;
+          // Route the bridge's inclusion polling through our server-side
+          // cache (one shared chain poll behind /__game/state) instead of
+          // having every client re-poll the explorer. See AGENTS.md §7.
+          window.usernode = window.usernode || {};
+          window.usernode.serverCacheUrl = "/__usernode/cache/" + appPubkey;
+        }
         render();
         statusDot.className = "status-dot ok";
         statusText.textContent = "connected";

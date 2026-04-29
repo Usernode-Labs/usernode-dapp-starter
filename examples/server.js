@@ -241,24 +241,20 @@ const voteEncryption = createVoteEncryption({
 voteEncryption.start();
 
 // Opinion Market raw-tx cache, served at /opinion-market/api/transactions.
-// Backed by the shared createAppStateCache wiring; the cache itself is the
-// `omTxCache` array (clients then derive surveys/votes from those raw txs).
-const omTxCache = [];
+// Reads straight off the shared createAppStateCache raw-tx store via
+// omCache.getRawTransactions() — no second array. The cache also clears its
+// own raw-tx store on chain reset, so we just reset vote-encryption state.
 const omCache = createAppStateCache({
   name: "om",
   appPubkey: OM_APP_PUBKEY,
   queryFields: ["recipient"],
-  processTransaction(tx) {
-    omTxCache.push(tx);
-    voteEncryption.processTransaction(tx);
-  },
+  processTransaction: voteEncryption.processTransaction,
   // OM serves /opinion-market/api/transactions and /__om/pubkeys/* — both are
   // routed below in the main HTTP handler since they have OM-specific logic
   // (joins genesis-accounts list, body shape).
   handleRequest: null,
   onChainReset(newId, oldId) {
-    console.log(`[om] chain reset ${oldId} -> ${newId}, clearing tx cache and vote-encryption state`);
-    omTxCache.length = 0;
+    console.log(`[om] chain reset ${oldId} -> ${newId}, resetting vote-encryption state`);
     voteEncryption.reset();
   },
   localDev: LOCAL_DEV,
@@ -410,7 +406,7 @@ const server = http.createServer((req, res) => {
 
   // Opinion Market cached transactions
   if (pathname === "/opinion-market/api/transactions" && (req.method === "GET" || req.method === "HEAD")) {
-    const body = JSON.stringify({ items: omTxCache });
+    const body = JSON.stringify({ items: omCache.getRawTransactions() });
     if (req.method === "HEAD") {
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), "Cache-Control": "no-store" });
       return res.end();

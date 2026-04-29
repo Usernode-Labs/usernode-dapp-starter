@@ -1849,27 +1849,81 @@ function setSending(v, txSucceeded) {
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
 
+// We pass waitForInclusion: false to the bridge so it skips its own
+// inclusion polling. The server's chain poller (createAppStateCache) is
+// already polling the explorer for this dapp's pubkey and broadcasting
+// matches over WS, so two pollers chasing the same answer is wasteful and
+// also created a race: the WS broadcast can arrive before the bridge
+// poll finishes, and if matcher state isn't armed by then the overlay
+// never clears. Single source of truth = the WS broadcast.
+const WS_CONFIRMATION_TIMEOUT_MS = 90_000;
+
+async function awaitWsBroadcastMatch(timeoutMs) {
+  const startTs = Date.now();
+  while (sentMemoJson !== null && Date.now() - startTs < timeoutMs) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (sentMemoJson !== null) {
+    throw new Error("WS confirmation timeout");
+  }
+}
+
 btnSend.addEventListener("click", async () => {
   if (sending || !pendingStrokes.length) return;
+
+  const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
+  const memo = JSON.stringify({ app: "falling-sands", type: "draw", s: strokes });
+
+  // Arm the WS matcher before doing anything async so any incoming "tx"
+  // broadcast can be claimed regardless of which channel reports first.
+  // Visually identical: redrawOverlay paints both sentStrokes and
+  // pendingStrokes in red, so swapping arrays is a no-op for the user.
+  const heldStrokes = pendingStrokes;
+  const heldBudget = usedBudget;
+  sentStrokes = heldStrokes;
+  sentMemoJson = memo;
+  sentStrokesApplyTick = null;
+  sentStrokesDeadline = Date.now() + WS_CONFIRMATION_TIMEOUT_MS;
+  pendingStrokes = [];
+  usedBudget = 0;
+  redrawOverlay();
+  refreshFabs();
+
   try {
     setSending(true);
-    const strokes = pendingStrokes.map(s => [s.x1, s.y1, s.x2, s.y2, s.size, s.species]);
-    const memo = JSON.stringify({ app: "falling-sands", type: "draw", s: strokes });
-    await sendTransaction(APP_PUBKEY, 1, memo, { ...TX_SEND_OPTS, confirmTitle: "Save your drawing", confirmSubtitle: "Record your strokes on-chain." });
-    sentStrokes = pendingStrokes;
-    sentMemoJson = memo;
-    sentStrokesApplyTick = null;
-    sentStrokesDeadline = Date.now() + 60000;
-    console.log(`[sands-send] confirmed on-chain — waiting for WS broadcast (memo bytes=${memo.length})`);
-    pendingStrokes = [];
-    usedBudget = 0;
-    redrawOverlay();
-    refreshFabs();
+    await sendTransaction(APP_PUBKEY, 1, memo, {
+      ...TX_SEND_OPTS,
+      waitForInclusion: false,
+      confirmTitle: "Save your drawing",
+      confirmSubtitle: "Record your strokes on-chain.",
+    });
+    console.log(`[sands-send] queued (memo bytes=${memo.length}) — waiting for WS broadcast`);
+    await awaitWsBroadcastMatch(WS_CONFIRMATION_TIMEOUT_MS);
+    console.log(`[sands-send] WS broadcast matched — confirmed on-chain`);
     setSending(false, true);
   } catch (e) {
+    const isTimeout = e && /timeout/i.test(e.message || "");
+    if (isTimeout) {
+      // The tx was queued but we never saw a WS broadcast for it. Could be
+      // a server-side polling lag, a chain reorg, or a genuine failure.
+      // Leave the overlay in place (the 60s deadline already cleared it
+      // by now via simTick30Hz) and let the user retry.
+      console.warn("[sands-send] WS broadcast timeout — tx may still land later");
+      showError("Confirmation taking longer than expected — your drawing may still appear shortly.");
+    } else {
+      // Send was rejected before queuing (user cancelled native dialog,
+      // network error, etc.). Restore the strokes so the user can retry.
+      pendingStrokes = heldStrokes;
+      usedBudget = heldBudget;
+      sentStrokes = [];
+      sentMemoJson = null;
+      sentStrokesApplyTick = null;
+      redrawOverlay();
+      refreshFabs();
+      console.error("sendTransaction error:", e);
+      showError("Send failed: " + (e.message || e));
+    }
     setSending(false, false);
-    console.error("sendTransaction error:", e);
-    showError("Send failed: " + (e.message || e));
   }
 });
 

@@ -1110,6 +1110,12 @@
           window.localStorage.getItem("opinion-market:app_pubkey") ||
           "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
 
+        // Route the bridge's inclusion polling through our server-side
+        // cache so we share one chain poll across every connected client
+        // instead of each one re-polling the explorer. See AGENTS.md §7.
+        window.usernode = window.usernode || {};
+        window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
+
         const EXPLORER_BASE = window.location.origin + "/explorer-api";
         const TX_SEND_OPTS = { timeoutMs: 90_000, pollIntervalMs: 1500 };
         const INITIAL_CREDITS = 1000;

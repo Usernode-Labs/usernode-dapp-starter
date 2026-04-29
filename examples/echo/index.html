@@ -314,6 +314,12 @@
       window.localStorage.getItem("echo:app_pubkey") ||
       "ut1rfa6arxcy84ysusvfg309ly6guk3kch9qvgktn32d88xk704u5tsges8uh";
 
+    // Point the bridge's inclusion polling at our server-side cache so we
+    // share the chain-poll work with every other connected client instead of
+    // each one re-polling the explorer. See lib/dapp-server.js + AGENTS.md.
+    window.usernode = window.usernode || {};
+    window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
+
     const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };
     // Bump STORAGE_VERSION whenever the persisted history shape changes
     // (or any other echo:* key's shape changes). loadHistory() purges

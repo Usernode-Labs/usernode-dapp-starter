@@ -37,6 +37,7 @@ The existing `index.html` is a **diagnostic demo page** (balance viewer, raw tra
 Your new `index.html` should:
 - Include `<script src="/usernode-bridge.js"></script>` and `<script src="/usernode-usernames.js"></script>` in the `<head>`
 - Define `const APP_PUBKEY = "..."` using the address from Step 1 (with a `localStorage` override for dev — see Section 3)
+- Set `window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY` so the bridge's inclusion polling reuses your server cache instead of re-polling the explorer per client (see Section 7 → Bridge Inclusion Polling Reuses the Same Cache)
 - Define `const TX_SEND_OPTS = { timeoutMs: 90000, pollIntervalMs: 1500 };`
 - Include the four standard helpers: `parseMemo`, `extractTimestamp`, `normalizeTx`, `parseAppTx` (copy-paste block in Section 3 — replace `"myapp"` with your app identifier)
 - Include the transaction progress bar (copy-paste block in Section 6)
@@ -809,6 +810,29 @@ The same helper powers the global usernames cache (Section 8), the Last One Wins
 **`*-logic.js` modules** stay focused on app logic: `processTransaction`, `handleRequest`, `reset`, plus any app-specific timers (payouts, key publication, etc.). They do **not** poll the chain or drain mock transactions; that's the cache helper's job.
 
 **Custom backfill escape hatch**: if your dapp consumes historical transactions specially (e.g. Falling Sands feeds them into its engine constructor for windowed deterministic replay), pass `backfill: false` and seed the live poller with `initialLastHeight` + `initialSeenIds` from your own `fetchAllTransactions` call. The cache helper still owns live polling, mock drain, chain-reset detection, and HTTP routing — you just opt out of its automatic per-tx backfill.
+
+### Bridge Inclusion Polling Reuses the Same Cache
+
+The bridge's `sendTransaction(...)` waits for inclusion by polling for the user's transaction (the default `waitForInclusion: true`). Without configuration, that polling goes to the explorer — which means **every client doing a send re-polls the explorer for the same data the server is already polling for**. Same anti-fan-out problem as the section above, just on the inclusion path instead of the read path.
+
+`createAppStateCache` solves this automatically. In addition to whatever HTTP routes your dapp registers via `handleRequest`, the cache exposes built-in routes scoped per `appPubkey`:
+
+- `GET  /__usernode/cache/<appPubkey>/info` — `{ enabled, app_pubkey, count }`
+- `POST /__usernode/cache/<appPubkey>/getTransactions` — body `{ sender?, recipient?, account?, limit? }` → `{ items, count, total_in_cache }`. Newest-first, same item shape the bridge expects.
+
+The cache stores every raw tx it processes (deduped by id, unbounded — rebuilt from chain history on each restart). One server poll feeds the dapp's processed state, the bridge's inclusion polls, and any other consumers that need raw txs.
+
+**Opt in from the dapp HTML** by pointing the bridge at the cache:
+
+```js
+// Right next to APP_PUBKEY:
+window.usernode = window.usernode || {};
+window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
+```
+
+When set, the bridge's `waitForTransactionVisible` polls `${serverCacheUrl}/getTransactions` instead of the explorer. The promise still resolves with the matched on-chain tx (via `attachMatchedTx`), so dapps that read `result.tx.tx_id` (e.g. Echo correlating round-trips) keep working with no further changes. Console logs include `via server-cache` so you can confirm the routing.
+
+If `serverCacheUrl` is unset, the bridge falls back to the original explorer poll — works fine for the bare starter template (no server) and for any dapp that hasn't been wired yet.
 
 ### Client-Side Pagination
 

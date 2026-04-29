@@ -368,6 +368,40 @@
     return true;
   }
 
+  // ── Inclusion-poll transport ──────────────────────────────────────────
+  //
+  // When the dapp sets window.usernode.serverCacheUrl, inclusion polls go
+  // straight to the dapp's server-side createAppStateCache (one shared
+  // poller behind the scenes) instead of having every client re-poll the
+  // explorer. The URL points at the cache mount, e.g. "/__usernode/cache/<appPubkey>";
+  // the bridge POSTs to "${url}/getTransactions". Response shape is
+  // { items: [...], count, total_in_cache } — same items[] contract as
+  // window.getTransactions, so the existing matcher works unchanged.
+  function _serverCacheUrl() {
+    var u = window.usernode && window.usernode.serverCacheUrl;
+    return typeof u === "string" && u ? u : null;
+  }
+
+  function _fetchInclusionPage(query) {
+    var base = _serverCacheUrl();
+    if (!base) return window.getTransactions(query);
+    return fetch(base + "/getTransactions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(query || {}),
+      credentials: "same-origin",
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (text) {
+          throw new Error(
+            "server-cache getTransactions failed (" + resp.status + "): " + text
+          );
+        });
+      }
+      return resp.json();
+    });
+  }
+
   function waitForTransactionVisible(expected, opts) {
     var timeoutMs =
       opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 20000;
@@ -384,24 +418,25 @@
       query.sender = expected.from_pubkey;
     }
 
+    var transportLabel = _serverCacheUrl() ? "server-cache" : "getTransactions";
     var startedAt = Date.now();
     var attempt = 0;
 
     function poll() {
       attempt++;
-      return window.getTransactions(query).then(function (resp) {
+      return _fetchInclusionPage(query).then(function (resp) {
         var items = normalizeTransactionsResponse(resp);
         var found = null;
         for (var i = 0; i < items.length; i++) {
           if (txMatches(items[i], expected)) { found = items[i]; break; }
         }
         if (found) {
-          console.log("[usernode-bridge] tx found after", attempt, "polls,", Date.now() - startedAt, "ms");
+          console.log("[usernode-bridge] tx found after", attempt, "polls,", Date.now() - startedAt, "ms (via " + transportLabel + ")");
           return found;
         }
 
         if (attempt <= 3 || attempt % 10 === 0) {
-          console.log("[usernode-bridge] waitForTx poll #" + attempt + ", " + items.length + " items, no match yet");
+          console.log("[usernode-bridge] waitForTx poll #" + attempt + ", " + items.length + " items, no match yet (via " + transportLabel + ")");
         }
 
         if (Date.now() - startedAt >= timeoutMs) {
@@ -411,12 +446,12 @@
           ]
             .filter(Boolean)
             .join(", ");
-          console.warn("[usernode-bridge] waitForTx timed out. expected:", JSON.stringify(expected));
+          console.warn("[usernode-bridge] waitForTx timed out (via " + transportLabel + "). expected:", JSON.stringify(expected));
           if (items.length > 0) {
             console.warn("[usernode-bridge] last poll sample (first item):", JSON.stringify(items[0]));
           }
           throw new Error(
-            "Timed out waiting for transaction to appear in getTransactions (" + timeoutMs + "ms, " + attempt + " polls" + (details ? ", " + details : "") + ")"
+            "Timed out waiting for transaction to appear (" + timeoutMs + "ms, " + attempt + " polls via " + transportLabel + (details ? ", " + details : "") + ")"
           );
         }
         return sleep(pollIntervalMs).then(poll);

@@ -673,13 +673,13 @@ function createAppStateCache(opts) {
   opts = opts || {};
   const appPubkey = opts.appPubkey;
   if (!appPubkey) throw new Error("createAppStateCache: appPubkey is required");
-  const processTransaction = opts.processTransaction;
-  if (typeof processTransaction !== "function") {
+  const userProcessTransaction = opts.processTransaction;
+  if (typeof userProcessTransaction !== "function") {
     throw new Error("createAppStateCache: processTransaction(tx) is required");
   }
   // No-op default so callers can unconditionally do `cache.handleRequest(req, res, pathname)`
   // without nil-checks even when the dapp routes its own HTTP separately.
-  const handleRequest = typeof opts.handleRequest === "function"
+  const userHandleRequest = typeof opts.handleRequest === "function"
     ? opts.handleRequest
     : function () { return false; };
   const queryFields = Array.isArray(opts.queryFields) && opts.queryFields.length
@@ -699,6 +699,123 @@ function createAppStateCache(opts) {
   const initialLastHeight = opts.initialLastHeight != null ? opts.initialLastHeight : null;
   const initialSeenIds = Array.isArray(opts.initialSeenIds) ? opts.initialSeenIds : null;
   const name = opts.name || appPubkey.slice(0, 12) + "…";
+
+  // ── Raw-tx store + bridge-facing HTTP endpoint ──────────────────────────
+  //
+  // Every tx that flows through processTransaction is also retained here so
+  // the bridge's waitForTransactionVisible can poll the local cache instead
+  // of redundantly polling the explorer. One server poll → many client reads.
+  //
+  // Stored unbounded by design: the cache is rebuilt from chain history on
+  // every restart, so it never grows past one server's lifetime, and a few
+  // hundred bytes per tx puts the practical ceiling far above what these
+  // dapps generate. Add a `maxRetained` opt later if a dapp ever approaches
+  // it.
+  const rawTxs = []; // chronological insertion order
+  const rawTxIds = new Set();
+  const cacheRoutePrefix = `/__usernode/cache/${appPubkey}`;
+
+  function processTransaction(rawTx) {
+    if (rawTx && typeof rawTx === "object") {
+      const id = _appStateExtractId(rawTx);
+      if (!id || !rawTxIds.has(id)) {
+        if (id) rawTxIds.add(id);
+        rawTxs.push(rawTx);
+      }
+    }
+    return userProcessTransaction(rawTx);
+  }
+
+  // Read-only access to the cache's raw-tx list, in chronological (insertion)
+  // order. Useful for in-process consumers (e.g. a dapp HTTP route) that want
+  // the same data the bridge sees but without going through HTTP. Caller
+  // must not mutate the returned array.
+  function getRawTransactions() {
+    return rawTxs;
+  }
+
+  function _onChainResetWrapped(newId, oldId) {
+    rawTxs.length = 0;
+    rawTxIds.clear();
+    if (typeof onChainReset === "function") onChainReset(newId, oldId);
+  }
+
+  function _txField(tx, ...keys) {
+    for (const k of keys) {
+      const v = tx && tx[k];
+      if (v != null) return v;
+    }
+    return null;
+  }
+
+  function _filterCachedTxs(filter) {
+    const limit = typeof filter.limit === "number" && filter.limit > 0 ? filter.limit : 50;
+    const sender = filter.sender || null;
+    const recipient = filter.recipient || null;
+    const account = filter.account || null;
+    const out = [];
+    // Newest-first (matches explorer API ordering).
+    for (let i = rawTxs.length - 1; i >= 0 && out.length < limit; i--) {
+      const tx = rawTxs[i];
+      const from = _txField(tx, "source", "from_pubkey", "from");
+      const to = _txField(tx, "destination", "destination_pubkey", "to");
+      if (sender && from !== sender) continue;
+      if (recipient && to !== recipient) continue;
+      if (account && from !== account && to !== account) continue;
+      out.push(tx);
+    }
+    return out;
+  }
+
+  function handleCacheRequest(req, res, pathname) {
+    if (!pathname || !pathname.startsWith(cacheRoutePrefix)) return false;
+    const sub = pathname.slice(cacheRoutePrefix.length);
+
+    if ((sub === "/info" || sub === "") &&
+        (req.method === "GET" || req.method === "HEAD")) {
+      const body = JSON.stringify({
+        enabled: true,
+        app_pubkey: appPubkey,
+        count: rawTxs.length,
+      });
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      });
+      res.end(req.method === "HEAD" ? "" : body);
+      return true;
+    }
+
+    if (sub === "/getTransactions" && req.method === "POST") {
+      readJson(req).then(
+        (filter) => {
+          const items = _filterCachedTxs(filter || {});
+          const body = JSON.stringify({
+            items,
+            count: items.length,
+            total_in_cache: rawTxs.length,
+          });
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "cache-control": "no-store",
+          });
+          res.end(body);
+        },
+        (err) => {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid json: " + err.message }));
+        }
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleRequest(req, res, pathname) {
+    if (handleCacheRequest(req, res, pathname)) return true;
+    return userHandleRequest(req, res, pathname);
+  }
 
   let started = false;
 
@@ -770,7 +887,7 @@ function createAppStateCache(opts) {
         appPubkey,
         queryField,
         onTransaction: processTransaction,
-        onChainReset,
+        onChainReset: _onChainResetWrapped,
         intervalMs,
         upstream,
         upstreamBase,
@@ -781,7 +898,7 @@ function createAppStateCache(opts) {
     }
   }
 
-  return { start, handleRequest, processTransaction };
+  return { start, handleRequest, processTransaction, getRawTransactions };
 }
 
 // ── Global usernames cache ──────────────────────────────────────────────────
