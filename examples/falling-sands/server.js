@@ -14,7 +14,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
+const { handleExplorerProxy, createMockApi, createAppStateCache, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
 const createEngine = require("./engine");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
@@ -39,14 +39,23 @@ const WASM_BROWSER_PATH = path.join(__dirname, "wasm-browser.js");
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({ localDev: LOCAL_DEV });
 
-// ── Async init (discover chain info, then create engine) ─────────────────────
+// ── Async init (discover chain info, run engine-owned backfill, then wire cache) ──
+//
+// Falling-sands is the one dapp that does its own backfill outside the
+// shared cache helper: the engine consumes `replayTxs` in its constructor
+// for windowed deterministic replay against a disk snapshot. After that, the
+// generic createAppStateCache takes over for live polling + mock drain. We
+// pass `initialLastHeight` and `initialSeenIds` so the live poller picks up
+// exactly where the engine's replay ended.
 let engine = null;
+let engineCache = null;
 
 (async function init() {
   const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
 
   let replayTxs = [];
   let lastHeight = null;
+  let replayIds = [];
   if (!LOCAL_DEV && chainInfo.chainId) {
     const fetched = await fetchAllTransactions({
       chainId: chainInfo.chainId,
@@ -55,6 +64,7 @@ let engine = null;
     });
     replayTxs = fetched.transactions;
     lastHeight = fetched.lastHeight;
+    replayIds = fetched.txIds || [];
   }
 
   const engineOpts = {
@@ -70,44 +80,29 @@ let engine = null;
   }
 
   engine = createEngine(engineOpts);
-
   engine.attachWebSocket(server);
   await engine.init();
-
-  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
   engine.startTickLoop();
 
-  if (!LOCAL_DEV) {
-    if (lastHeight != null) poller.setInitialLastHeight(lastHeight);
-    poller.start();
-  }
+  engineCache = createAppStateCache({
+    name: "sands",
+    appPubkey: APP_PUBKEY,
+    queryFields: ["recipient"],
+    intervalMs: 1500,
+    backfill: false,                  // engine handles its own (windowed replay)
+    initialLastHeight: lastHeight,    // seed live poller from where replay ended
+    initialSeenIds: replayIds,
+    processTransaction: engine.processChainTransaction,
+    handleRequest: engine.handleRequest,
+    onChainReset(newId, oldId) {
+      console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
+      engine.reset();
+    },
+    localDev: LOCAL_DEV,
+    mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+  });
+  engineCache.start();
 })();
-
-// ── Chain polling ────────────────────────────────────────────────────────────
-const poller = createChainPoller({
-  appPubkey: APP_PUBKEY,
-  queryField: "recipient",
-  intervalMs: 1500,
-  onTransaction(tx) {
-    if (!engine || !tx.memo) return;
-    try {
-      const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
-      const from = (tx.source || tx.from_pubkey || tx.from || "unknown").slice(0, 16);
-      const txId = tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || "";
-      engine.applyDrawMemo(memo, `${from}… (${txId.slice(0, 8)}…)`);
-      const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
-      engine.addTransaction({
-        timestamp_ms: timestampMs,
-        memo,
-        from: tx.source || tx.from_pubkey || tx.from || "unknown",
-      });
-    } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
-  },
-  onChainReset(newId, oldId) {
-    console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
-    if (engine && engine.universe) engine.universe.reset();
-  },
-});
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -167,16 +162,11 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // Snapshot API
-  if (pathname === "/__sands/snapshot") {
-    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
-    return engine.handleSnapshotRequest(req, res);
-  }
-
-  // Transactions API
-  if (pathname === "/__sands/transactions") {
-    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
-    return engine.handleTransactionsRequest(req, res);
+  // Engine state APIs (snapshot + transactions log) — wired through the
+  // shared cache so future engines can opt in by exposing engine.handleRequest.
+  if (engineCache && engineCache.handleRequest(req, res, pathname)) return;
+  if (!engine && (pathname === "/__sands/snapshot" || pathname === "/__sands/transactions")) {
+    return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
   }
 
   // Mock API

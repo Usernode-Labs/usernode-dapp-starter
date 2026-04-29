@@ -356,16 +356,10 @@ function createEcho(opts) {
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   function start() {
-    if (localDev && mockTransactions) {
-      let idx = 0;
-      setInterval(() => {
-        while (idx < mockTransactions.length) {
-          processTransaction(mockTransactions[idx]);
-          idx++;
-        }
-      }, 1000);
-      console.log("[echo] mock drain loop started (--local-dev)");
-    } else {
+    // Chain plumbing (live polling, backfill, mock-drain) is owned by the
+    // surrounding createAppStateCache wiring in server.js. We only do
+    // app-specific tasks here.
+    if (!localDev) {
       // Pre-warm sidecar registration so the first echo is fast. Retry quietly
       // in the background — the sidecar may need time to come online.
       let attempts = 0;

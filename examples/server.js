@@ -21,7 +21,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
+const { loadEnvFile, handleExplorerProxy, createMockApi, createAppStateCache, createUsernamesCache, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
@@ -159,7 +159,15 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
 }
 
 // ── Falling-sands engine (async init — discovers chain genesis) ──────────────
+//
+// Falling-sands is the one dapp that does its own backfill outside the
+// shared cache helper: the engine consumes `replayTxs` in its constructor
+// for windowed deterministic replay against a disk snapshot. After that, the
+// generic createAppStateCache takes over for live polling + mock drain. We
+// pass `initialLastHeight` and `initialSeenIds` so the live poller picks up
+// exactly where the engine's replay ended.
 let engine = null;
+let sandsCache = null;
 
 (async function initEngine() {
   const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
@@ -198,40 +206,27 @@ let engine = null;
 
   // Replay is async — yields to the event loop so the server stays responsive.
   await engine.init();
-
-  setInterval(() => engine.processMockTransactions(mockApi.transactions), 500);
   engine.startTickLoop();
 
-  if (!LOCAL_DEV) {
-    if (lastHeight != null) sandsPoller.setInitialLastHeight(lastHeight);
-    sandsPoller.addSeenIds(replayTxIds);
-    sandsPoller.start();
-  }
+  sandsCache = createAppStateCache({
+    name: "sands",
+    appPubkey: SANDS_APP_PUBKEY,
+    queryFields: ["recipient"],
+    intervalMs: 1500,
+    backfill: false,                  // engine handles its own (windowed replay)
+    initialLastHeight: lastHeight,    // seed live poller from where replay ended
+    initialSeenIds: replayTxIds,
+    processTransaction: engine.processChainTransaction,
+    handleRequest: engine.handleRequest,
+    onChainReset(newId, oldId) {
+      console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
+      engine.reset();
+    },
+    localDev: LOCAL_DEV,
+    mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+  });
+  sandsCache.start();
 })();
-
-// ── Chain polling for falling-sands ──────────────────────────────────────────
-const sandsPoller = createChainPoller({
-  appPubkey: SANDS_APP_PUBKEY,
-  queryField: "recipient",
-  intervalMs: 1500,
-  onTransaction(tx) {
-    if (!engine || !tx.memo) return;
-    try {
-      const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
-      const timestampMs = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : Date.now());
-      engine.addTransaction({
-        timestamp_ms: timestampMs,
-        inclusion_latency_ms: tx.inclusion_latency_ms,
-        memo,
-        from: tx.source || tx.from_pubkey || tx.from || "unknown",
-      });
-    } catch (e) { console.warn("[sands] failed to apply tx memo:", e.message); }
-  },
-  onChainReset(newId, oldId) {
-    console.log(`[sands] chain reset ${oldId} -> ${newId}, resetting engine`);
-    if (engine && engine.universe) engine.universe.reset();
-  },
-});
 
 // ── Opinion Market vote encryption ───────────────────────────────────────────
 const voteEncryption = createVoteEncryption({
@@ -245,21 +240,31 @@ const voteEncryption = createVoteEncryption({
 });
 voteEncryption.start();
 
+// Opinion Market raw-tx cache, served at /opinion-market/api/transactions.
+// Backed by the shared createAppStateCache wiring; the cache itself is the
+// `omTxCache` array (clients then derive surveys/votes from those raw txs).
 const omTxCache = [];
-const omPoller = createChainPoller({
+const omCache = createAppStateCache({
+  name: "om",
   appPubkey: OM_APP_PUBKEY,
-  queryField: "recipient",
-  onTransaction(tx) {
+  queryFields: ["recipient"],
+  processTransaction(tx) {
     omTxCache.push(tx);
     voteEncryption.processTransaction(tx);
   },
+  // OM serves /opinion-market/api/transactions and /__om/pubkeys/* — both are
+  // routed below in the main HTTP handler since they have OM-specific logic
+  // (joins genesis-accounts list, body shape).
+  handleRequest: null,
   onChainReset(newId, oldId) {
     console.log(`[om] chain reset ${oldId} -> ${newId}, clearing tx cache and vote-encryption state`);
     omTxCache.length = 0;
     voteEncryption.reset();
   },
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
-if (!LOCAL_DEV) omPoller.start();
+omCache.start();
 
 // ── Last One Wins game ──────────────────────────────────────────────────────
 const lastOneWins = createLastOneWins({
@@ -270,25 +275,23 @@ const lastOneWins = createLastOneWins({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
+// game.start() runs the payout timer; chain plumbing is in lastwinCache below.
 lastOneWins.start();
 
-function resetLastOneWins(newId, oldId) {
-  console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
-  lastOneWins.reset();
-}
-const lastwinEntryPoller = createChainPoller({
+const lastwinCache = createAppStateCache({
+  name: "lastwin",
   appPubkey: LASTWIN_APP_PUBKEY,
-  queryField: "recipient",
-  onTransaction: lastOneWins.processTransaction,
-  onChainReset: resetLastOneWins,
+  queryFields: ["recipient", "sender"],
+  processTransaction: lastOneWins.processTransaction,
+  handleRequest: lastOneWins.handleRequest,
+  onChainReset(newId, oldId) {
+    console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
+    lastOneWins.reset();
+  },
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
-const lastwinPayoutPoller = createChainPoller({
-  appPubkey: LASTWIN_APP_PUBKEY,
-  queryField: "sender",
-  onTransaction: lastOneWins.processTransaction,
-  onChainReset: resetLastOneWins,
-});
-if (!LOCAL_DEV) { lastwinEntryPoller.start(); lastwinPayoutPoller.start(); }
+lastwinCache.start();
 
 // ── Echo (latency test) ─────────────────────────────────────────────────────
 const echo = createEcho({
@@ -298,25 +301,31 @@ const echo = createEcho({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
+// echo.start() runs the sidecar /wallet/signer ensureReady loop; chain
+// plumbing is in echoCache below.
 echo.start();
 
-function resetEcho(newId, oldId) {
-  console.log(`[echo] chain reset ${oldId} -> ${newId}, resetting state`);
-  echo.reset();
-}
-const echoIncomingPoller = createChainPoller({
+const echoCache = createAppStateCache({
+  name: "echo",
   appPubkey: ECHO_APP_PUBKEY,
-  queryField: "recipient",
-  onTransaction: echo.processTransaction,
-  onChainReset: resetEcho,
+  queryFields: ["recipient", "sender"],
+  processTransaction: echo.processTransaction,
+  handleRequest: echo.handleRequest,
+  onChainReset(newId, oldId) {
+    console.log(`[echo] chain reset ${oldId} -> ${newId}, resetting state`);
+    echo.reset();
+  },
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
-const echoOutgoingPoller = createChainPoller({
-  appPubkey: ECHO_APP_PUBKEY,
-  queryField: "sender",
-  onTransaction: echo.processTransaction,
-  onChainReset: resetEcho,
+echoCache.start();
+
+// ── Global usernames cache (chain backfill + live poll + /__usernames/state) ─
+const usernamesCache = createUsernamesCache({
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
-if (!LOCAL_DEV) { echoIncomingPoller.start(); echoOutgoingPoller.start(); }
+usernamesCache.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -382,20 +391,19 @@ const server = http.createServer((req, res) => {
   }
 
   // Falling-sands snapshot and transactions APIs
-  if (pathname === "/__sands/snapshot") {
-    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
-    return engine.handleSnapshotRequest(req, res);
-  }
-  if (pathname === "/__sands/transactions") {
-    if (!engine) return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
-    return engine.handleTransactionsRequest(req, res);
+  if (sandsCache && sandsCache.handleRequest(req, res, pathname)) return;
+  if (!engine && (pathname === "/__sands/snapshot" || pathname === "/__sands/transactions")) {
+    return send(res, 503, { "Content-Type": "text/plain" }, "Engine loading...");
   }
 
   // Last One Wins game state API
-  if (lastOneWins.handleRequest(req, res, pathname)) return;
+  if (lastwinCache.handleRequest(req, res, pathname)) return;
 
   // Echo (latency test) state API
-  if (echo.handleRequest(req, res, pathname)) return;
+  if (echoCache.handleRequest(req, res, pathname)) return;
+
+  // Global usernames cache
+  if (usernamesCache.handleRequest(req, res, pathname)) return;
 
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;

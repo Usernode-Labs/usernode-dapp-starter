@@ -328,16 +328,8 @@ function createVoteEncryption(opts) {
     setInterval(() => {
       checkAndPublishKeys().catch(e => console.error("[vote-enc] check error:", e.message));
     }, 30000);
-
-    if (localDev && mockTransactions) {
-      let idx = 0;
-      setInterval(() => {
-        while (idx < mockTransactions.length) {
-          processTransaction(mockTransactions[idx]);
-          idx++;
-        }
-      }, 1000);
-    }
+    // Chain plumbing (live polling, backfill, mock-drain) is owned by the
+    // surrounding createAppStateCache wiring in server.js.
   }
 
   function reset() {

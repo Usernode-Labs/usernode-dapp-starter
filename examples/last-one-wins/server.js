@@ -20,7 +20,14 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createChainPoller, resolvePath } = require("../lib/dapp-server");
+const {
+  loadEnvFile,
+  handleExplorerProxy,
+  createMockApi,
+  createAppStateCache,
+  createUsernamesCache,
+  resolvePath,
+} = require("../lib/dapp-server");
 const createLastOneWins = require("./game-logic");
 
 loadEnvFile();
@@ -53,27 +60,32 @@ const game = createLastOneWins({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
 });
+// game.start() runs the payout timer and any other app-specific tasks; chain
+// plumbing and mock-drain are handled by createAppStateCache below.
 game.start();
 
-// ── Chain polling (production) ───────────────────────────────────────────────
-function onChainReset(newId, oldId) {
-  console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
-  game.reset();
-}
-if (!LOCAL_DEV) {
-  createChainPoller({
-    appPubkey: APP_PUBKEY,
-    queryField: "recipient",
-    onTransaction: game.processTransaction,
-    onChainReset,
-  }).start();
-  createChainPoller({
-    appPubkey: APP_PUBKEY,
-    queryField: "sender",
-    onTransaction: game.processTransaction,
-    onChainReset,
-  }).start();
-}
+// ── Game state cache (chain backfill + live poll + /__game/state) ────────────
+const gameCache = createAppStateCache({
+  name: "lastwin",
+  appPubkey: APP_PUBKEY,
+  queryFields: ["recipient", "sender"],
+  processTransaction: game.processTransaction,
+  handleRequest: game.handleRequest,
+  onChainReset(newId, oldId) {
+    console.log(`[lastwin] chain reset ${oldId} -> ${newId}, resetting game state`);
+    game.reset();
+  },
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+gameCache.start();
+
+// ── Global usernames cache (chain backfill + live poll + /__usernames/state) ─
+const usernamesCache = createUsernamesCache({
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+usernamesCache.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -99,7 +111,10 @@ const server = http.createServer((req, res) => {
   }
 
   // Game state API
-  if (game.handleRequest(req, res, pathname)) return;
+  if (gameCache.handleRequest(req, res, pathname)) return;
+
+  // Global usernames cache
+  if (usernamesCache.handleRequest(req, res, pathname)) return;
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;

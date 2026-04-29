@@ -631,14 +631,46 @@ function createEngine(opts) {
     }));
   }
 
+  // Unified routing for createAppStateCache: returns true iff handled.
+  function handleRequest(req, res, pathname) {
+    if (pathname === "/__sands/snapshot") { handleSnapshotRequest(req, res); return true; }
+    if (pathname === "/__sands/transactions") { handleTransactionsRequest(req, res); return true; }
+    return false;
+  }
+
+  // Unified processTransaction(rawTx) for createAppStateCache: applies the
+  // memo to the simulation and adds it to the transactions log. Used for
+  // both live-polled and mock-drained txs. Backfill happens via the
+  // `replayTxs` constructor opt + windowed-replay logic in init() above —
+  // the cache helper is configured with `backfill: false` so this path is
+  // not called for historical txs.
+  function processChainTransaction(rawTx) {
+    if (!rawTx || !rawTx.memo) return;
+    let memo;
+    try { memo = typeof rawTx.memo === "string" ? JSON.parse(rawTx.memo) : rawTx.memo; }
+    catch (_) { return; }
+    const from = rawTx.source || rawTx.from_pubkey || rawTx.from || "unknown";
+    const txId = rawTx.tx_id || rawTx.id || rawTx.txid || rawTx.hash || rawTx.tx_hash || "";
+    const timestampMs = rawTx.timestamp_ms || (rawTx.created_at ? Date.parse(rawTx.created_at) : Date.now());
+    applyDrawMemo(memo, `${from.slice(0, 16)}… (${txId ? txId.slice(0, 8) + "…" : "mock"})`);
+    addTransaction({ timestamp_ms: timestampMs, memo, from });
+  }
+
+  function reset() {
+    if (universe && typeof universe.reset === "function") universe.reset();
+  }
+
   return {
     universe,
     applyDrawMemo,
     addTransaction,
     processMockTransactions,
+    processChainTransaction,
+    handleRequest,
     attachWebSocket,
     startTickLoop,
     init,
+    reset,
     handleSnapshotRequest,
     handleTransactionsRequest,
     captureSnapshot,

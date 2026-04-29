@@ -312,16 +312,8 @@ function createLastOneWins(opts) {
 
   function start() {
     setInterval(checkPayout, 5000);
-
-    if (localDev && mockTransactions) {
-      let idx = 0;
-      setInterval(() => {
-        while (idx < mockTransactions.length) {
-          processTransaction(mockTransactions[idx]);
-          idx++;
-        }
-      }, 1000);
-    }
+    // Chain plumbing (live polling, backfill, mock-drain) is owned by the
+    // surrounding createAppStateCache wiring in server.js.
   }
 
   function reset() {

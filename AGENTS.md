@@ -764,38 +764,51 @@ await sendTransaction(APP_PUBKEY, 1, memo, TX_SEND_OPTS);
 await refreshLoop(); // Immediate update
 ```
 
-### Scaling: Server-Side Transaction Cache
+### Scaling: Server-Side State Cache
 
-Every dapp should include a **server-side transaction cache**. Without it, every connected client independently paginates the explorer API for the same transactions — at 10 users that's 10x the API calls, all returning identical data.
+Every dapp must include a **server-side state cache**. Without it, every connected client independently paginates the explorer API for the same transactions — at 10 users that's 10x the API calls, all returning identical data.
 
-The pattern: run a `createChainPoller` on the server that caches raw transactions for your app's pubkey in memory, then serve them from a local endpoint (e.g., `GET /api/transactions`). Clients read from the cache instead of paginating the explorer directly. The server fetches once; all clients benefit.
+The shared library exposes a single one-call helper, `createAppStateCache`, that does the chain plumbing for any dapp. You provide:
+- `processTransaction(tx)` — pure function that mutates your in-memory state when a tx arrives
+- `handleRequest(req, res, pathname)` — pure function that serves your state-as-JSON HTTP endpoint(s)
+
+The helper handles backfill (`fetchAllTransactions` once at startup, interleaved across `queryFields` and sorted chronologically), live polling (`createChainPoller` per `queryField` with incremental `from_height`), mock-mode draining of `mockApi.transactions`, and chain-reset detection.
 
 ```js
-// Server: cache transactions and serve them
-const cachedTxs = [];
-const poller = createChainPoller({
-  appPubkey: APP_PUBKEY,
-  queryField: "recipient",
-  onTransaction: (tx) => { cachedTxs.push(tx); },
-});
-poller.start();
+const { createAppStateCache } = require("./lib/dapp-server");
 
-// Endpoint for clients
-// GET /api/transactions → { items: cachedTxs }
+const myAppCache = createAppStateCache({
+  name: "myapp",
+  appPubkey: APP_PUBKEY,
+  queryFields: ["recipient"],          // or ["recipient", "sender"] for two-way apps
+  processTransaction: state.processTransaction,
+  handleRequest: state.handleRequest,  // serves e.g. GET /__myapp/state
+  onChainReset: () => state.reset(),
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+myAppCache.start();
+
+// In the HTTP handler, before the static / fallback routes:
+if (myAppCache.handleRequest(req, res, pathname)) return;
 ```
 
 ```js
-// Client: read from server cache instead of explorer
+// Client: one small fetch per refresh — no chain pagination on the client at all.
 async function refreshLoop() {
-  const resp = await fetch("/api/transactions");
+  const resp = await fetch("/__myapp/state");
   const data = await resp.json();
-  const txs = (data.items || []).map(parseAppTx).filter(Boolean);
-  rebuildState(txs);
-  renderUI();
+  renderUI(data);
 }
 ```
 
-See the Opinion Market and Last One Wins examples for full implementations of this pattern.
+The same helper powers the global usernames cache (Section 8), the Last One Wins game state, the Echo round-trip log, the Opinion Market raw-tx cache, and the Falling Sands engine. See `examples/server.js` and `examples/last-one-wins/server.js` for full wirings — typically a few lines per dapp.
+
+**Client behavior**: clients read from the server endpoint **only**. They do not fall back to paginating the explorer themselves — every connected client doing that is the anti-pattern this section exists to prevent. The host server is required.
+
+**`*-logic.js` modules** stay focused on app logic: `processTransaction`, `handleRequest`, `reset`, plus any app-specific timers (payouts, key publication, etc.). They do **not** poll the chain or drain mock transactions; that's the cache helper's job.
+
+**Custom backfill escape hatch**: if your dapp consumes historical transactions specially (e.g. Falling Sands feeds them into its engine constructor for windowed deterministic replay), pass `backfill: false` and seed the live poller with `initialLastHeight` + `initialSeenIds` from your own `fetchAllTransactions` call. The cache helper still owns live polling, mock drain, chain-reset detection, and HTTP routing — you just opt out of its automatic per-tx backfill.
 
 ### Client-Side Pagination
 
@@ -863,11 +876,35 @@ await UsernodeUsernames.refresh();
 ### How It Works
 
 - All `set_username` transactions go to a shared **usernames address** (`USERNAMES_PUBKEY`) with memo `{ app: "usernames", type: "set_username", username: "..." }`.
-- The module polls this address and caches the latest username per pubkey.
+- The client module reads from the host server's cached endpoint `GET /__usernames/state`. **There is no client-side fallback**: the host server is required to wire up `createUsernamesCache` (see below). This is the same anti-fan-out rule as Section 7 — every browser tab paginating the explorer doesn't scale.
 - The `app` field in the memo is `"usernames"` (not `"identity"`).
 - **Default**: `user_<last 6 chars of pubkey>`.
 - **Custom**: User picks a base name; the suffix `_<last6>` is always appended and non-editable.
 - **Resolution**: Latest `set_username` tx per sender wins.
+
+### Server-side cache (required)
+
+Every dapp's server must wire up `createUsernamesCache`. It's a thin wrapper around `createAppStateCache` (Section 7) that owns the in-memory `{ pubkey: name }` map and the `GET /__usernames/state` endpoint:
+
+```js
+const { createUsernamesCache } = require("./lib/dapp-server");
+
+const usernamesCache = createUsernamesCache({
+  localDev: LOCAL_DEV,
+  mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+});
+usernamesCache.start();
+
+// In the HTTP handler, before the static / fallback routes:
+if (usernamesCache.handleRequest(req, res, pathname)) return;
+```
+
+This:
+- Backfills history once at startup, then live-polls (`queryField: "recipient"` against the global `USERNAMES_PUBKEY`).
+- In `--local-dev`, drains `mockApi.transactions` on a 1s timer instead of polling the chain — useful for cross-tab testing.
+- Exposes the resolved `{ pubkey: name }` map at `GET /__usernames/state` (CORS `*`, `Cache-Control: no-store`, in-memory only — never persisted).
+
+The combined examples server (`examples/server.js`), the standalone Last One Wins server (`examples/last-one-wins/server.js`), and the standalone Echo server (`usernode-echo-dapp/server.js`) all wire this up identically; copy the pattern into any new dapp server.
 
 ### Legacy Fallback
 

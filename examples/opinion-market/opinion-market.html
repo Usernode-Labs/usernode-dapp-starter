@@ -2009,6 +2009,9 @@
         /* ================================================================
          *  EXPLORER / DATA FETCH
          * ================================================================ */
+        // explorerFetch + discoverChainId are only used at init() to wire
+        // window.usernode.transactionsBaseUrl for sendTransaction. App-state
+        // reads go through the host server's cache below.
         async function explorerFetch(path, opts) {
           const resp = await fetch(`${EXPLORER_BASE}${path}`, opts);
           if (!resp.ok) throw new Error(`Explorer API ${resp.status}`);
@@ -2020,54 +2023,16 @@
           return data.chain_id;
         }
 
-        async function queryTransactions(body) {
-          if (!chainId) return { items: [] };
-          return await explorerFetch(`/${chainId}/transactions`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body || {}),
-          });
-        }
-
-        async function getAppTransactions(limit) {
-          const l = typeof limit === "number" ? limit : 2000;
-          try {
-            const r = await fetch("/__mock/getTransactions", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ owner_pubkey: APP_PUBKEY, filterOptions: { limit: l } }),
-            });
-            if (r.ok) return normalizeTransactionsResponse(await r.json());
-          } catch (_) {}
-          try {
-            const r = await fetch("/opinion-market/api/transactions");
-            if (r.ok) {
-              const data = await r.json();
-              if (data.items && data.items.length > 0)
-                return normalizeTransactionsResponse(data);
-            }
-          } catch (_) {}
-          if (chainId) {
-            try {
-              const allItems = [];
-              let cursor = null;
-              const MAX_PAGES = 40;
-              for (let page = 0; page < MAX_PAGES; page++) {
-                const body = { recipient: APP_PUBKEY, limit: 50 };
-                if (cursor) body.cursor = cursor;
-                const data = await queryTransactions(body);
-                const items = normalizeTransactionsResponse(data);
-                allItems.push(...items);
-                if (!data.has_more || !data.next_cursor) break;
-                cursor = data.next_cursor;
-              }
-              return allItems;
-            } catch (e) { console.warn("Explorer fetch failed:", e); }
-          }
-          if (typeof window.getTransactions === "function") {
-            return normalizeTransactionsResponse(await window.getTransactions({ limit: l, account: APP_PUBKEY }));
-          }
-          throw new Error("No transaction source available");
+        // App-state reads come from the host server's cache only. The server
+        // (examples/server.js) backfills history once at startup and live-
+        // polls thereafter via createAppStateCache, exposing /opinion-market/
+        // api/transactions. Includes mock txs in --local-dev mode (the cache
+        // drains mockApi.transactions on a 1s timer). No client-side
+        // explorer pagination — see AGENTS.md Section 7.
+        async function getAppTransactions(_limit) {
+          const r = await fetch("/opinion-market/api/transactions");
+          if (!r.ok) throw new Error(`Server cache: HTTP ${r.status}`);
+          return normalizeTransactionsResponse(await r.json());
         }
 
         /* ================================================================

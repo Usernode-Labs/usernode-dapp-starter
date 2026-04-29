@@ -622,6 +622,276 @@ async function fetchGenesisAccounts(opts) {
   return Array.from(accounts);
 }
 
+// ── Generic app-state cache ─────────────────────────────────────────────────
+//
+// One-call wiring of the standard pattern from AGENTS.md Section 7: every dapp
+// that maintains shared global state should poll the chain server-side, hold
+// the derived state in memory, and serve it from a local HTTP endpoint so
+// connected clients hit one small response instead of all paginating the
+// explorer independently.
+//
+// Caller provides:
+//   - appPubkey            — the address being polled
+//   - queryFields          — ["recipient"], ["sender"], or both. Defaults to ["recipient"].
+//   - processTransaction   — pure function: takes a raw explorer tx, mutates internal state.
+//   - handleRequest        — pure function: serves the state-as-JSON HTTP endpoint(s).
+//   - onChainReset         — called when the chain id changes (clear caller state).
+//   - localDev             — gate chain polling off and drain mockTransactions instead.
+//   - mockTransactions     — array from createMockApi; drained on a 1s timer in localDev.
+//   - intervalMs           — live-poll interval (default 3000).
+//   - backfill             — run fetchAllTransactions once at start (default true).
+//   - name                 — short label for log lines.
+//
+// Helper handles:
+//   - Discover chain id, backfill history (oldest→newest, interleaved across
+//     multiple queryFields) before any live polling. Avoids out-of-order
+//     processing when both incoming and outgoing txs matter to the app.
+//   - Live polling via createChainPoller per queryField with `from_height`
+//     incremental fetches.
+//   - Mock-mode drain of mockTransactions (no chain polling).
+//   - Forwarding handleRequest so the caller's HTTP routes are served from
+//     the cache wiring.
+
+function _appStateExtractTs(tx) {
+  const candidates = [tx.timestamp_ms, tx.created_at, tx.createdAt, tx.timestamp, tx.time];
+  for (const v of candidates) {
+    if (typeof v === "number" && Number.isFinite(v))
+      return v < 10_000_000_000 ? v * 1000 : v;
+    if (typeof v === "string" && v.trim()) {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return t;
+    }
+  }
+  return 0;
+}
+
+function _appStateExtractId(tx) {
+  return tx.tx_id || tx.id || tx.txid || tx.hash || tx.tx_hash || null;
+}
+
+function createAppStateCache(opts) {
+  opts = opts || {};
+  const appPubkey = opts.appPubkey;
+  if (!appPubkey) throw new Error("createAppStateCache: appPubkey is required");
+  const processTransaction = opts.processTransaction;
+  if (typeof processTransaction !== "function") {
+    throw new Error("createAppStateCache: processTransaction(tx) is required");
+  }
+  // No-op default so callers can unconditionally do `cache.handleRequest(req, res, pathname)`
+  // without nil-checks even when the dapp routes its own HTTP separately.
+  const handleRequest = typeof opts.handleRequest === "function"
+    ? opts.handleRequest
+    : function () { return false; };
+  const queryFields = Array.isArray(opts.queryFields) && opts.queryFields.length
+    ? opts.queryFields
+    : ["recipient"];
+  const onChainReset = opts.onChainReset || null;
+  const localDev = !!opts.localDev;
+  const mockTransactions = opts.mockTransactions || null;
+  const intervalMs = opts.intervalMs || 3000;
+  const upstream = opts.upstream || getExplorerUpstream();
+  const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
+  const wantBackfill = opts.backfill !== false;
+  // Optional caller-supplied seed for the live poller. Useful when the dapp
+  // ran its own backfill before creating the cache (e.g. falling-sands feeds
+  // historical txs into its engine constructor for windowed replay) and just
+  // needs the poller to start from where that left off.
+  const initialLastHeight = opts.initialLastHeight != null ? opts.initialLastHeight : null;
+  const initialSeenIds = Array.isArray(opts.initialSeenIds) ? opts.initialSeenIds : null;
+  const name = opts.name || appPubkey.slice(0, 12) + "…";
+
+  let started = false;
+
+  async function start() {
+    if (started) return;
+    started = true;
+
+    if (localDev) {
+      if (mockTransactions) {
+        let idx = 0;
+        setInterval(() => {
+          while (idx < mockTransactions.length) {
+            processTransaction(mockTransactions[idx]);
+            idx++;
+          }
+        }, 1000);
+        console.log(`[${name}] mock drain started (queryFields=[${queryFields.join(",")}])`);
+      }
+      return;
+    }
+
+    // Production: backfill history (interleaved across queryFields, sorted
+    // chronologically), then start live pollers.
+    let chainId = null;
+    try {
+      const info = await discoverChainInfo({ upstream, upstreamBase });
+      chainId = info.chainId;
+    } catch (_) {}
+
+    let lastHeight = initialLastHeight;
+    const backfillIds = initialSeenIds ? initialSeenIds.slice() : [];
+    if (wantBackfill && chainId) {
+      const allTxs = [];
+      for (const queryField of queryFields) {
+        try {
+          const fetched = await fetchAllTransactions({
+            chainId,
+            appPubkey,
+            queryField,
+            upstream,
+            upstreamBase,
+          });
+          allTxs.push(...fetched.transactions);
+          if (fetched.lastHeight != null && (lastHeight == null || fetched.lastHeight > lastHeight)) {
+            lastHeight = fetched.lastHeight;
+          }
+          for (const id of fetched.txIds || []) backfillIds.push(id);
+        } catch (e) {
+          console.warn(`[${name}] backfill (${queryField}) failed: ${e.message}`);
+        }
+      }
+      // Re-sort across queryFields and dedup so pathological self-sends
+      // (sender == recipient) aren't double-counted.
+      allTxs.sort((a, b) => _appStateExtractTs(a) - _appStateExtractTs(b));
+      const seen = new Set();
+      let processed = 0;
+      for (const tx of allTxs) {
+        const id = _appStateExtractId(tx);
+        if (id && seen.has(id)) continue;
+        if (id) seen.add(id);
+        processTransaction(tx);
+        processed++;
+      }
+      console.log(`[${name}] backfill complete: ${processed} tx(s) processed (lastHeight=${lastHeight ?? "none"})`);
+    }
+
+    for (const queryField of queryFields) {
+      const poller = createChainPoller({
+        appPubkey,
+        queryField,
+        onTransaction: processTransaction,
+        onChainReset,
+        intervalMs,
+        upstream,
+        upstreamBase,
+      });
+      if (lastHeight != null) poller.setInitialLastHeight(lastHeight);
+      if (backfillIds.length) poller.addSeenIds(backfillIds);
+      poller.start();
+    }
+  }
+
+  return { start, handleRequest, processTransaction };
+}
+
+// ── Global usernames cache ──────────────────────────────────────────────────
+//
+// Thin wrapper around createAppStateCache for the global usernames address.
+// Owns the in-memory username map + the GET /__usernames/state HTTP endpoint;
+// delegates chain plumbing (backfill + poll + mock drain) to the generic
+// helper. Caller wiring is identical to any other createAppStateCache use.
+
+const DEFAULT_USERNAMES_PUBKEY =
+  "ut1p0p7y8ujacndc60r4a7pzk45dufdtarp6satvc0md7866633u8sqagm3az";
+
+function _usernamesParseMemo(m) {
+  if (m == null) return null;
+  try { return JSON.parse(String(m)); } catch (_) { return null; }
+}
+
+function _usernamesNormalizeTx(tx) {
+  if (!tx || typeof tx !== "object") return null;
+  return {
+    id: _appStateExtractId(tx),
+    from: tx.from_pubkey || tx.from || tx.source || null,
+    to: tx.destination_pubkey || tx.to || tx.destination || null,
+    memo: tx.memo != null ? String(tx.memo) : null,
+    ts: _appStateExtractTs(tx) || Date.now(),
+  };
+}
+
+function createUsernamesCache(opts) {
+  opts = opts || {};
+  const usernamesPubkey = opts.usernamesPubkey || DEFAULT_USERNAMES_PUBKEY;
+
+  // pubkey → { name, ts } — latest-ts-wins per sender.
+  const usernames = new Map();
+  let lastSeenTs = 0;
+
+  function processTransaction(rawTx) {
+    const tx = _usernamesNormalizeTx(rawTx);
+    if (!tx || !tx.from || tx.to !== usernamesPubkey) return;
+    const memo = _usernamesParseMemo(tx.memo);
+    if (!memo || memo.app !== "usernames" || memo.type !== "set_username") return;
+    const raw = String(memo.username || "").trim();
+    if (!raw) return;
+    const prev = usernames.get(tx.from);
+    if (!prev || tx.ts >= prev.ts) {
+      usernames.set(tx.from, { name: raw, ts: tx.ts });
+    }
+    if (tx.ts > lastSeenTs) lastSeenTs = tx.ts;
+  }
+
+  function getStateResponse() {
+    const map = {};
+    for (const [k, v] of usernames) map[k] = v.name;
+    return {
+      usernames: map,
+      lastSeenTs,
+      usernamesPubkey,
+      count: usernames.size,
+    };
+  }
+
+  function handleRequest(req, res, pathname) {
+    if (pathname !== "/__usernames/state") return false;
+    if (req.method !== "GET" && req.method !== "HEAD") return false;
+    const body = JSON.stringify(getStateResponse());
+    const headers = {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    };
+    if (req.method === "HEAD") {
+      res.writeHead(200, { ...headers, "content-length": Buffer.byteLength(body) });
+      res.end();
+      return true;
+    }
+    res.writeHead(200, headers);
+    res.end(body);
+    return true;
+  }
+
+  function reset() {
+    usernames.clear();
+    lastSeenTs = 0;
+    console.log("[usernames] cache reset (chain restart detected)");
+  }
+
+  const cache = createAppStateCache({
+    name: "usernames",
+    appPubkey: usernamesPubkey,
+    queryFields: ["recipient"],
+    processTransaction,
+    handleRequest,
+    onChainReset: reset,
+    localDev: opts.localDev,
+    mockTransactions: opts.mockTransactions || null,
+    intervalMs: opts.intervalMs,
+    upstream: opts.upstream,
+    upstreamBase: opts.upstreamBase,
+  });
+
+  return {
+    start: cache.start,
+    handleRequest,
+    processTransaction,
+    getStateResponse,
+    reset,
+    usernamesPubkey,
+  };
+}
+
 // ── Path resolution ──────────────────────────────────────────────────────────
 
 function resolvePath(...candidates) {
@@ -634,6 +904,7 @@ function resolvePath(...candidates) {
 module.exports = {
   get EXPLORER_UPSTREAM() { return getExplorerUpstream(); },
   get EXPLORER_UPSTREAM_BASE() { return getExplorerUpstreamBase(); },
+  DEFAULT_USERNAMES_PUBKEY,
   loadEnvFile,
   readJson,
   httpsJson,
@@ -644,5 +915,7 @@ module.exports = {
   fetchAllTransactions,
   fetchGenesisAccounts,
   discoverChainInfo,
+  createAppStateCache,
+  createUsernamesCache,
   resolvePath,
 };
