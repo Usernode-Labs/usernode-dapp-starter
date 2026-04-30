@@ -37,7 +37,10 @@ const WINDOW_TICKS = WINDOW_SECONDS * TICK_HZ;
 // Fixed delay added to block timestamp to derive the canonical draw tick.
 // Covers explorer indexing + server poll interval so the draw tick lands
 // slightly in the future relative to when the server first sees the tx.
-const PROCESSING_DELAY_MS = 5000;
+// 10s gives the slowest server pipeline (explorer indexing + 1.5s poll +
+// occasional jitter) comfortable headroom; observed last-mile times have
+// been ~8s.
+const PROCESSING_DELAY_MS = 10000;
 
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
