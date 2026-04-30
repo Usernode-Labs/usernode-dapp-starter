@@ -1020,8 +1020,11 @@ function addPendingTx(tx) {
     try {
       const incoming = JSON.stringify(tx.memo);
       if (incoming === sentMemoJson) {
-        console.log(`[sands-send] matched outstanding send → applyTick=${tick}`);
+        const applyAtMs = TICK_EPOCH + tick * TICK_INTERVAL_MS;
+        const remainS = ((applyAtMs - Date.now()) / 1000).toFixed(2);
+        console.log(`[sands-send] matched outstanding send → applyTick=${tick} applyAt=${new Date(applyAtMs).toISOString()} remain=${remainS}s`);
         sentStrokesApplyTick = tick;
+        pendingApplyAtMs = applyAtMs;
         sentMemoJson = null;
       } else {
         // Useful when triaging "pending overlay never clears": confirms the
@@ -1299,6 +1302,7 @@ function handleMessage(event) {
             try {
               if (JSON.stringify(tx.memo) === sentMemoJson) {
                 sentStrokesApplyTick = tick;
+                pendingApplyAtMs = TICK_EPOCH + tick * TICK_INTERVAL_MS;
                 sentMemoJson = null;
               }
             } catch (_) {}
@@ -1366,6 +1370,7 @@ function handleMessage(event) {
               if (JSON.stringify(tx.memo) === sentMemoJson) {
                 console.log("[sands-send] matched outstanding send during resync");
                 sentStrokesApplyTick = tick;
+                pendingApplyAtMs = TICK_EPOCH + tick * TICK_INTERVAL_MS;
                 sentMemoJson = null;
               }
             } catch (_) {}
@@ -1606,6 +1611,13 @@ let sentStrokes = [];
 let sentMemoJson = null;
 let sentStrokesApplyTick = null;
 let sentStrokesDeadline = 0;
+
+// Wall-clock moment our outstanding send is scheduled to apply, captured the
+// moment its WS broadcast arrives. Decoupled from sentStrokesApplyTick so the
+// rewind/clearing logic in addPendingTx (which nulls sentStrokesApplyTick the
+// moment a late tx is rewound into the past) can't kill the countdown UI.
+// Cleared only by the countdown itself or a fresh send.
+let pendingApplyAtMs = null;
 let painting = false;
 let lastPaintPos = null;
 let dragStartIdx = 0;
@@ -1741,8 +1753,17 @@ redrawOverlay = function() {
   for (const s of pendingStrokes) drawOverlaySegment(s);
 };
 
+// Fab-bar holds both the send/discard buttons and the in-flight progress
+// bar (#send-progress). Keep it visible while any of those need to show:
+// - pendingStrokes drawn but not yet sent → show send/discard
+// - a send is in flight → show "Sending..." progress
+// - the apply countdown is still running → show "Applying in Ns"
+// Without the inflight check the fab-bar would hide the moment a send is
+// queued (pendingStrokes is emptied at that point), taking the progress
+// bar with it.
 function refreshFabs() {
-  if (pendingStrokes.length > 0) fabBar.classList.add("visible");
+  const inflight = sending || _applyRaf !== null;
+  if (pendingStrokes.length > 0 || inflight) fabBar.classList.add("visible");
   else fabBar.classList.remove("visible");
   refreshBudget();
 }
@@ -1824,19 +1845,87 @@ function startTxProgress() {
 function completeTxProgress() {
   stopTxProgress();
   if (!sendProgressEl) return;
-  const fill = sendProgressEl.querySelector(".tx-fill");
-  const label = sendProgressEl.querySelector(".tx-label");
-  if (fill) { fill.className = "tx-fill ok"; fill.style.width = "100%"; }
-  if (label) { label.textContent = "Confirmed!"; label.className = "tx-label"; }
-  setTimeout(() => sendProgressEl.classList.add("hide"), 1200);
+  // Once the WS broadcast confirms the tx, skip straight to the apply
+  // countdown — reaching this phase IS the on-chain confirmation. The
+  // countdown is driven by `pendingApplyAtMs` (captured the moment the WS
+  // matched our send), NOT `sentStrokesApplyTick`, because the latter is
+  // also used by the rewind path in addPendingTx and gets nulled out in
+  // `simTick >= sentStrokesApplyTick` racy cases. If pendingApplyAtMs is
+  // missing entirely (failure-path race) just fade with a brief
+  // "Confirmed!" as before.
+  const nowMs = Date.now();
+  const remainMs = pendingApplyAtMs != null ? pendingApplyAtMs - nowMs : null;
+  console.log(`[sands-send] completeTxProgress: pendingApplyAtMs=${pendingApplyAtMs} sentStrokesApplyTick=${sentStrokesApplyTick} now=${nowMs} remain=${remainMs}ms`);
+  if (pendingApplyAtMs !== null && remainMs > 200) {
+    startApplyCountdown();
+  } else {
+    if (pendingApplyAtMs === null) {
+      console.warn(`[sands-send] no pendingApplyAtMs at confirmation — falling back to Confirmed flash`);
+    } else {
+      console.log(`[sands-send] applyAtMs already passed (remain=${remainMs}ms) — flashing Confirmed`);
+    }
+    pendingApplyAtMs = null;
+    const fill = sendProgressEl.querySelector(".tx-fill");
+    const label = sendProgressEl.querySelector(".tx-label");
+    if (fill) { fill.className = "tx-fill ok"; fill.style.width = "100%"; }
+    if (label) { label.textContent = "Confirmed!"; label.className = "tx-label"; }
+    setTimeout(() => {
+      sendProgressEl.classList.add("hide");
+      refreshFabs();
+    }, 1200);
+  }
 }
 function stopTxProgress() { if (_txRaf) { cancelAnimationFrame(_txRaf); _txRaf = null; } }
+
+// Apply countdown: drains the bar from 100% → 0% over the time between now
+// and `pendingApplyAtMs` (= wall-clock equivalent of server's canonical
+// drawTick). Reads from its own variable rather than sentStrokesApplyTick
+// because the rewind path nulls the latter the moment a late tx is folded
+// in, killing the countdown UI.
+let _applyRaf = null;
+function startApplyCountdown() {
+  stopApplyCountdown();
+  if (!sendProgressEl || pendingApplyAtMs === null) return;
+  const applyAtMs = pendingApplyAtMs;
+  const startMs = Date.now();
+  const totalMs = Math.max(1, applyAtMs - startMs);
+  console.log(`[sands-send] countdown: applyAt=+${(totalMs / 1000).toFixed(1)}s (now=${new Date(startMs).toISOString()}, applyAt=${new Date(applyAtMs).toISOString()})`);
+  const fill = sendProgressEl.querySelector(".tx-fill");
+  const label = sendProgressEl.querySelector(".tx-label");
+  if (sendProgressEl.classList.contains("hide")) sendProgressEl.classList.remove("hide");
+  fabBar.classList.add("visible");
+  function tick() {
+    const remain = applyAtMs - Date.now();
+    if (remain <= 0) {
+      if (fill) { fill.className = "tx-fill ok"; fill.style.width = "0%"; }
+      if (label) { label.textContent = "Drawn!"; label.className = "tx-label"; }
+      _applyRaf = null;
+      pendingApplyAtMs = null;
+      setTimeout(() => {
+        sendProgressEl.classList.add("hide");
+        refreshFabs();
+      }, 600);
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, (remain / totalMs) * 100));
+    if (fill) { fill.className = "tx-fill ok"; fill.style.width = pct + "%"; }
+    const seconds = Math.max(1, Math.ceil(remain / 1000));
+    if (label) { label.textContent = `Applying in ${seconds}s`; label.className = "tx-label"; }
+    _applyRaf = requestAnimationFrame(tick);
+  }
+  tick();
+}
+function stopApplyCountdown() {
+  if (_applyRaf) { cancelAnimationFrame(_applyRaf); _applyRaf = null; }
+}
 
 function setSending(v, txSucceeded) {
   sending = !!v;
   btnSend.style.display = v ? "none" : "";
   btnDiscard.style.display = v ? "none" : "";
   if (v) {
+    stopApplyCountdown();
+    pendingApplyAtMs = null;
     if (sendProgressEl) sendProgressEl.classList.remove("hide");
     fabBar.classList.add("visible");
     startTxProgress();
@@ -1845,6 +1934,8 @@ function setSending(v, txSucceeded) {
       completeTxProgress();
     } else {
       stopTxProgress();
+      stopApplyCountdown();
+      pendingApplyAtMs = null;
       if (sendProgressEl) sendProgressEl.classList.add("hide");
     }
     // After a send completes, FAB visibility is purely a function of
