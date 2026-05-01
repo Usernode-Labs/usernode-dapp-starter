@@ -273,7 +273,14 @@
     var candidates = [];
     if (typeof sendResult === "string") candidates.push(sendResult);
     if (typeof sendResult === "object") {
+      // tx_id is the canonical explorer/server-cache field name, so it
+      // MUST be in this list — otherwise a matched tx from
+      // waitForTransactionVisible looks idless and _notifyNativeTxObserved
+      // silently drops the ack. That bug broke the "Last mile (dapp)"
+      // latency readout in the Flutter host for every dapp that relies on
+      // the server-cache transport.
       candidates.push(
+        sendResult.tx_id,
         sendResult.txid,
         sendResult.txId,
         sendResult.hash,
@@ -283,6 +290,7 @@
       );
       if (sendResult.tx && typeof sendResult.tx === "object") {
         candidates.push(
+          sendResult.tx.tx_id,
           sendResult.tx.id,
           sendResult.tx.txid,
           sendResult.tx.txId,
