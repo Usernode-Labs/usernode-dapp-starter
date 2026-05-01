@@ -330,6 +330,58 @@
     return null;
   }
 
+  // ── Native ack helper ─────────────────────────────────────────────────
+  //
+  // When the bridge confirms a tx is on-chain (via waitForTransactionVisible)
+  // it lets the embedding native app know — so the app can stamp a
+  // "dapp-observed" timestamp distinct from its own explorer polling.
+  // Inside Flutter's WebView this surfaces as a "Last mile (dapp)" entry in
+  // the transaction-log latency row, complementing the explorer-derived
+  // numbers.
+  //
+  // Dedups per tx-id, so re-polls and explicit acks don't double-fire.
+  // Outside the native WebView (`window.Usernode.postMessage` absent) it's a
+  // silent no-op, so dapps can call this unconditionally.
+  //
+  // Dapps can also call window.usernode.acknowledgeTransaction(txId)
+  // directly when their own server-side state reflects the tx earlier
+  // than the bridge's poll (e.g. SSE-fed /__game/state, websocket fanout).
+  // The first ack wins on the native side.
+  var _observedTxIds = {};
+  function _notifyNativeTxObserved(txId) {
+    if (typeof txId !== "string") return;
+    var trimmed = txId.trim();
+    if (!trimmed) return;
+    if (_observedTxIds[trimmed]) return;
+    _observedTxIds[trimmed] = true;
+
+    var channel = window.Usernode;
+    if (
+      !channel ||
+      typeof channel !== "object" ||
+      typeof channel.postMessage !== "function"
+    ) {
+      return;
+    }
+    try {
+      channel.postMessage(
+        JSON.stringify({
+          method: "txObserved",
+          id: "tx_observed_" + trimmed,
+          args: { tx_id: trimmed, observed_at_ms: Date.now() },
+        })
+      );
+    } catch (e) {
+      console.warn("[usernode-bridge] tx_observed emit failed:", e);
+    }
+  }
+
+  window.usernode.acknowledgeTransaction = function acknowledgeTransaction(
+    txId
+  ) {
+    _notifyNativeTxObserved(txId);
+  };
+
   function txMatches(tx, expected) {
     if (!tx || typeof tx !== "object") return false;
 
@@ -435,6 +487,7 @@
         }
         if (found) {
           console.log("[usernode-bridge] tx found after", attempt, "polls,", Date.now() - startedAt, "ms (via " + transportLabel + ")");
+          _notifyNativeTxObserved(extractTxId(found) || (expected && expected.txId));
           return found;
         }
 
