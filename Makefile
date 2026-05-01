@@ -31,9 +31,15 @@ ps:
 
 # Run usernode natively (required for Mac local dev; Docker P2P can't sync on Mac).
 # Build first: cd ../usernode && cargo build --release -p usernode-cli
-# Auto-tracks every PUBKEY-shaped variable in .env (APP_PUBKEY, ECHO_APP_PUBKEY, ...)
-# so /wallet/send works for each dapp. Override with WALLET_OWNERS="ut1... ut1..." if needed.
-WALLET_OWNERS ?= $(shell grep -sE '^[A-Z0-9_]*PUBKEY=' .env | cut -d= -f2 | sort -u)
+#
+# Auto-tracks every `ut1...` ADDRESS in .env, regardless of variable name —
+# `APP_PUBKEY`, `ECHO_APP_PUBKEY`, `TOKEN_ADDR`, etc. all work. We filter by
+# value prefix (`ut1`) instead of variable suffix so we correctly skip:
+#   - secret keys (`utsk1...`)
+#   - raw public keys (`utpk1...` — wrong format for /wallet RPCs)
+#   - blank values (e.g. `OM_ADMIN_PUBKEY=`)
+# Override with WALLET_OWNERS="ut1... ut1..." if you need a different set.
+WALLET_OWNERS ?= $(shell grep -shE '^[A-Z0-9_]+=ut1[a-z0-9]+$$' .env | cut -d= -f2 | sort -u)
 WALLET_OWNER_FLAGS = $(foreach o,$(WALLET_OWNERS),--wallet-owner $(o))
 
 node:

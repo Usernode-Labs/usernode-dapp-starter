@@ -50,8 +50,12 @@ for (let i = 0; i < process.argv.length; i++) {
   }
 }
 
-// Falling-sands app pubkey (for chain polling)
-const SANDS_APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
+// Falling-sands app pubkey (for chain polling). Sourced from .env so the
+// node sidecar / `make node` can track this same address as a wallet owner —
+// without that, the new SSE recent_tx_stream won't buffer events for it.
+const SANDS_APP_PUBKEY =
+  process.env.SANDS_APP_PUBKEY ||
+  "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 
 // ── Static file paths (with fallbacks for local dev vs Docker) ───────────────
 const BRIDGE_PATH = resolvePath(path.join(__dirname, "usernode-bridge.js"), path.join(__dirname, "..", "usernode-bridge.js"));
@@ -90,7 +94,10 @@ const LASTWIN_NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernod
 const LASTWIN_TIMER_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000;
 
 // ── Opinion Market config ────────────────────────────────────────────────────
-const OM_APP_PUBKEY = "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
+// Sourced from .env (same reasoning as SANDS_APP_PUBKEY above).
+const OM_APP_PUBKEY =
+  process.env.OM_APP_PUBKEY ||
+  "ut1zkj9p90e0w0hqsnmr70xmzdcvhrj80upajpw67eywszu2g0qknksl3mlms";
 const OM_ADMIN_PUBKEY = process.env.OM_ADMIN_PUBKEY || "";
 const OM_VOTE_ENCRYPT_SEED = process.env.VOTE_ENCRYPT_SEED || (LOCAL_DEV ? "dev-seed-do-not-use-in-production" : "");
 

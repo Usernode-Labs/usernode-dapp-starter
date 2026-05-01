@@ -26,13 +26,19 @@ jobs:
             git status --short
 
             echo "==> Writing .env from secrets..."
+            # SANDS_APP_PUBKEY / OM_APP_PUBKEY / USERNAMES_PUBKEY are public
+            # addresses (no secret-key counterparts) but routed through GH
+            # secrets to keep the .env writer single-sourced.
             cat > .env <<'ENVEOF'
             APP_PUBKEY=${{ secrets.APP_PUBKEY }}
             APP_SECRET_KEY=${{ secrets.APP_SECRET_KEY }}
             VOTE_ENCRYPT_SEED=${{ secrets.VOTE_ENCRYPT_SEED }}
             OM_ADMIN_PUBKEY=${{ secrets.OM_ADMIN_PUBKEY }}
+            OM_APP_PUBKEY=${{ secrets.OM_APP_PUBKEY }}
             ECHO_APP_PUBKEY=${{ secrets.ECHO_APP_PUBKEY }}
             ECHO_APP_SECRET_KEY=${{ secrets.ECHO_APP_SECRET_KEY }}
+            SANDS_APP_PUBKEY=${{ secrets.SANDS_APP_PUBKEY }}
+            USERNAMES_PUBKEY=${{ secrets.USERNAMES_PUBKEY }}
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
             echo "==> .env written ($(wc -l < .env) lines)"

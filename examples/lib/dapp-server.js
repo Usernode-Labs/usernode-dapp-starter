@@ -1281,7 +1281,13 @@ function createAppStateCache(opts) {
 // delegates chain plumbing (backfill + poll + mock drain) to the generic
 // helper. Caller wiring is identical to any other createAppStateCache use.
 
+// The well-known global usernames address. Hardcoded fallback so the lib still
+// works when callers don't pass `usernamesPubkey`. Override via env (used by
+// every server.js in this repo) so `make node` / docker-compose can track the
+// same address as a wallet owner — required for the new SSE recent_tx_stream
+// to deliver live username updates.
 const DEFAULT_USERNAMES_PUBKEY =
+  process.env.USERNAMES_PUBKEY ||
   "ut1p0p7y8ujacndc60r4a7pzk45dufdtarp6satvc0md7866633u8sqagm3az";
 
 function _usernamesParseMemo(m) {

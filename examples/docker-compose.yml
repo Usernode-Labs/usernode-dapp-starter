@@ -9,6 +9,10 @@ services:
       USERNODE_GENESIS_URL: ${GENESIS_URL:-https://static.usernodelabs.org/testnet/genesis.json}
       PEER_LIST_URL: ${SEEDLIST_URL:-https://static.usernodelabs.org/testnet/seedlist.txt}
       RUST_LOG: info
+    # Every address tracked here gets a per-recipient ring buffer for the SSE
+    # recent_tx_stream; without it dapp servers that rely on streaming (Sands,
+    # Opinion Market, Usernames, Echo, Last One Wins, etc.) silently fall back
+    # to slow explorer polling.
     command:
       - "--work-dir"
       - "/var/lib/usernode"
@@ -19,6 +23,12 @@ services:
       - "${APP_PUBKEY}"
       - "--wallet-owner"
       - "${ECHO_APP_PUBKEY}"
+      - "--wallet-owner"
+      - "${SANDS_APP_PUBKEY}"
+      - "--wallet-owner"
+      - "${OM_APP_PUBKEY}"
+      - "--wallet-owner"
+      - "${USERNAMES_PUBKEY}"
     volumes:
       - node-data:/var/lib/usernode
     networks:
