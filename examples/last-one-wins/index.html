@@ -304,7 +304,7 @@
   <!-- Footer: send form + status -->
   <footer class="bottomBar">
     <div class="send-row">
-      <input id="amountInput" type="number" min="1" value="1" placeholder="Amt" />
+      <input id="amountInput" type="number" min="1" max="1000" value="1" placeholder="Amt" />
       <button class="btn" id="sendBtn">Enter Now</button>
     </div>
     <div class="error-msg" id="errorMsg"></div>
@@ -649,6 +649,10 @@
       const amount = parseInt(amountInput.value, 10);
       if (!amount || amount < 1) {
         showError("Enter an amount of at least 1.");
+        return;
+      }
+      if (amount > 1000) {
+        showError("Maximum entry is 1000 tokens.");
         return;
       }
 
