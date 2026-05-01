@@ -35,12 +35,14 @@ const WINDOW_SECONDS = 10 * 60;
 const WINDOW_TICKS = WINDOW_SECONDS * TICK_HZ;
 
 // Fixed delay added to block timestamp to derive the canonical draw tick.
-// Covers explorer indexing + server poll interval so the draw tick lands
+// Covers the worst-case server pipeline (receive tx → WS broadcast →
+// every client schedules it for the same future tick) so the draw lands
 // slightly in the future relative to when the server first sees the tx.
-// 10s gives the slowest server pipeline (explorer indexing + 1.5s poll +
-// occasional jitter) comfortable headroom; observed last-mile times have
-// been ~8s.
-const PROCESSING_DELAY_MS = 10000;
+// 5s is comfortable now that the node-stream fast path (USE_NODE_STREAM)
+// delivers txs sub-second instead of the 5–60s explorer indexing lag.
+// Bump back up if we see clients missing the drawTick (they'd rewind and
+// replay, which is correct but expensive).
+const PROCESSING_DELAY_MS = 5000;
 
 function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";

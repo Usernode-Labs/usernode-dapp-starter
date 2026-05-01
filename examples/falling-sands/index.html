@@ -1625,6 +1625,7 @@ let dragStartIdx = 0;
 const fabBar       = document.getElementById("fab-bar");
 const btnSend      = document.getElementById("btn-send");
 const btnDiscard   = document.getElementById("btn-discard");
+const budgetMeter  = document.getElementById("budget-meter");
 const budgetFill   = document.getElementById("budget-fill");
 
 const BUDGET_FRACTION = 0.02;
@@ -1758,13 +1759,23 @@ redrawOverlay = function() {
 // - pendingStrokes drawn but not yet sent → show send/discard
 // - a send is in flight → show "Sending..." progress
 // - the apply countdown is still running → show "Applying in Ns"
-// Without the inflight check the fab-bar would hide the moment a send is
-// queued (pendingStrokes is emptied at that point), taking the progress
-// bar with it.
+// - the "Confirmed!" flash is up (progress bar still un-hidden)
+// Single source of truth for button visibility too: ✕/✓ act on pending
+// strokes, so hide them whenever a send is in flight, the apply countdown
+// is running, or the progress bar is otherwise on screen — otherwise the
+// buttons pop back in alongside "Applying in Ns" and read as stuck.
 function refreshFabs() {
   const inflight = sending || _applyRaf !== null;
-  if (pendingStrokes.length > 0 || inflight) fabBar.classList.add("visible");
+  const progressVisible = sendProgressEl && !sendProgressEl.classList.contains("hide");
+  if (pendingStrokes.length > 0 || inflight || progressVisible) fabBar.classList.add("visible");
   else fabBar.classList.remove("visible");
+  const showButtons = pendingStrokes.length > 0 && !inflight && !progressVisible;
+  btnSend.style.display = showButtons ? "" : "none";
+  btnDiscard.style.display = showButtons ? "" : "none";
+  // Budget meter is only meaningful while the user is building up strokes;
+  // hide it alongside ✕/✓ so the "Sending..." / "Applying in Ns" UI is
+  // just the progress bar.
+  if (budgetMeter) budgetMeter.style.display = showButtons ? "" : "none";
   refreshBudget();
 }
 
@@ -1921,29 +1932,24 @@ function stopApplyCountdown() {
 
 function setSending(v, txSucceeded) {
   sending = !!v;
-  btnSend.style.display = v ? "none" : "";
-  btnDiscard.style.display = v ? "none" : "";
   if (v) {
     stopApplyCountdown();
     pendingApplyAtMs = null;
     if (sendProgressEl) sendProgressEl.classList.remove("hide");
-    fabBar.classList.add("visible");
     startTxProgress();
+  } else if (txSucceeded) {
+    completeTxProgress();
   } else {
-    if (txSucceeded) {
-      completeTxProgress();
-    } else {
-      stopTxProgress();
-      stopApplyCountdown();
-      pendingApplyAtMs = null;
-      if (sendProgressEl) sendProgressEl.classList.add("hide");
-    }
-    // After a send completes, FAB visibility is purely a function of
-    // pendingStrokes — succeeded sends empty pendingStrokes (so hide), and
-    // failed sends restore them (so show). Re-derive here so callers don't
-    // have to remember a separate refreshFabs() at every exit point.
-    refreshFabs();
+    stopTxProgress();
+    stopApplyCountdown();
+    pendingApplyAtMs = null;
+    if (sendProgressEl) sendProgressEl.classList.add("hide");
   }
+  // Single place that derives fab-bar + ✕/✓ visibility from the current
+  // state (sending flag, _applyRaf, pendingStrokes, progress bar). Every
+  // state transition goes through setSending or refreshFabs directly, so
+  // we don't need to mirror the rules at each exit point.
+  refreshFabs();
   overlayCanvas.style.pointerEvents = v ? "none" : "auto";
 }
 
