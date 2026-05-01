@@ -447,6 +447,335 @@ function createChainPoller(opts) {
   return { start, setInitialLastHeight, addSeenIds };
 }
 
+// ── Node RPC: tracked-owner registration + recent-tx-by-recipient ──────────
+//
+// Direct-to-node fast path for the `recipient` queryField. Lets dapp servers
+// bypass explorer indexing lag (5–60s observed) by reading newly-applied
+// transactions out of the node's per-tracked-owner ring buffer instead.
+// See `usernode/docs/reference/rpc.md` for endpoint shapes.
+
+async function walletAddTrackedOwner(opts) {
+  const nodeRpcUrl = opts && opts.nodeRpcUrl;
+  const owner = opts && opts.owner;
+  if (!nodeRpcUrl || !owner) {
+    throw new Error("walletAddTrackedOwner: nodeRpcUrl and owner required");
+  }
+  return httpsJson("POST", `${nodeRpcUrl}/wallet/tracked_owner/add`, { owner });
+}
+
+async function nodeRecentTxByRecipient(opts) {
+  const nodeRpcUrl = opts.nodeRpcUrl;
+  const recipient = opts.recipient;
+  if (!nodeRpcUrl || !recipient) {
+    throw new Error("nodeRecentTxByRecipient: nodeRpcUrl and recipient required");
+  }
+  const body = { recipient };
+  if (opts.sinceHeight != null) body.since_height = opts.sinceHeight;
+  if (opts.limit != null) body.limit = opts.limit;
+  return httpsJson("POST", `${nodeRpcUrl}/transactions/by_recipient`, body);
+}
+
+// ── Memo decoder (node wire format → dapp-friendly UTF-8 string) ───────────
+//
+// The node serializes `Memo` as base64url-encoded bytes (per its
+// human-readable serde — see `crates/core/src/transaction/memo.rs`). The
+// explorer returns the raw memo string. Dapps' `parseMemo` helpers expect
+// the explorer shape, so we decode at the boundary.
+
+function _base64urlDecodeUtf8(s) {
+  if (s == null) return "";
+  const str = String(s);
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (padded.length % 4)) % 4;
+  try {
+    return Buffer.from(padded + "=".repeat(padLen), "base64").toString("utf8");
+  } catch (_) {
+    return "";
+  }
+}
+
+// Convert a `RecentTxEntry` (node wire format) to the explorer-compatible
+// shape that `processTransaction` expects everywhere else in the dapp stack.
+function _nodeEntryToExplorerShape(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    tx_id: entry.tx_id,
+    source: entry.source != null ? entry.source : null,
+    destination: entry.recipient,
+    amount: typeof entry.amount === "string" ? Number(entry.amount) : entry.amount,
+    memo: _base64urlDecodeUtf8(entry.memo),
+    block_hash: entry.block_hash,
+    block_height: entry.block_height,
+    timestamp_ms: entry.block_timestamp_ms,
+    status: "confirmed",
+    tx_type: "transfer",
+  };
+}
+
+// ── Node SSE client (live recent-tx stream) ─────────────────────────────────
+//
+// Connects to `GET /transactions/stream?recipient=…`. Each frame is a
+// `data: {JSON RecentTxEntry}\n\n` block; comments (lines starting with `:`)
+// and other SSE fields are ignored. Returns { close() }.
+//
+// Caller handles reconnect — this function just returns when the connection
+// drops (via `onClose`).
+
+function _streamNodeSse(opts) {
+  const nodeRpcUrl = opts.nodeRpcUrl;
+  const recipient = opts.recipient;
+  const onEvent = opts.onEvent;
+  const onClose = opts.onClose;
+  const url = new URL(`${nodeRpcUrl}/transactions/stream`);
+  url.searchParams.set("recipient", recipient);
+  const transport = url.protocol === "https:" ? https : http;
+
+  let closed = false;
+  function safeClose(err) {
+    if (closed) return;
+    closed = true;
+    try { onClose(err || null); } catch (_) {}
+  }
+
+  const req = transport.request(url, {
+    method: "GET",
+    headers: {
+      accept: "text/event-stream",
+      "cache-control": "no-store",
+    },
+    // Disable timeout — SSE is long-lived. Heartbeat is the underlying
+    // transport's keep-alive; the server emits `:keep-alive` comments via
+    // axum's `KeepAlive::default()` (15s).
+    timeout: 0,
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      res.resume();
+      safeClose(new Error(`SSE HTTP ${res.statusCode}`));
+      return;
+    }
+    res.setEncoding("utf8");
+    let buf = "";
+    res.on("data", (chunk) => {
+      buf += chunk;
+      let idx;
+      // SSE event boundary is a blank line (\n\n). Tolerate \r\n endings too.
+      while ((idx = buf.search(/\n\n|\r\n\r\n/)) !== -1) {
+        const sep = buf[idx] === "\r" ? 4 : 2;
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + sep);
+        const dataLines = [];
+        for (const rawLine of frame.split(/\r?\n/)) {
+          if (rawLine.startsWith(":")) continue; // comment / keep-alive
+          if (rawLine.startsWith("data:")) {
+            dataLines.push(rawLine.slice(5).replace(/^ /, ""));
+          }
+          // Other SSE fields (event:, id:, retry:) ignored.
+        }
+        if (!dataLines.length) continue;
+        const data = dataLines.join("\n");
+        try {
+          const parsed = JSON.parse(data);
+          onEvent(parsed);
+        } catch (_) {
+          // Tolerate malformed frames; SSE is best-effort and the
+          // catch-up poll will pick up anything we drop.
+        }
+      }
+    });
+    res.on("end", () => safeClose(null));
+    res.on("error", (err) => safeClose(err));
+    res.on("aborted", () => safeClose(new Error("SSE response aborted")));
+  });
+  req.on("error", (err) => safeClose(err));
+  req.on("timeout", () => safeClose(new Error("SSE request timeout")));
+  req.end();
+
+  return {
+    close() {
+      if (!closed) req.destroy();
+      safeClose(null);
+    },
+  };
+}
+
+// ── Live recent-tx stream from the node (SSE + catch-up poll) ───────────────
+//
+// Replaces `createChainPoller` for the `recipient` queryField when a
+// `nodeRpcUrl` is available. Drives `onTransaction(tx)` with the same
+// explorer-shape transaction objects the rest of the dapp pipeline expects.
+//
+// Reliability strategy:
+//   - Bootstrap on every (re)connect: poll `POST /transactions/by_recipient`
+//     with `since_height: lastHeight + 1` to fill the gap between the
+//     explorer-driven backfill (or previous SSE session) and now.
+//   - Subscribe to `GET /transactions/stream` and dispatch each frame.
+//   - On any stream error/close, exponential-backoff and reconnect — the
+//     next bootstrap-poll catches anything missed during the gap.
+//   - Periodic safety-net poll (every `catchupIntervalMs`, default 30s) to
+//     paper over silently-broken streams (e.g. proxies that hold the
+//     connection open without delivering data).
+//
+// Returns { start, setInitialLastHeight, addSeenIds, close }.
+
+function createNodeRecentTxStream(opts) {
+  const nodeRpcUrl = opts.nodeRpcUrl;
+  const recipient = opts.recipient;
+  const onTransaction = opts.onTransaction;
+  const onChainReset = opts.onChainReset || null;
+  const name = opts.name || (recipient ? recipient.slice(0, 12) + "…" : "node-stream");
+  const catchupIntervalMs = opts.catchupIntervalMs || 30000;
+  const seenIdsCap = opts.seenIdsCap || 5000;
+  const initialBackoffMs = opts.initialBackoffMs || 1000;
+  const maxBackoffMs = opts.maxBackoffMs || 30000;
+  const ensureTrackedOwner = opts.ensureTrackedOwner !== false;
+
+  if (!nodeRpcUrl) throw new Error("createNodeRecentTxStream: nodeRpcUrl required");
+  if (!recipient) throw new Error("createNodeRecentTxStream: recipient required");
+  if (typeof onTransaction !== "function") {
+    throw new Error("createNodeRecentTxStream: onTransaction required");
+  }
+
+  let lastHeight = (opts.initialLastHeight != null) ? opts.initialLastHeight : null;
+  const seenTxIds = new Set();
+  let stream = null;
+  let stopped = false;
+  let backoffMs = initialBackoffMs;
+  let trackedOwnerEnsured = !ensureTrackedOwner;
+  let catchupTimer = null;
+
+  function trimSeenIds() {
+    if (seenTxIds.size <= seenIdsCap) return;
+    const arr = Array.from(seenTxIds);
+    seenTxIds.clear();
+    for (let i = arr.length - seenIdsCap; i < arr.length; i++) {
+      seenTxIds.add(arr[i]);
+    }
+  }
+
+  function dispatchEntry(entry) {
+    if (!entry || !entry.tx_id) return;
+    if (seenTxIds.has(entry.tx_id)) return;
+    seenTxIds.add(entry.tx_id);
+    if (typeof entry.block_height === "number") {
+      if (lastHeight == null || entry.block_height > lastHeight) {
+        lastHeight = entry.block_height;
+      }
+    }
+    const tx = _nodeEntryToExplorerShape(entry);
+    if (tx) onTransaction(tx);
+  }
+
+  async function ensureTracked() {
+    if (trackedOwnerEnsured) return;
+    try {
+      await walletAddTrackedOwner({ nodeRpcUrl, owner: recipient });
+      trackedOwnerEnsured = true;
+      console.log(`[${name}] tracked-owner registered with node`);
+    } catch (e) {
+      // Non-fatal: the SSE will simply yield no events until tracking is
+      // established. Surface to logs and let the reconnect loop retry.
+      console.warn(`[${name}] tracked_owner/add failed: ${e.message}`);
+    }
+  }
+
+  async function catchup() {
+    try {
+      const since = lastHeight != null ? lastHeight : undefined;
+      const resp = await nodeRecentTxByRecipient({
+        nodeRpcUrl,
+        recipient,
+        sinceHeight: since,
+      });
+      if (!resp || !Array.isArray(resp.items)) return;
+      if (resp.tracked === false && ensureTrackedOwner) {
+        // The recipient isn't tracked yet — re-register and retry on the
+        // next reconnect cycle.
+        trackedOwnerEnsured = false;
+      }
+      // Sort oldest-first as a defensive measure (the endpoint already
+      // guarantees this, but downstream consumers expect chronological).
+      const items = resp.items.slice().sort(
+        (a, b) => (a.block_height || 0) - (b.block_height || 0)
+      );
+      for (const entry of items) dispatchEntry(entry);
+      trimSeenIds();
+    } catch (e) {
+      // Surface but don't escalate; the next tick will retry.
+      console.warn(`[${name}] catchup failed: ${e.message}`);
+    }
+  }
+
+  async function connect() {
+    if (stopped) return;
+
+    await ensureTracked();
+    await catchup();
+
+    if (stopped) return;
+
+    stream = _streamNodeSse({
+      nodeRpcUrl,
+      recipient,
+      onEvent: (entry) => {
+        dispatchEntry(entry);
+        trimSeenIds();
+        // Reset backoff on first successful event.
+        backoffMs = initialBackoffMs;
+      },
+      onClose: (err) => {
+        stream = null;
+        if (stopped) return;
+        if (err) {
+          console.warn(`[${name}] SSE closed: ${err.message}; reconnecting in ${backoffMs}ms`);
+        }
+        const wait = backoffMs;
+        backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+        setTimeout(() => { if (!stopped) connect(); }, wait);
+      },
+    });
+  }
+
+  function start() {
+    if (stopped) return;
+    void connect();
+    if (catchupTimer == null) {
+      catchupTimer = setInterval(() => { void catchup(); }, catchupIntervalMs);
+    }
+  }
+
+  function close() {
+    stopped = true;
+    if (catchupTimer != null) {
+      clearInterval(catchupTimer);
+      catchupTimer = null;
+    }
+    if (stream) {
+      try { stream.close(); } catch (_) {}
+      stream = null;
+    }
+  }
+
+  function setInitialLastHeight(h) {
+    if (lastHeight == null && h != null) lastHeight = h;
+  }
+
+  function addSeenIds(ids) {
+    if (!Array.isArray(ids)) return;
+    for (const id of ids) if (id) seenTxIds.add(id);
+    trimSeenIds();
+  }
+
+  // Stub for parity with `createChainPoller`'s onChainReset semantics. The
+  // node-side ring buffer doesn't need explicit reset notifications — when
+  // the node restarts on a new chain, the catch-up poll sees `tracked: false`
+  // (we re-register) and `latest_block_height: null` (height resets), and
+  // `onChainReset` is fired by the parallel explorer poller (or the cache
+  // wrapper) anyway.
+  void onChainReset;
+
+  return { start, close, setInitialLastHeight, addSeenIds };
+}
+
 // ── Bulk transaction fetch ───────────────────────────────────────────────────
 //
 // One-shot paginated fetch of all transactions for a pubkey/chain.
@@ -641,6 +970,16 @@ async function fetchGenesisAccounts(opts) {
 //   - intervalMs           — live-poll interval (default 3000).
 //   - backfill             — run fetchAllTransactions once at start (default true).
 //   - name                 — short label for log lines.
+//   - nodeRpcUrl           — optional. URL of a usernode RPC server. Only
+//     consulted when `useNodeStream: true`.
+//   - useNodeStream        — opt-in (default false). When true *and*
+//     `nodeRpcUrl` is set, the `recipient` queryField is served by a
+//     direct-to-node SSE stream + catch-up poll (see
+//     createNodeRecentTxStream) instead of paginating the explorer. Drops
+//     live-tail latency from 5–60s (explorer indexing) to sub-second.
+//     Requires the node to expose `/transactions/by_recipient` and
+//     `/transactions/stream`. Other queryFields keep the explorer path;
+//     backfill is always explorer-driven.
 //
 // Helper handles:
 //   - Discover chain id, backfill history (oldest→newest, interleaved across
@@ -699,6 +1038,20 @@ function createAppStateCache(opts) {
   const initialLastHeight = opts.initialLastHeight != null ? opts.initialLastHeight : null;
   const initialSeenIds = Array.isArray(opts.initialSeenIds) ? opts.initialSeenIds : null;
   const name = opts.name || appPubkey.slice(0, 12) + "…";
+  // Optional direct-to-node fast path. Requires (1) `useNodeStream: true` to
+  // opt in and (2) a `nodeRpcUrl` that points at a usernode build with the
+  // `/transactions/by_recipient` + `/transactions/stream` endpoints (see
+  // `usernode/docs/reference/rpc.md`). When both are set and the cache
+  // includes the `recipient` queryField, live updates for that field come
+  // from SSE + catch-up poll instead of paginating the explorer. Other
+  // queryFields (sender, account) keep the explorer poller — the node
+  // endpoints only cover incoming traffic. Backfill is always explorer-driven.
+  //
+  // Defaults to false so dapps that already pass `nodeRpcUrl` for unrelated
+  // reasons (payouts, signer registration) keep their existing live-poll
+  // behavior unchanged.
+  const nodeRpcUrl = opts.nodeRpcUrl || null;
+  const useNodeStream = !!opts.useNodeStream && !!nodeRpcUrl;
 
   // ── Raw-tx store + bridge-facing HTTP endpoint ──────────────────────────
   //
@@ -883,6 +1236,22 @@ function createAppStateCache(opts) {
     }
 
     for (const queryField of queryFields) {
+      // Direct-to-node SSE + catch-up replaces the explorer poller for the
+      // `recipient` queryField when `useNodeStream` is opted in and the
+      // node URL is set. Drops live-tail latency from explorer-indexing
+      // time (5–60s observed) to sub-second push.
+      if (useNodeStream && queryField === "recipient") {
+        const stream = createNodeRecentTxStream({
+          nodeRpcUrl,
+          recipient: appPubkey,
+          onTransaction: processTransaction,
+          name: `${name}:node-stream`,
+          initialLastHeight: lastHeight,
+        });
+        if (backfillIds.length) stream.addSeenIds(backfillIds);
+        stream.start();
+        continue;
+      }
       const poller = createChainPoller({
         appPubkey,
         queryField,
@@ -997,6 +1366,8 @@ function createUsernamesCache(opts) {
     intervalMs: opts.intervalMs,
     upstream: opts.upstream,
     upstreamBase: opts.upstreamBase,
+    nodeRpcUrl: opts.nodeRpcUrl || null,
+    useNodeStream: !!opts.useNodeStream,
   });
 
   return {
@@ -1034,5 +1405,8 @@ module.exports = {
   discoverChainInfo,
   createAppStateCache,
   createUsernamesCache,
+  walletAddTrackedOwner,
+  nodeRecentTxByRecipient,
+  createNodeRecentTxStream,
   resolvePath,
 };

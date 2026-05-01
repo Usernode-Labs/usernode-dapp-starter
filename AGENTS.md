@@ -816,6 +816,18 @@ The same helper powers the global usernames cache (Section 8), the Last One Wins
 
 **Custom backfill escape hatch**: if your dapp consumes historical transactions specially (e.g. Falling Sands feeds them into its engine constructor for windowed deterministic replay), pass `backfill: false` and seed the live poller with `initialLastHeight` + `initialSeenIds` from your own `fetchAllTransactions` call. The cache helper still owns live polling, mock drain, chain-reset detection, and HTTP routing — you just opt out of its automatic per-tx backfill.
 
+**Direct-to-node fast path (`useNodeStream`)**: explorer indexing adds a variable 5–60s lag between block inclusion and visibility. When the dapp server has access to a usernode RPC that exposes `/transactions/by_recipient` + `/transactions/stream` (typically the sidecar), opt into the fast path:
+
+```js
+createAppStateCache({
+  // ...usual fields...
+  nodeRpcUrl: process.env.NODE_RPC_URL,
+  useNodeStream: process.env.USE_NODE_STREAM === "1",
+});
+```
+
+When both are set, the cache replaces the explorer poller for the `recipient` queryField with `createNodeRecentTxStream`: it registers `appPubkey` via `POST /wallet/tracked_owner/add`, subscribes to `GET /transactions/stream?recipient=…` (SSE), and uses `POST /transactions/by_recipient` as a catch-up safety net every 30s and on every reconnect. Live tail latency drops from 5–60s to sub-second. Backfill still comes from the explorer; other queryFields (`sender`, `account`) still go through the explorer poller because the node-side ring buffer only covers incoming traffic. `useNodeStream` defaults to **false** so dapps that pass `nodeRpcUrl` for unrelated reasons (payouts, signer registration) keep their existing explorer-poll behavior unchanged.
+
 ### Bridge Inclusion Polling Reuses the Same Cache
 
 The bridge's `sendTransaction(...)` waits for inclusion by polling for the user's transaction (the default `waitForInclusion: true`). Without configuration, that polling goes to the explorer — which means **every client doing a send re-polls the explorer for the same data the server is already polling for**. Same anti-fan-out problem as the section above, just on the inclusion path instead of the read path.

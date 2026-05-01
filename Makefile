@@ -41,6 +41,7 @@ node:
 		--genesis-url $(GENESIS_URL) \
 		--peer-list-url $(SEEDLIST_URL) \
 		--port $(NODE_PORT) \
+		--enable-recent-tx-stream \
 		$(WALLET_OWNER_FLAGS)
 
 # Local dev: start dapp-examples container (connects to native node on host).
