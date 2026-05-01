@@ -307,9 +307,15 @@ function createEngine(opts) {
       console.log(`[replay] starting from ${fromLabel}, timeline span ${totalSpan} ticks (${(totalSpan / TICK_HZ).toFixed(1)}s), ${replayDraws.length} draw txs, window=${WINDOW_SECONDS}s`);
     }
 
-    const REPLAY_BATCH = 512;
-    const YIELD_EVERY = 2048;
-    let ticksSinceYield = 0;
+    // Tuned so the entire combined examples server (HTTP, /__usernames/state,
+    // /__game/state, /opinion-market/api, etc.) stays responsive while
+    // falling-sands replays its history. Each `universe.tick_n(N)` call is a
+    // single synchronous WASM block, so N directly bounds worst-case request
+    // latency: at the observed ~1280 ticks/s, N=128 ≈ 100ms per block. We
+    // yield after every batch so HTTP handlers run between WASM blocks.
+    // (Previous values N=512 / yield-every-2048 stalled the event loop for
+    // up to ~1.6s at a time, making the rest of the server feel broken.)
+    const REPLAY_BATCH = 128;
 
     async function advancePhysicsTo(target) {
       while (tickCount < target) {
@@ -317,14 +323,10 @@ function createEngine(opts) {
         universe.tick_n(chunk);
         tickCount += chunk;
         physicsTicksSimulated += chunk;
-        ticksSinceYield += chunk;
 
-        if (ticksSinceYield >= YIELD_EVERY) {
-          ticksSinceYield = 0;
-          replayProgress = Math.min(0.99, (tickCount - replayStartTick) / totalSpan);
-          sendLoadingProgress();
-          await new Promise(resolve => setImmediate(resolve));
-        }
+        replayProgress = Math.min(0.99, (tickCount - replayStartTick) / totalSpan);
+        sendLoadingProgress();
+        await new Promise(resolve => setImmediate(resolve));
 
         const now = Date.now();
         if (now - lastProgressLog >= 2000) {

@@ -46,11 +46,21 @@ node:
 
 # Local dev: start dapp-examples container (connects to native node on host).
 # Run `make node` in a separate terminal first.
+#
+# `--env-file ../.env` is required because compose-file interpolation
+# (e.g. `${APP_PUBKEY}` for the node sidecar's --wallet-owner flags)
+# looks up vars in the working directory's `.env` by default. The Makefile
+# `cd examples` puts us next to the compose file, so without this flag
+# Compose silently substitutes empty strings and breaks /wallet/send.
+# (The `env_file: ../.env` inside the compose file only handles per-service
+# *runtime* envs, not parse-time interpolation — different mechanism.)
+EXAMPLES_COMPOSE = docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.local.yml
+
 examples-up:
-	cd examples && docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build dapp-examples
+	cd examples && $(EXAMPLES_COMPOSE) up -d --build dapp-examples
 
 examples-down:
-	cd examples && docker compose -f docker-compose.yml -f docker-compose.local.yml down
+	cd examples && $(EXAMPLES_COMPOSE) down
 
 examples-logs:
-	cd examples && docker compose -f docker-compose.yml -f docker-compose.local.yml logs -f --tail=200
+	cd examples && $(EXAMPLES_COMPOSE) logs -f --tail=200
