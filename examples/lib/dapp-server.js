@@ -970,16 +970,19 @@ async function fetchGenesisAccounts(opts) {
 //   - intervalMs           — live-poll interval (default 3000).
 //   - backfill             — run fetchAllTransactions once at start (default true).
 //   - name                 — short label for log lines.
-//   - nodeRpcUrl           — optional. URL of a usernode RPC server. Only
-//     consulted when `useNodeStream: true`.
-//   - useNodeStream        — opt-in (default false). When true *and*
-//     `nodeRpcUrl` is set, the `recipient` queryField is served by a
-//     direct-to-node SSE stream + catch-up poll (see
-//     createNodeRecentTxStream) instead of paginating the explorer. Drops
-//     live-tail latency from 5–60s (explorer indexing) to sub-second.
-//     Requires the node to expose `/transactions/by_recipient` and
-//     `/transactions/stream`. Other queryFields keep the explorer path;
-//     backfill is always explorer-driven.
+//   - nodeRpcUrl           — optional. URL of a usernode RPC server.
+//     When set, the `recipient` queryField switches to the node's SSE
+//     fast path automatically (see `useNodeStream`).
+//   - useNodeStream        — defaults to true whenever `nodeRpcUrl` is
+//     set. The `recipient` queryField is then served by a direct-to-node
+//     SSE stream + catch-up poll (see createNodeRecentTxStream) instead
+//     of paginating the explorer, dropping live-tail latency from 5–60s
+//     (explorer indexing) to sub-second. Requires the node to expose
+//     `/transactions/by_recipient` and `/transactions/stream` (i.e.
+//     started with `--enable-recent-tx-stream`). Pass `false` to opt
+//     out — useful when targeting an older node that lacks those
+//     endpoints. Other queryFields keep the explorer path; backfill is
+//     always explorer-driven.
 //
 // Helper handles:
 //   - Discover chain id, backfill history (oldest→newest, interleaved across
@@ -1038,20 +1041,21 @@ function createAppStateCache(opts) {
   const initialLastHeight = opts.initialLastHeight != null ? opts.initialLastHeight : null;
   const initialSeenIds = Array.isArray(opts.initialSeenIds) ? opts.initialSeenIds : null;
   const name = opts.name || appPubkey.slice(0, 12) + "…";
-  // Optional direct-to-node fast path. Requires (1) `useNodeStream: true` to
-  // opt in and (2) a `nodeRpcUrl` that points at a usernode build with the
-  // `/transactions/by_recipient` + `/transactions/stream` endpoints (see
-  // `usernode/docs/reference/rpc.md`). When both are set and the cache
-  // includes the `recipient` queryField, live updates for that field come
-  // from SSE + catch-up poll instead of paginating the explorer. Other
-  // queryFields (sender, account) keep the explorer poller — the node
-  // endpoints only cover incoming traffic. Backfill is always explorer-driven.
+  // Direct-to-node fast path. Defaults ON whenever `nodeRpcUrl` is set so
+  // dapps don't need to plumb a feature flag — sub-second live-tail is
+  // simply what you get when a node is reachable. Requires the node to
+  // expose `/transactions/by_recipient` + `/transactions/stream` (i.e.
+  // started with `--enable-recent-tx-stream`; see
+  // `usernode/docs/reference/rpc.md`). When the cache includes the
+  // `recipient` queryField, live updates for that field come from SSE +
+  // catch-up poll instead of paginating the explorer. Other queryFields
+  // (sender, account) keep the explorer poller — the node endpoints only
+  // cover incoming traffic. Backfill is always explorer-driven.
   //
-  // Defaults to false so dapps that already pass `nodeRpcUrl` for unrelated
-  // reasons (payouts, signer registration) keep their existing live-poll
-  // behavior unchanged.
+  // Pass `useNodeStream: false` to opt out (e.g. when targeting an older
+  // node that lacks the SSE endpoints).
   const nodeRpcUrl = opts.nodeRpcUrl || null;
-  const useNodeStream = !!opts.useNodeStream && !!nodeRpcUrl;
+  const useNodeStream = (opts.useNodeStream !== false) && !!nodeRpcUrl;
 
   // ── Raw-tx store + bridge-facing HTTP endpoint ──────────────────────────
   //
@@ -1367,7 +1371,10 @@ function createUsernamesCache(opts) {
     upstream: opts.upstream,
     upstreamBase: opts.upstreamBase,
     nodeRpcUrl: opts.nodeRpcUrl || null,
-    useNodeStream: !!opts.useNodeStream,
+    // Pass through unmodified so createAppStateCache's default (on whenever
+    // nodeRpcUrl is set) applies. Coercing undefined→false here would shadow
+    // the default and force every caller to plumb the flag explicitly.
+    useNodeStream: opts.useNodeStream,
   });
 
   return {

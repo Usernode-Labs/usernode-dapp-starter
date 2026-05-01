@@ -22,6 +22,14 @@ const LOCAL_DEV = process.argv.includes("--local-dev");
 const PORT = parseInt(process.env.PORT, 10) || 3333;
 const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 
+// When set, the engine cache's `recipient` queryField uses the node's
+// direct SSE stream + catch-up poll (see createNodeRecentTxStream in
+// lib/dapp-server.js) instead of polling the explorer. Backfill stays
+// explorer-driven. Requires the node to expose
+// `/transactions/by_recipient` + `/transactions/stream` (i.e. started
+// with `--enable-recent-tx-stream`).
+const NODE_RPC_URL = process.env.NODE_RPC_URL || null;
+
 // ── Static file paths ────────────────────────────────────────────────────────
 const BRIDGE_PATH = resolvePath(
   path.join(__dirname, "usernode-bridge.js"),
@@ -100,6 +108,7 @@ let engineCache = null;
     },
     localDev: LOCAL_DEV,
     mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
+    nodeRpcUrl: NODE_RPC_URL,
   });
   engineCache.start();
 })();

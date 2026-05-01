@@ -41,9 +41,6 @@ const APP_PUBKEY = process.env.APP_PUBKEY || "ut1_lastwin_default_pubkey";
 const APP_SECRET_KEY = process.env.APP_SECRET_KEY || "";
 const NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernodelabs.org";
 const TIMER_DURATION_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 86400000;
-const USE_NODE_STREAM = ["1", "true", "yes", "on"].includes(
-  String(process.env.USE_NODE_STREAM || "").toLowerCase()
-);
 
 // ── Static file paths ────────────────────────────────────────────────────────
 const BRIDGE_PATH = resolvePath(
@@ -81,7 +78,6 @@ const gameCache = createAppStateCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 gameCache.start();
 
@@ -90,7 +86,6 @@ const usernamesCache = createUsernamesCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 usernamesCache.start();
 

@@ -99,19 +99,6 @@ const ECHO_APP_PUBKEY = process.env.ECHO_APP_PUBKEY || "ut1_echo_default_pubkey"
 const ECHO_APP_SECRET_KEY = process.env.ECHO_APP_SECRET_KEY || "";
 const ECHO_NODE_RPC_URL = process.env.NODE_RPC_URL || "https://alpha1.usernodelabs.org";
 
-// Opt-in flag for the direct-to-node SSE live stream (see
-// `createNodeRecentTxStream` in lib/dapp-server.js). Off by default so we
-// only flip on against sidecar nodes that have the
-// `/transactions/by_recipient` + `/transactions/stream` endpoints. When on
-// it bypasses the explorer's 5–60s indexing lag for live tx delivery; the
-// explorer is still used for historical backfill.
-const USE_NODE_STREAM = ["1", "true", "yes", "on"].includes(
-  String(process.env.USE_NODE_STREAM || "").toLowerCase()
-);
-if (USE_NODE_STREAM) {
-  console.log("[server] USE_NODE_STREAM=on — recipient live-tail via node SSE");
-}
-
 // Genesis accounts (fetched once on startup; empty in local-dev)
 let omGenesisAccounts = [];
 if (!LOCAL_DEV) {
@@ -238,7 +225,6 @@ let sandsCache = null;
     localDev: LOCAL_DEV,
     mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
     nodeRpcUrl: LASTWIN_NODE_RPC_URL,
-    useNodeStream: USE_NODE_STREAM,
   });
   sandsCache.start();
 })();
@@ -275,7 +261,6 @@ const omCache = createAppStateCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: LASTWIN_NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 omCache.start();
 
@@ -304,7 +289,6 @@ const lastwinCache = createAppStateCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: LASTWIN_NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 lastwinCache.start();
 
@@ -333,7 +317,6 @@ const echoCache = createAppStateCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: ECHO_NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 echoCache.start();
 
@@ -342,7 +325,6 @@ const usernamesCache = createUsernamesCache({
   localDev: LOCAL_DEV,
   mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
   nodeRpcUrl: LASTWIN_NODE_RPC_URL,
-  useNodeStream: USE_NODE_STREAM,
 });
 usernamesCache.start();
 
