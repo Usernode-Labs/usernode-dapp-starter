@@ -1339,7 +1339,7 @@ function createUsernamesCache(opts) {
     };
   }
 
-  function handleRequest(req, res, pathname) {
+  function handleStateRequest(req, res, pathname) {
     if (pathname !== "/__usernames/state") return false;
     if (req.method !== "GET" && req.method !== "HEAD") return false;
     const body = JSON.stringify(getStateResponse());
@@ -1369,7 +1369,7 @@ function createUsernamesCache(opts) {
     appPubkey: usernamesPubkey,
     queryFields: ["recipient"],
     processTransaction,
-    handleRequest,
+    handleRequest: handleStateRequest,
     onChainReset: reset,
     localDev: opts.localDev,
     mockTransactions: opts.mockTransactions || null,
@@ -1383,9 +1383,14 @@ function createUsernamesCache(opts) {
     useNodeStream: opts.useNodeStream,
   });
 
+  // Expose `cache.handleRequest` (not the inner `handleStateRequest`) so the
+  // auto-mounted /__usernode/cache/<usernamesPubkey>/* routes are reachable
+  // — that's what the bridge's serverCacheUrl-based inclusion polling hits.
+  // `cache.handleRequest` already chains its own cache-route check in front
+  // of `handleStateRequest`, so callers get both endpoints from one entry.
   return {
     start: cache.start,
-    handleRequest,
+    handleRequest: cache.handleRequest,
     processTransaction,
     getStateResponse,
     reset,

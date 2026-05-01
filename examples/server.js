@@ -416,6 +416,13 @@ const server = http.createServer((req, res) => {
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;
 
+  // Opinion Market: serves the auto-mounted /__usernode/cache/<OM_PUBKEY>/*
+  // routes (info + getTransactions) for the bridge's inclusion polling.
+  // OM passes handleRequest:null to createAppStateCache, but the wrapped
+  // cache.handleRequest still owns the cache-route prefix — we just have
+  // to call it here so it gets a shot at the request.
+  if (omCache.handleRequest(req, res, pathname)) return;
+
   // Opinion Market cached transactions
   if (pathname === "/opinion-market/api/transactions" && (req.method === "GET" || req.method === "HEAD")) {
     const body = JSON.stringify({ items: omCache.getRawTransactions() });

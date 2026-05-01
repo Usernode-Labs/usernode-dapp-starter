@@ -356,7 +356,13 @@
   // than the bridge's poll (e.g. SSE-fed /__game/state, websocket fanout).
   // The first ack wins on the native side.
   var _observedTxIds = {};
-  function _notifyNativeTxObserved(txId) {
+  // `matched` is the optional matched transaction object (explorer-shape or
+  // node-shape — same field names for the bits we read). Forwarding its
+  // `block_height` and `block_timestamp_ms` lets the native side compute
+  // inclusion latency from the dapp ack alone, without waiting for its own
+  // (slower) explorer poll. Callers that don't have a matched tx (e.g. the
+  // public `acknowledgeTransaction(txId)` escape hatch) just omit it.
+  function _notifyNativeTxObserved(txId, matched) {
     if (typeof txId !== "string") return;
     var trimmed = txId.trim();
     if (!trimmed) return;
@@ -371,12 +377,34 @@
     ) {
       return;
     }
+
+    var blockHeight = null;
+    var blockTimestampMs = null;
+    if (matched && typeof matched === "object") {
+      var bh = matched.block_height;
+      if (typeof bh === "number" && Number.isFinite(bh)) blockHeight = bh;
+      var ts = matched.timestamp_ms != null
+        ? matched.timestamp_ms
+        : matched.block_timestamp_ms;
+      if (typeof ts === "number" && Number.isFinite(ts)) {
+        blockTimestampMs = ts;
+      } else if (typeof ts === "string" && ts.trim()) {
+        var parsed = Date.parse(ts);
+        if (!Number.isNaN(parsed)) blockTimestampMs = parsed;
+      }
+    }
+
     try {
       channel.postMessage(
         JSON.stringify({
           method: "txObserved",
           id: "tx_observed_" + trimmed,
-          args: { tx_id: trimmed, observed_at_ms: Date.now() },
+          args: {
+            tx_id: trimmed,
+            observed_at_ms: Date.now(),
+            block_height: blockHeight,
+            block_timestamp_ms: blockTimestampMs,
+          },
         })
       );
     } catch (e) {
@@ -495,7 +523,10 @@
         }
         if (found) {
           console.log("[usernode-bridge] tx found after", attempt, "polls,", Date.now() - startedAt, "ms (via " + transportLabel + ")");
-          _notifyNativeTxObserved(extractTxId(found) || (expected && expected.txId));
+          _notifyNativeTxObserved(
+            extractTxId(found) || (expected && expected.txId),
+            found
+          );
           return found;
         }
 
