@@ -724,7 +724,7 @@ Never use `innerHTML` with user-provided strings (survey titles, usernames, opti
 
 ## 6.5 Node Readiness Loader
 
-When a dapp page loads while the sidecar `usernode` is still booting / joining / syncing, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Starting node…", "Connecting to network…", "Syncing chain… block X / Y", "Synced") and auto-dismisses once the node is ready.
+When a dapp page loads while the sidecar `usernode` is still booting / joining / syncing, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Node starting…", "Node connecting to network…", "Node syncing chain… block X / Y", "Node synced") and auto-dismisses once the node is ready.
 
 ### Client (two lines per dapp)
 

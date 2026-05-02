@@ -119,7 +119,7 @@
 
     var title = document.createElement("div");
     title.className = "unl-title";
-    title.textContent = "Starting node…";
+    title.textContent = "Node starting…";
 
     var track = document.createElement("div");
     track.className = "unl-track";
@@ -162,14 +162,14 @@
     var peerTip = (snap && typeof snap.peerBestTipHeight === "number") ? snap.peerBestTipHeight : null;
     var peers = (snap && typeof snap.peers === "number") ? snap.peers : 0;
 
-    if (s === "Synced") return { title: "Synced", meta: "", percent: 100, indeterminate: false };
+    if (s === "Synced") return { title: "Node synced", meta: "", percent: 100, indeterminate: false };
     if (s === "Syncing") {
-      var title = "Syncing chain…";
+      var title = "Node syncing chain…";
       var meta = "";
       var percent = null;
       var indeterminate = true;
       if (ourTip != null && peerTip != null && peerTip > 0) {
-        title = "Syncing chain… (block " + ourTip + " / " + peerTip + ")";
+        title = "Node syncing chain… (block " + ourTip + " / " + peerTip + ")";
         percent = Math.max(0, Math.min(100, (ourTip / peerTip) * 100));
         indeterminate = false;
       } else if (ourTip != null) {
@@ -178,15 +178,15 @@
       return { title: title, meta: meta, percent: percent != null ? percent : 0, indeterminate: indeterminate };
     }
     if (s === "Connected") {
-      return { title: "Joining network…", meta: peers + " peer" + (peers === 1 ? "" : "s") + " connected", percent: 0, indeterminate: true };
+      return { title: "Node joining network…", meta: peers + " peer" + (peers === 1 ? "" : "s") + " connected", percent: 0, indeterminate: true };
     }
     if (s === "Connecting") {
-      return { title: "Connecting to network…", meta: "Looking for peers", percent: 0, indeterminate: true };
+      return { title: "Node connecting to network…", meta: "Looking for peers", percent: 0, indeterminate: true };
     }
     if (s === "unreachable") {
-      return { title: "Starting node…", meta: snap && snap.error ? "Sidecar offline" : "", percent: 0, indeterminate: true };
+      return { title: "Node starting…", meta: snap && snap.error ? "Sidecar offline" : "", percent: 0, indeterminate: true };
     }
-    return { title: "Starting node…", meta: "", percent: 0, indeterminate: true };
+    return { title: "Node starting…", meta: "", percent: 0, indeterminate: true };
   }
 
   function shouldDismiss(snap, requireSynced) {
@@ -283,7 +283,7 @@
         if (!ui) {
           ensureOverlayMounted();
           applyDescription({
-            title: "Starting node…",
+            title: "Node starting…",
             meta: "Waiting for status…",
             percent: 0,
             indeterminate: true,
@@ -323,7 +323,7 @@
         // sees *something* while we keep retrying.
         ensureOverlayMounted();
         applyDescription({
-          title: "Starting node…",
+          title: "Node starting…",
           meta: "Waiting for status…",
           percent: 0,
           indeterminate: true,
