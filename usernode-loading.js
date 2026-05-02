@@ -195,11 +195,13 @@
     if (snap.status === "mock") return true;    // server is in --local-dev
     if (snap.status === "unknown") return true; // probe disabled (no NODE_RPC_URL)
     if (snap.status === "Synced") return true;
-    // Default: dismiss once the sidecar has peers — even if it's still
-    // catching up. Sends accept, reads return whatever's applied so far,
-    // and the dapp's polling loop surfaces new data as sync progresses.
-    // Set requireSynced:true only when the dapp genuinely needs the tip.
-    if (!requireSynced && (snap.status === "Connected" || snap.status === "Syncing")) {
+    if (requireSynced) return false;
+    // Trust-after-first-sync: once the probe has ever observed `Synced` for
+    // its lifetime, the node has a complete UTXO view. Subsequent
+    // `Syncing`/`Connected` just means it's applying new tip blocks as
+    // they arrive — safe to dismiss. On a fresh boot (`hasBeenSynced ==
+    // false`), keep waiting since the local view is genuinely incomplete.
+    if (snap.hasBeenSynced && (snap.status === "Connected" || snap.status === "Syncing")) {
       return true;
     }
     return false;
@@ -208,10 +210,16 @@
   function init(opts) {
     opts = opts || {};
     var appName = opts.appName != null ? String(opts.appName) : (document.title || "Usernode");
-    var pollIntervalMs = typeof opts.pollIntervalMs === "number" ? opts.pollIntervalMs : 1500;
-    // Default off: dismiss as soon as the sidecar is reachable + has peers
-    // (Connected or Syncing). Opt in to requireSynced:true for dapps that
-    // need a fully-caught-up tip before they're useful.
+    // Default 500ms so intermediate states (Connecting → Connected →
+    // Syncing) actually have time to surface in the UI. The endpoint is
+    // local + tiny, so faster polling is cheap.
+    var pollIntervalMs = typeof opts.pollIntervalMs === "number" ? opts.pollIntervalMs : 500;
+    // Default off: wait for `Synced` only on first boot of this server
+    // process. Once the probe has ever observed `Synced`, subsequent
+    // `Syncing`/`Connected` snapshots are trusted (the node has a
+    // complete UTXO view; it's just applying new tip blocks). Opt in
+    // (`requireSynced: true`) to wait for `Synced` on every load — useful
+    // when even a few seconds of staleness is unacceptable.
     var requireSynced = !!opts.requireSynced;
     var reShowOnRegression = !!opts.reShowOnRegression;
     var onStatusChange = typeof opts.onStatusChange === "function" ? opts.onStatusChange : null;
@@ -269,6 +277,7 @@
         p: snap.peers,
         b: snap.bestTipHeight,
         t: snap.peerBestTipHeight,
+        h: !!snap.hasBeenSynced,
       });
       if (key === lastSnapshotJson) return;
       lastSnapshotJson = key;

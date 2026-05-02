@@ -724,9 +724,13 @@ Never use `innerHTML` with user-provided strings (survey titles, usernames, opti
 
 ## 6.5 Node Readiness Loader
 
-When a dapp page loads while the sidecar `usernode` is still booting or joining the network, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Node starting…", "Node connecting to network…", "Node joining network…") and auto-dismisses once the node has peers.
+When a dapp page loads while the sidecar `usernode` is still booting / joining / syncing, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Node starting…", "Node connecting to network…", "Node joining network…", "Node syncing chain… block X / Y") and auto-dismisses once the node is ready.
 
-By default the loader dismisses as soon as the sidecar is `Connected` (or actively `Syncing`) — at that point sends accept, reads return whatever has been applied so far, and the dapp's polling loop surfaces new data as sync progresses. Set `requireSynced: true` only for the rare dapp that genuinely needs the latest tip before it's usable; otherwise users would stare at a sync bar when they could just be using the app.
+**"Ready" is contextual:**
+- **Fresh sidecar boot** (probe has never observed `Synced`): wait for full `Synced` before dismissing. The local UTXO view is genuinely incomplete, so dismissing earlier shows stale/empty state and breaks "I just sent a tx, why don't I see it?" flows.
+- **Already-synced sidecar** (probe has observed `Synced` at least once this server lifetime): dismiss as soon as the node reports `Connected` or `Syncing`. The node has a complete view; subsequent `Syncing` states just mean it's applying new tip blocks as they arrive, which the dapp's polling loop will surface naturally.
+
+This is implemented via a server-side `hasBeenSynced` latch on the probe (resets on server restart), surfaced in every snapshot. Set `requireSynced: true` to force "wait for `Synced` on every load" — useful when even a few seconds of staleness is unacceptable.
 
 ### Client (two lines per dapp)
 
@@ -744,8 +748,8 @@ Include the script and call `init()` near the existing bridge / usernames includ
 | Option | Default | Description |
 |---|---|---|
 | `appName` | `document.title` | Title shown in the overlay |
-| `pollIntervalMs` | `1500` | Cadence for `GET /__usernode/node_status` |
-| `requireSynced` | `false` | When `true`, keep the overlay up through `Syncing` and only dismiss on `Synced`. Default dismisses as soon as the node is `Connected` or `Syncing` |
+| `pollIntervalMs` | `500` | Cadence for `GET /__usernode/node_status` while the overlay is up. Endpoint is local + tiny so fast polling is cheap, and it gives intermediate states (`Connecting` → `Connected` → `Syncing`) time to surface |
+| `requireSynced` | `false` | When `true`, wait for `Synced` on every load. Default uses the trust-after-first-sync logic above |
 | `reShowOnRegression` | `false` | If `true`, the overlay re-appears when the snapshot drops back to `Connecting`/`unreachable` mid-session |
 | `onStatusChange(snap)` | none | Optional callback fired whenever the snapshot changes — useful for surfacing status into a dapp's own status bar |
 
@@ -753,7 +757,7 @@ The loader **auto-skips** when `window.usernode.isMockEnabled()` returns true (`
 
 ### Server (one helper per server)
 
-The cached snapshot is served by `createNodeStatusProbe` from `lib/dapp-server.js`. One probe polls the sidecar's `GET /status` (`RpcStatusResp`, see `crates/node/src/rpc/rpcs/status.rs`) every 2s and exposes the result at `GET /__usernode/node_status`. Connected clients hit the local cache, never the sidecar directly — N tabs ≠ N sidecar requests.
+The cached snapshot is served by `createNodeStatusProbe` from `lib/dapp-server.js`. One probe polls the sidecar's `GET /status` (`RpcStatusResp`, see `crates/node/src/rpc/rpcs/status.rs`) every 500ms while the node is non-`Synced`, then backs off to 2s once it reaches `Synced`. Result is exposed at `GET /__usernode/node_status`. Connected clients hit the local cache, never the sidecar directly — N tabs ≠ N sidecar requests.
 
 Wire it in next to the other `__usernode/*` and `__usernames/*` routes:
 
@@ -777,6 +781,7 @@ The snapshot served at `GET /__usernode/node_status` looks like:
   "bestTipHeight":     12480,      // our tip
   "peerBestTipHeight": 12483,      // max across connected peers — drives the % bar
   "error":             null,
+  "hasBeenSynced":     true,       // latched true once probe observes `Synced`; resets on server restart
   "at":                1714672193412
 }
 ```

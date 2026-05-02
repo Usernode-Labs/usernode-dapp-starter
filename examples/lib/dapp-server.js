@@ -1429,9 +1429,23 @@ function createUsernamesCache(opts) {
 function createNodeStatusProbe(opts) {
   opts = opts || {};
   const nodeRpcUrl = opts.nodeRpcUrl || null;
+  // Steady-state interval used once the node is `Synced`. During boot we
+  // poll faster (`bootIntervalMs`) so the loader can actually see the
+  // intermediate `Connecting`/`Connected`/`Syncing` transitions — they
+  // can fly by in well under 2s on a warm sidecar.
   const intervalMs = opts.intervalMs || 2000;
+  const bootIntervalMs = opts.bootIntervalMs || 500;
   const localDev = !!opts.localDev;
   const ROUTE = "/__usernode/node_status";
+
+  // Latches once we've ever observed `Synced`. Persists for the probe's
+  // lifetime (resets on server restart, which is fine — a restart implies
+  // we genuinely don't know if the node is caught up).
+  //
+  // Surfaced in every snapshot so the client loader can use it to decide
+  // whether `Syncing` / `Connected` is "we already trust this node, it's
+  // just applying new blocks" vs "fresh boot, please wait".
+  let hasBeenSynced = false;
 
   let snapshot = {
     status: "unknown",
@@ -1439,6 +1453,7 @@ function createNodeStatusProbe(opts) {
     bestTipHeight: null,
     peerBestTipHeight: null,
     error: null,
+    hasBeenSynced: false,
     at: Date.now(),
   };
   let lastStatus = "unknown";
@@ -1476,12 +1491,14 @@ function createNodeStatusProbe(opts) {
         && typeof data.blockchain.best_tip.height === "number")
         ? data.blockchain.best_tip.height
         : null;
+      if (status === "Synced") hasBeenSynced = true;
       snapshot = {
         status,
         peers: connectedPeers.length,
         bestTipHeight: ourTipHeight,
         peerBestTipHeight,
         error: null,
+        hasBeenSynced,
         at: Date.now(),
       };
       logStatusChange(status, null);
@@ -1492,10 +1509,27 @@ function createNodeStatusProbe(opts) {
         bestTipHeight: null,
         peerBestTipHeight: null,
         error: e && e.message ? e.message : String(e),
+        hasBeenSynced,
         at: Date.now(),
       };
       logStatusChange("unreachable", snapshot.error);
     }
+  }
+
+  function scheduleNext() {
+    if (timer != null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    // Self-adapting cadence: tight while the node is still coming up, slow
+    // once it's `Synced`. Avoids missing fast `Connecting → Connected`
+    // transitions without spamming the sidecar in steady state.
+    const delay = (snapshot.status === "Synced") ? intervalMs : bootIntervalMs;
+    timer = setTimeout(() => {
+      // Chain the next schedule onto tick completion so a slow /status
+      // call can't queue up overlapping requests.
+      void tick().then(scheduleNext, scheduleNext);
+    }, delay);
   }
 
   function start() {
@@ -1509,6 +1543,7 @@ function createNodeStatusProbe(opts) {
         bestTipHeight: null,
         peerBestTipHeight: null,
         error: null,
+        hasBeenSynced: false,
         at: Date.now(),
       };
       lastStatus = "mock";
@@ -1523,13 +1558,12 @@ function createNodeStatusProbe(opts) {
       return;
     }
 
-    void tick();
-    timer = setInterval(tick, intervalMs);
+    void tick().then(scheduleNext, scheduleNext);
   }
 
   function stop() {
     if (timer != null) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
     started = false;
