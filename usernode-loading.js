@@ -195,7 +195,13 @@
     if (snap.status === "mock") return true;    // server is in --local-dev
     if (snap.status === "unknown") return true; // probe disabled (no NODE_RPC_URL)
     if (snap.status === "Synced") return true;
-    if (!requireSynced && snap.status === "Connected") return true;
+    // Default: dismiss once the sidecar has peers — even if it's still
+    // catching up. Sends accept, reads return whatever's applied so far,
+    // and the dapp's polling loop surfaces new data as sync progresses.
+    // Set requireSynced:true only when the dapp genuinely needs the tip.
+    if (!requireSynced && (snap.status === "Connected" || snap.status === "Syncing")) {
+      return true;
+    }
     return false;
   }
 
@@ -203,7 +209,10 @@
     opts = opts || {};
     var appName = opts.appName != null ? String(opts.appName) : (document.title || "Usernode");
     var pollIntervalMs = typeof opts.pollIntervalMs === "number" ? opts.pollIntervalMs : 1500;
-    var requireSynced = opts.requireSynced !== false;
+    // Default off: dismiss as soon as the sidecar is reachable + has peers
+    // (Connected or Syncing). Opt in to requireSynced:true for dapps that
+    // need a fully-caught-up tip before they're useful.
+    var requireSynced = !!opts.requireSynced;
     var reShowOnRegression = !!opts.reShowOnRegression;
     var onStatusChange = typeof opts.onStatusChange === "function" ? opts.onStatusChange : null;
 

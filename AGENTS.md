@@ -724,7 +724,9 @@ Never use `innerHTML` with user-provided strings (survey titles, usernames, opti
 
 ## 6.5 Node Readiness Loader
 
-When a dapp page loads while the sidecar `usernode` is still booting / joining / syncing, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Node starting…", "Node connecting to network…", "Node syncing chain… block X / Y", "Node synced") and auto-dismisses once the node is ready.
+When a dapp page loads while the sidecar `usernode` is still booting or joining the network, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Node starting…", "Node connecting to network…", "Node joining network…") and auto-dismisses once the node has peers.
+
+By default the loader dismisses as soon as the sidecar is `Connected` (or actively `Syncing`) — at that point sends accept, reads return whatever has been applied so far, and the dapp's polling loop surfaces new data as sync progresses. Set `requireSynced: true` only for the rare dapp that genuinely needs the latest tip before it's usable; otherwise users would stare at a sync bar when they could just be using the app.
 
 ### Client (two lines per dapp)
 
@@ -743,8 +745,8 @@ Include the script and call `init()` near the existing bridge / usernames includ
 |---|---|---|
 | `appName` | `document.title` | Title shown in the overlay |
 | `pollIntervalMs` | `1500` | Cadence for `GET /__usernode/node_status` |
-| `requireSynced` | `true` | When `false`, dismiss as soon as the node is `Connected` (use for read-only dapps that work pre-sync) |
-| `reShowOnRegression` | `false` | If `true`, the overlay re-appears when the snapshot drops back to `Syncing`/`Connecting` mid-session |
+| `requireSynced` | `false` | When `true`, keep the overlay up through `Syncing` and only dismiss on `Synced`. Default dismisses as soon as the node is `Connected` or `Syncing` |
+| `reShowOnRegression` | `false` | If `true`, the overlay re-appears when the snapshot drops back to `Connecting`/`unreachable` mid-session |
 | `onStatusChange(snap)` | none | Optional callback fired whenever the snapshot changes — useful for surfacing status into a dapp's own status bar |
 
 The loader **auto-skips** when `window.usernode.isMockEnabled()` returns true (`--local-dev`), and dismisses immediately when the probe endpoint returns 404 / `status: "mock"` / `status: "unknown"`. It only stays up when the snapshot reports a real not-yet-ready state.
