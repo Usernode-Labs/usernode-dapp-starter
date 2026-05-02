@@ -1398,6 +1398,169 @@ function createUsernamesCache(opts) {
   };
 }
 
+// ── Sidecar /status probe ───────────────────────────────────────────────────
+//
+// One server-side probe per dapp server polls the sidecar's `GET /status`
+// (RpcStatusResp from `crates/node/src/rpc/rpcs/status.rs`) on a fixed
+// interval and serves the cached snapshot at `GET /__usernode/node_status`.
+// Connected clients then poll the local endpoint instead of hitting the
+// sidecar directly — N tabs ≠ N sidecar requests.
+//
+// Snapshot shape (returned by `get()` and the HTTP endpoint):
+//   {
+//     status:            "unknown" | "unreachable" | "Connecting" |
+//                        "Connected" | "Syncing" | "Synced" | "mock",
+//     peers:             number,        // connected peer count
+//     bestTipHeight:     number | null, // our node's best tip
+//     peerBestTipHeight: number | null, // max best_tip_height across
+//                                       // connected peers — for sync %
+//     error:             string | null, // populated when last cycle failed
+//     at:                number,        // ms since epoch when refreshed
+//   }
+//
+// Modes:
+//   - localDev:true                    → status="mock", no timer
+//   - nodeRpcUrl unset                 → status="unknown", no timer
+//   - normal                           → poll /status every intervalMs
+//
+// HTTP route mounted at exactly `/__usernode/node_status` (CORS *,
+// no-store) — matches the existing `/__usernames/state` policy.
+
+function createNodeStatusProbe(opts) {
+  opts = opts || {};
+  const nodeRpcUrl = opts.nodeRpcUrl || null;
+  const intervalMs = opts.intervalMs || 2000;
+  const localDev = !!opts.localDev;
+  const ROUTE = "/__usernode/node_status";
+
+  let snapshot = {
+    status: "unknown",
+    peers: 0,
+    bestTipHeight: null,
+    peerBestTipHeight: null,
+    error: null,
+    at: Date.now(),
+  };
+  let lastStatus = "unknown";
+  let timer = null;
+  let started = false;
+
+  function logStatusChange(newStatus, errMsg) {
+    if (newStatus === lastStatus) return;
+    lastStatus = newStatus;
+    if (errMsg) {
+      console.log(`[node-status] -> ${newStatus} (${errMsg})`);
+    } else {
+      console.log(`[node-status] -> ${newStatus}`);
+    }
+  }
+
+  async function tick() {
+    try {
+      const data = await httpsJson("GET", `${nodeRpcUrl}/status`);
+      const status = (data && typeof data.node_sync_status === "string")
+        ? data.node_sync_status
+        : "unknown";
+      const peerInfos = (data && Array.isArray(data.peers)) ? data.peers : [];
+      const connectedPeers = peerInfos.filter(
+        (p) => p && p.connection_status === "Connected",
+      );
+      let peerBestTipHeight = null;
+      for (const p of connectedPeers) {
+        const h = p && p.best_tip_height;
+        if (typeof h === "number" && (peerBestTipHeight == null || h > peerBestTipHeight)) {
+          peerBestTipHeight = h;
+        }
+      }
+      const ourTipHeight = (data && data.blockchain && data.blockchain.best_tip
+        && typeof data.blockchain.best_tip.height === "number")
+        ? data.blockchain.best_tip.height
+        : null;
+      snapshot = {
+        status,
+        peers: connectedPeers.length,
+        bestTipHeight: ourTipHeight,
+        peerBestTipHeight,
+        error: null,
+        at: Date.now(),
+      };
+      logStatusChange(status, null);
+    } catch (e) {
+      snapshot = {
+        status: "unreachable",
+        peers: 0,
+        bestTipHeight: null,
+        peerBestTipHeight: null,
+        error: e && e.message ? e.message : String(e),
+        at: Date.now(),
+      };
+      logStatusChange("unreachable", snapshot.error);
+    }
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+
+    if (localDev) {
+      snapshot = {
+        status: "mock",
+        peers: 0,
+        bestTipHeight: null,
+        peerBestTipHeight: null,
+        error: null,
+        at: Date.now(),
+      };
+      lastStatus = "mock";
+      console.log("[node-status] local-dev mode — probe disabled");
+      return;
+    }
+
+    if (!nodeRpcUrl) {
+      // No node URL configured. Endpoint still serves a `unknown` snapshot
+      // so the loader can probe and gracefully decide it has no signal.
+      console.log("[node-status] no NODE_RPC_URL — probe disabled (snapshot stays 'unknown')");
+      return;
+    }
+
+    void tick();
+    timer = setInterval(tick, intervalMs);
+  }
+
+  function stop() {
+    if (timer != null) {
+      clearInterval(timer);
+      timer = null;
+    }
+    started = false;
+  }
+
+  function get() {
+    return snapshot;
+  }
+
+  function handleRequest(req, res, pathname) {
+    if (pathname !== ROUTE) return false;
+    if (req.method !== "GET" && req.method !== "HEAD") return false;
+    const body = JSON.stringify(snapshot);
+    const headers = {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    };
+    if (req.method === "HEAD") {
+      res.writeHead(200, { ...headers, "content-length": Buffer.byteLength(body) });
+      res.end();
+      return true;
+    }
+    res.writeHead(200, headers);
+    res.end(body);
+    return true;
+  }
+
+  return { start, stop, get, handleRequest };
+}
+
 // ── Path resolution ──────────────────────────────────────────────────────────
 
 function resolvePath(...candidates) {
@@ -1423,6 +1586,7 @@ module.exports = {
   discoverChainInfo,
   createAppStateCache,
   createUsernamesCache,
+  createNodeStatusProbe,
   walletAddTrackedOwner,
   nodeRecentTxByRecipient,
   createNodeRecentTxStream,

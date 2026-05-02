@@ -722,6 +722,71 @@ Never use `innerHTML` with user-provided strings (survey titles, usernames, opti
 
 ---
 
+## 6.5 Node Readiness Loader
+
+When a dapp page loads while the sidecar `usernode` is still booting / joining / syncing, transactions silently fail and reads return nothing — the user has no signal that the chain is unreachable rather than just empty. The shared `usernode-loading.js` overlay surfaces the actual state ("Starting node…", "Connecting to network…", "Syncing chain… block X / Y", "Synced") and auto-dismisses once the node is ready.
+
+### Client (two lines per dapp)
+
+Include the script and call `init()` near the existing bridge / usernames includes:
+
+```html
+<script src="/usernode-bridge.js"></script>
+<script src="/usernode-usernames.js"></script>
+<script src="/usernode-loading.js"></script>
+<script>UsernodeLoading.init({ appName: "Echo" });</script>
+```
+
+`init(opts)` accepts:
+
+| Option | Default | Description |
+|---|---|---|
+| `appName` | `document.title` | Title shown in the overlay |
+| `pollIntervalMs` | `1500` | Cadence for `GET /__usernode/node_status` |
+| `requireSynced` | `true` | When `false`, dismiss as soon as the node is `Connected` (use for read-only dapps that work pre-sync) |
+| `reShowOnRegression` | `false` | If `true`, the overlay re-appears when the snapshot drops back to `Syncing`/`Connecting` mid-session |
+| `onStatusChange(snap)` | none | Optional callback fired whenever the snapshot changes — useful for surfacing status into a dapp's own status bar |
+
+The loader **auto-skips** when `window.usernode.isMockEnabled()` returns true (`--local-dev`), and dismisses immediately when the probe endpoint returns 404 / `status: "mock"` / `status: "unknown"`. It only stays up when the snapshot reports a real not-yet-ready state.
+
+### Server (one helper per server)
+
+The cached snapshot is served by `createNodeStatusProbe` from `lib/dapp-server.js`. One probe polls the sidecar's `GET /status` (`RpcStatusResp`, see `crates/node/src/rpc/rpcs/status.rs`) every 2s and exposes the result at `GET /__usernode/node_status`. Connected clients hit the local cache, never the sidecar directly — N tabs ≠ N sidecar requests.
+
+Wire it in next to the other `__usernode/*` and `__usernames/*` routes:
+
+```js
+const nodeStatusProbe = createNodeStatusProbe({
+  nodeRpcUrl: process.env.NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+});
+nodeStatusProbe.start();
+
+// ...inside the request handler, before static-file routes:
+if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
+```
+
+The snapshot served at `GET /__usernode/node_status` looks like:
+
+```jsonc
+{
+  "status":            "Synced",   // or Connecting / Connected / Syncing / unreachable / unknown / mock
+  "peers":             3,
+  "bestTipHeight":     12480,      // our tip
+  "peerBestTipHeight": 12483,      // max across connected peers — drives the % bar
+  "error":             null,
+  "at":                1714672193412
+}
+```
+
+`status: "mock"` is set when the server runs with `localDev: true`. `status: "unknown"` is set when no `nodeRpcUrl` is configured. Both are sentinels that the loader treats as "nothing to wait for".
+
+### When to skip the loader
+
+Skip it when the dapp already gates its UI on something else (e.g. falling-sands' WASM loader). Layering two overlays adds no information.
+
+---
+
 ## 7. Polling & Real-Time Updates
 
 ### Background Refresh Loop

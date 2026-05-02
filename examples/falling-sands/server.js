@@ -14,7 +14,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { handleExplorerProxy, createMockApi, createAppStateCache, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
+const { handleExplorerProxy, createMockApi, createAppStateCache, createNodeStatusProbe, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
 const createEngine = require("./engine");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
@@ -46,6 +46,16 @@ const WASM_BROWSER_PATH = path.join(__dirname, "wasm-browser.js");
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
 const mockApi = createMockApi({ localDev: LOCAL_DEV });
+
+// ── Sidecar /status probe (powers usernode-loading.js overlay) ──────────────
+// Falling-sands' own HTML doesn't show the overlay (its WASM loader already
+// gates the page), but the endpoint is still served for any other tooling
+// that might consume it.
+const nodeStatusProbe = createNodeStatusProbe({
+  nodeRpcUrl: NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+});
+nodeStatusProbe.start();
 
 // ── Async init (discover chain info, run engine-owned backfill, then wire cache) ──
 //
@@ -170,6 +180,9 @@ const server = http.createServer((req, res) => {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read WASM: " + e.message);
     }
   }
+
+  // Sidecar /status probe (cached snapshot for usernode-loading.js)
+  if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
 
   // Engine state APIs (snapshot + transactions log) — wired through the
   // shared cache so future engines can opt in by exposing engine.handleRequest.

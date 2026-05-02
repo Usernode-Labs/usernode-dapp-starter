@@ -22,9 +22,10 @@ COPY examples/lib/ lib/
 # Combined server
 COPY examples/server.js ./
 
-# Shared bridge and identity module (from repo root)
+# Shared bridge, identity module, and node-readiness loader (from repo root)
 COPY usernode-bridge.js ./
 COPY usernode-usernames.js ./
+COPY usernode-loading.js ./
 
 # HTML files for all apps
 COPY index.html ./

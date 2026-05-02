@@ -6,7 +6,7 @@ WORKDIR /app
 USER node
 
 # This repo has no package.json; it's just static files + server.js.
-COPY --chown=node:node server.js usernode-bridge.js *.html ./
+COPY --chown=node:node server.js usernode-bridge.js usernode-usernames.js usernode-loading.js *.html ./
 COPY --chown=node:node examples/ ./examples/
 
 ENV NODE_ENV=production

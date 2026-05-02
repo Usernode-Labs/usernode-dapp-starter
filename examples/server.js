@@ -21,7 +21,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createAppStateCache, createUsernamesCache, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
+const { loadEnvFile, handleExplorerProxy, createMockApi, createAppStateCache, createUsernamesCache, createNodeStatusProbe, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
@@ -60,6 +60,7 @@ const SANDS_APP_PUBKEY =
 // ── Static file paths (with fallbacks for local dev vs Docker) ───────────────
 const BRIDGE_PATH = resolvePath(path.join(__dirname, "usernode-bridge.js"), path.join(__dirname, "..", "usernode-bridge.js"));
 const USERNAMES_PATH = resolvePath(path.join(__dirname, "usernode-usernames.js"), path.join(__dirname, "..", "usernode-usernames.js"));
+const LOADING_PATH = resolvePath(path.join(__dirname, "usernode-loading.js"), path.join(__dirname, "..", "usernode-loading.js"));
 const INDEX_HTML = resolvePath(path.join(__dirname, "index.html"), path.join(__dirname, "..", "index.html"));
 const OPINION_MARKET_HTML = path.join(__dirname, "opinion-market", "opinion-market.html");
 const SANDS_HTML = path.join(__dirname, "falling-sands", "index.html");
@@ -81,7 +82,7 @@ const ECHO_HTML = path.join(__dirname, "echo", "index.html");
 // without restarting the server.
 function buildVersionFor(htmlPath) {
   const hash = crypto.createHash("sha1");
-  for (const p of [htmlPath, BRIDGE_PATH, USERNAMES_PATH]) {
+  for (const p of [htmlPath, BRIDGE_PATH, USERNAMES_PATH, LOADING_PATH]) {
     try { hash.update(p).update(fs.readFileSync(p)); } catch (_) {}
   }
   return hash.digest("hex").slice(0, 8);
@@ -335,6 +336,13 @@ const usernamesCache = createUsernamesCache({
 });
 usernamesCache.start();
 
+// ── Sidecar /status probe (powers usernode-loading.js overlay) ──────────────
+const nodeStatusProbe = createNodeStatusProbe({
+  nodeRpcUrl: process.env.NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+});
+nodeStatusProbe.start();
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 function send(res, code, headers, body) {
@@ -365,6 +373,16 @@ const server = http.createServer((req, res) => {
       return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-usernames.js: " + e.message);
+    }
+  }
+
+  // Shared node-readiness loader
+  if (pathname === "/usernode-loading.js") {
+    try {
+      const buf = fs.readFileSync(LOADING_PATH);
+      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-loading.js: " + e.message);
     }
   }
 
@@ -412,6 +430,9 @@ const server = http.createServer((req, res) => {
 
   // Global usernames cache
   if (usernamesCache.handleRequest(req, res, pathname)) return;
+
+  // Sidecar /status probe (cached snapshot for usernode-loading.js)
+  if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
 
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;

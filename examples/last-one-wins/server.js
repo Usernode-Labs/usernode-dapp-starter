@@ -26,6 +26,7 @@ const {
   createMockApi,
   createAppStateCache,
   createUsernamesCache,
+  createNodeStatusProbe,
   resolvePath,
 } = require("../lib/dapp-server");
 const createLastOneWins = require("./game-logic");
@@ -46,6 +47,10 @@ const TIMER_DURATION_MS = parseInt(process.env.TIMER_DURATION_MS, 10) || 8640000
 const BRIDGE_PATH = resolvePath(
   path.join(__dirname, "usernode-bridge.js"),
   path.join(__dirname, "..", "..", "usernode-bridge.js"),
+);
+const LOADING_PATH = resolvePath(
+  path.join(__dirname, "usernode-loading.js"),
+  path.join(__dirname, "..", "..", "usernode-loading.js"),
 );
 
 // ── Mock API ─────────────────────────────────────────────────────────────────
@@ -89,6 +94,13 @@ const usernamesCache = createUsernamesCache({
 });
 usernamesCache.start();
 
+// ── Sidecar /status probe (powers usernode-loading.js overlay) ──────────────
+const nodeStatusProbe = createNodeStatusProbe({
+  nodeRpcUrl: NODE_RPC_URL,
+  localDev: LOCAL_DEV,
+});
+nodeStatusProbe.start();
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 function send(res, code, headers, body) {
@@ -112,11 +124,24 @@ const server = http.createServer((req, res) => {
     }
   }
 
+  // Node-readiness loader
+  if (pathname === "/usernode-loading.js") {
+    try {
+      const buf = fs.readFileSync(LOADING_PATH);
+      return send(res, 200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" }, buf);
+    } catch (e) {
+      return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read usernode-loading.js: " + e.message);
+    }
+  }
+
   // Game state API
   if (gameCache.handleRequest(req, res, pathname)) return;
 
   // Global usernames cache
   if (usernamesCache.handleRequest(req, res, pathname)) return;
+
+  // Sidecar /status probe (cached snapshot for usernode-loading.js)
+  if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;
