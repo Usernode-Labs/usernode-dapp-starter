@@ -1,9 +1,12 @@
-.PHONY: up down start stop restart logs ps build examples-up examples-down examples-logs node
+.PHONY: up down start stop restart logs ps build examples-up examples-up-local examples-down examples-logs node usernode-image usernode-image-amd64
 
-USERNODE_BIN ?= ../usernode/target/release/usernode
-GENESIS_URL  ?= https://static.usernodelabs.org/testnet/genesis.json
-SEEDLIST_URL ?= https://static.usernodelabs.org/testnet/seedlist.txt
-NODE_PORT    ?= 3000
+USERNODE_BIN        ?= ../usernode/target/release/usernode
+USERNODE_REPO       ?= ../usernode
+USERNODE_TAG        ?= usernode:local
+USERNODE_TAG_AMD64  ?= $(USERNODE_TAG)-amd64
+GENESIS_URL         ?= https://static.usernodelabs.org/testnet/genesis.json
+SEEDLIST_URL        ?= https://static.usernodelabs.org/testnet/seedlist.txt
+NODE_PORT           ?= 3000
 
 build:
 	docker compose build
@@ -64,6 +67,47 @@ EXAMPLES_COMPOSE = docker compose --env-file ../.env -f docker-compose.yml -f do
 
 examples-up:
 	cd examples && $(EXAMPLES_COMPOSE) up -d --build dapp-examples
+
+# Build a usernode image from the local checkout at USERNODE_REPO. Tags it
+# USERNODE_TAG so it doesn't stomp on `usernodelabs/usernode:latest`. Use
+# this to test a usernode feature branch end-to-end against the dapps —
+# whatever's checked out in $(USERNODE_REPO) is what gets built.
+#
+# Builds for the host architecture. On Apple Silicon that means linux/arm64,
+# which won't run on a typical x86 prod server — use `usernode-image-amd64`
+# for shippable artifacts.
+usernode-image:
+	cd $(USERNODE_REPO) && docker build -t $(USERNODE_TAG) .
+
+# Cross-build a usernode image for linux/amd64. Required when shipping to
+# an x86 prod server from an Apple Silicon host. Loads the result into the
+# local docker daemon so you can `docker push` (or `docker save`) it.
+#
+# On Apple Silicon this builds under qemu emulation of x86, which is slow
+# (~30–60 min cold; minutes on rebuilds thanks to the Dockerfile's cargo
+# cache mounts). On a native amd64 Linux host it's just a normal build.
+#
+# To push to a registry: override the tag, then `docker push` after build.
+#   USERNODE_TAG_AMD64=ghcr.io/your-org/usernode:my-branch make usernode-image-amd64
+#   docker push ghcr.io/your-org/usernode:my-branch
+#
+# Then in prod, set USERNODE_IMAGE to that same tag (via .env or the
+# USERNODE_IMAGE GitHub Actions secret — see .github/workflows/deploy.yml).
+usernode-image-amd64:
+	cd $(USERNODE_REPO) && docker buildx build --platform linux/amd64 -t $(USERNODE_TAG_AMD64) --load .
+
+# Like `examples-up`, but uses the locally-built usernode image as the
+# sidecar instead of pulling `usernodelabs/usernode:latest`. The compose
+# file falls back to the published image when USERNODE_IMAGE is unset, so
+# the regular `examples-up` target is unchanged.
+#
+# Brings up the `node` service alongside `dapp-examples` via the
+# `linux-node` profile (the only point of building locally is to test
+# *that* node end-to-end). Note: Docker P2P doesn't sync on Mac — this
+# target is for Linux / CI. On Mac, build the binary instead and use
+# `make node` + `make examples-up`.
+examples-up-local: usernode-image
+	cd examples && USERNODE_IMAGE=$(USERNODE_TAG) $(EXAMPLES_COMPOSE) --profile linux-node up -d --build
 
 examples-down:
 	cd examples && $(EXAMPLES_COMPOSE) down

@@ -29,6 +29,12 @@ jobs:
             # SANDS_APP_PUBKEY / OM_APP_PUBKEY / USERNAMES_PUBKEY are public
             # addresses (no secret-key counterparts) but routed through GH
             # secrets to keep the .env writer single-sourced.
+            #
+            # USERNODE_IMAGE is optional: leave the secret unset (or empty)
+            # and compose falls back to `usernodelabs/usernode:latest`. Set
+            # it to e.g. `ghcr.io/your-org/usernode:my-branch` to run a
+            # locally-built image on prod (must be linux/amd64; see the
+            # `usernode-image-amd64` Make target).
             cat > .env <<'ENVEOF'
             APP_PUBKEY=${{ secrets.APP_PUBKEY }}
             APP_SECRET_KEY=${{ secrets.APP_SECRET_KEY }}
@@ -39,6 +45,7 @@ jobs:
             ECHO_APP_SECRET_KEY=${{ secrets.ECHO_APP_SECRET_KEY }}
             SANDS_APP_PUBKEY=${{ secrets.SANDS_APP_PUBKEY }}
             USERNAMES_PUBKEY=${{ secrets.USERNAMES_PUBKEY }}
+            USERNODE_IMAGE=${{ secrets.USERNODE_IMAGE }}
             ENVEOF
             sed -i 's/^[[:space:]]*//' .env
             echo "==> .env written ($(wc -l < .env) lines)"
@@ -63,7 +70,13 @@ jobs:
             COMPOSE="docker compose --env-file ../.env"
             $COMPOSE down || true
             echo "==> Pulling latest node sidecar image..."
-            $COMPOSE pull node
+            # Tolerant of failure: if USERNODE_IMAGE points at a tag that
+            # only exists locally (e.g. `usernode:local-amd64` from a
+            # one-off `docker save`/`docker load`), `pull` will 404 — but
+            # `up -d` will still find the image in the local daemon. We
+            # only want to abort if the image is genuinely unavailable,
+            # which `up -d` reports clearly.
+            $COMPOSE pull node || echo "==> pull skipped (image may be local-only); continuing"
             $COMPOSE up -d --build 2>&1
             $COMPOSE ps
             echo "==> Combined examples server started."

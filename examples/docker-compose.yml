@@ -1,6 +1,9 @@
 services:
   node:
-    image: usernodelabs/usernode:latest
+    # Defaults to the published image; override with USERNODE_IMAGE=<tag> to
+    # run a locally-built usernode (e.g. testing a feature branch end-to-end).
+    # See the `usernode-image` / `examples-up-local` Make targets.
+    image: ${USERNODE_IMAGE:-usernodelabs/usernode:latest}
     container_name: dapp-node
     env_file:
       - path: ../.env
