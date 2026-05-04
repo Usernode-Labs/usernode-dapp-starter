@@ -10,6 +10,107 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ----------------------------------------------------------------------
+      # Archive snapshot: fetch from a testnet seed and stream into the
+      # `examples_node-archive` docker volume on prod BEFORE the deploy step
+      # brings the stack up.
+      #
+      # Why: PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md — the dapp sidecar runs
+      # in partial-ledger mode by default (the `--wallet-owner` flags trigger
+      # the wallet-seed shortcut, which hydrates a partial UTXO overlay
+      # instead of the full tree). That breaks `RecentTxEntry.source`
+      # resolution for ~half the inbound traffic. Booting from a full
+      # archive snapshot fixes it: the node loads the full tree at startup,
+      # and from then on every block is applied in full mode and source
+      # resolution is authoritative.
+      #
+      # Required GitHub Actions secrets (one-time setup):
+      #   SEED_SSH_KEY    — private key authorized on testnet-seed1
+      #                     (matches the public key in seed1's authorized_keys)
+      #   GH_PAT_USERNODE — PAT with `repo` scope on Usernode-Labs/usernode
+      #                     (only needed if the repo stays private; remove
+      #                     the `token:` line below if it's public)
+      #
+      # Existing secrets reused: SSH_KEY, SSH_HOST, SSH_PORT, SSH_USER.
+      #
+      # The fetch+stream pipeline is ~1–2 min for a several-hundred-MB
+      # snapshot. Skipping it (e.g. seed temporarily unreachable) is safe
+      # because the node has `--archive` and persists snapshots itself —
+      # the existing volume just gets reused.
+      # ----------------------------------------------------------------------
+      - name: Checkout usernode (for fetch-archive-snapshot.sh)
+        uses: actions/checkout@v4
+        with:
+          repository: Usernode-Labs/usernode
+          path: usernode-src
+          token: ${{ secrets.GH_PAT_USERNODE }}
+
+      - name: Configure SSH (testnet seeds + prod)
+        env:
+          SEED_SSH_KEY: ${{ secrets.SEED_SSH_KEY }}
+          PROD_SSH_KEY: ${{ secrets.SSH_KEY }}
+          PROD_HOST:    ${{ secrets.SSH_HOST }}
+          PROD_PORT:    ${{ secrets.SSH_PORT }}
+          PROD_USER:    ${{ secrets.SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SEED_SSH_KEY" > ~/.ssh/seed_key && chmod 600 ~/.ssh/seed_key
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/prod_key && chmod 600 ~/.ssh/prod_key
+          cat > ~/.ssh/config <<EOF
+          Host testnet-seed1
+            HostName 65.109.68.86
+            User usernode
+            IdentityFile ~/.ssh/seed_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          Host testnet-seed2
+            HostName 65.109.99.245
+            User usernode
+            IdentityFile ~/.ssh/seed_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          Host prod
+            HostName ${PROD_HOST}
+            Port ${PROD_PORT}
+            User ${PROD_USER}
+            IdentityFile ~/.ssh/prod_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Fetch archive snapshot from testnet-seed1
+        id: fetch_archive
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          mkdir -p ./archive-staging
+          ./usernode-src/scripts/fetch-archive-snapshot.sh testnet-seed1 ./archive-staging --replace
+          echo "==> Staged archive size:"
+          du -sh archive-staging
+
+      - name: Stream archive into prod docker volume
+        if: steps.fetch_archive.outcome == 'success'
+        run: |
+          set -euxo pipefail
+          # Stream the staged snapshot over SSH directly into a one-shot
+          # alpine container that writes into the `examples_node-archive`
+          # named volume on prod. No intermediate tarball ever lives on
+          # the prod box.
+          #
+          # `examples_node-archive` is the default compose-derived volume
+          # name (project = `examples` from the compose file's parent dir,
+          # service-volume = `node-archive`). If you ever set
+          # COMPOSE_PROJECT_NAME or `name:` in the compose file, update
+          # the volume name here to match.
+          tar -czf - -C archive-staging . | ssh prod \
+            'docker run --rm -i -v examples_node-archive:/archive alpine sh -c "rm -rf /archive/* && tar -xzf - -C /archive && echo \"==> Volume populated: $(du -sh /archive | cut -f1)\""'
+
+      - name: Note if archive fetch was skipped
+        if: steps.fetch_archive.outcome != 'success'
+        run: |
+          echo "::warning::Archive fetch from testnet-seed1 failed; deploy will reuse whatever is already in the node-archive volume on prod. The node has --archive (read+write) so this is safe as long as the volume is not empty. If this is a fresh deploy, the node will start with no archive and produce a partial-ledger sidecar (the bug returns until the next successful fetch)."
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:

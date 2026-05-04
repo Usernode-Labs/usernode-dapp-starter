@@ -16,9 +16,22 @@ services:
     # recent_tx_stream; without it dapp servers that rely on streaming (Sands,
     # Opinion Market, Usernames, Echo, Last One Wins, etc.) silently fall back
     # to slow explorer polling.
+    #
+    # `--archive --archive-path /archive` makes the sidecar a true full-ledger
+    # node (fixes PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md — RecentTxEntry.source
+    # was null for ~half of incoming txs because the partial UTXO tree couldn't
+    # resolve commitments belonging to non-tracked owners). The deploy workflow
+    # populates the `node-archive` volume with a fresh snapshot from a seed
+    # node before bringing the stack up; from then on the node both LOADS that
+    # snapshot at boot AND WRITES new ones at the snapshot interval, so
+    # subsequent restarts (and even deploys that skip the fetch) recover from
+    # whatever's on disk.
     command:
       - "--work-dir"
       - "/var/lib/usernode"
+      - "--archive"
+      - "--archive-path"
+      - "/archive"
       - "--port"
       - "3000"
       - "--enable-recent-tx-stream"
@@ -34,6 +47,7 @@ services:
       - "${USERNAMES_PUBKEY}"
     volumes:
       - node-data:/var/lib/usernode
+      - node-archive:/archive
     networks:
       - proxy-network
     restart: unless-stopped
@@ -64,6 +78,7 @@ services:
 volumes:
   sands-data:
   node-data:
+  node-archive:
 
 networks:
   proxy-network:
