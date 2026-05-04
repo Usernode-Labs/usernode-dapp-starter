@@ -1121,8 +1121,69 @@ function createAppStateCache(opts) {
         if (id) rawTxIds.add(id);
         rawTxs.push(rawTx);
       }
+      _maybeWarnNullSource(rawTx);
     }
     return userProcessTransaction(rawTx);
+  }
+
+  // ── PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG detector ─────────────────────────
+  //
+  // Counts transfers that arrive missing `source`/`from_pubkey`/`from`. On a
+  // healthy full-ledger sidecar this is always zero. On a partial-ledger
+  // sidecar (Replace fired, OR boot without an archive snapshot), the SSE
+  // stream delivers RecentTxEntry rows with `source: null` and the dapp
+  // cache silently drops them — exactly the "tx never appears in the dapp
+  // UI" failure mode in PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md.
+  //
+  // We log loud on the FIRST occurrence so it can't slip past a passive
+  // logs reader, then throttle subsequent warnings to once every 5 minutes
+  // with the running rate. Counters are exposed via `getStats()` so a
+  // health endpoint can scrape and alert.
+  let _nullSourceCount = 0;
+  let _transferTotalCount = 0;
+  let _firstNullSourceLogged = false;
+  let _lastNullSourceWarnAt = 0;
+  const _NULL_SOURCE_WARN_INTERVAL_MS = 5 * 60 * 1000;
+
+  function _maybeWarnNullSource(rawTx) {
+    const txType = rawTx.tx_type || rawTx.type;
+    // Rewards / genesis legitimately have no source. Only `transfer`s carry
+    // a sender — that's where missing source means the bug.
+    if (txType && txType !== "transfer") return;
+    const source = rawTx.source != null
+      ? rawTx.source
+      : (rawTx.from_pubkey != null ? rawTx.from_pubkey : rawTx.from);
+    _transferTotalCount++;
+    if (source != null) return;
+    _nullSourceCount++;
+    const now = Date.now();
+    if (!_firstNullSourceLogged) {
+      _firstNullSourceLogged = true;
+      const id = _appStateExtractId(rawTx);
+      console.warn(
+        `[${name}] PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG: first incoming transfer with source=null (tx_id=${id || "<unknown>"}). ` +
+        `Sidecar is in partial-ledger mode — dapp UI will silently drop incoming txs from non-tracked senders. ` +
+        `Restart the sidecar with a fresh archive snapshot. Subsequent occurrences throttled to one warning every 5 min.`
+      );
+      _lastNullSourceWarnAt = now;
+      return;
+    }
+    if (now - _lastNullSourceWarnAt < _NULL_SOURCE_WARN_INTERVAL_MS) return;
+    _lastNullSourceWarnAt = now;
+    const pct = _transferTotalCount > 0
+      ? ((_nullSourceCount / _transferTotalCount) * 100).toFixed(1)
+      : "?";
+    console.warn(
+      `[${name}] PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG ongoing: ${_nullSourceCount}/${_transferTotalCount} transfers missing source (${pct}%) since boot.`
+    );
+  }
+
+  function getNullSourceStats() {
+    return {
+      nullSourceCount: _nullSourceCount,
+      transferTotalCount: _transferTotalCount,
+      firstSeen: _firstNullSourceLogged,
+    };
   }
 
   // Read-only access to the cache's raw-tx list, in chronological (insertion)
@@ -1346,6 +1407,7 @@ function createAppStateCache(opts) {
     processTransaction,
     getRawTransactions,
     isStreamReady,
+    getNullSourceStats,
     name,
   };
 }
@@ -1558,9 +1620,14 @@ function createNodeStatusProbe(opts) {
     peerBestTipHeight: null,
     error: null,
     hasBeenSynced: false,
+    hasFullUtxoDb: null,
     at: Date.now(),
   };
   let lastStatus = "unknown";
+  // Tri-state so we only log when the flag actually changes value, not the
+  // first time we observe it. `null` = never observed yet (probe just
+  // started or sidecar unreachable).
+  let lastHasFullUtxoDb = null;
   let timer = null;
   let started = false;
 
@@ -1571,6 +1638,38 @@ function createNodeStatusProbe(opts) {
       console.log(`[node-status] -> ${newStatus} (${errMsg})`);
     } else {
       console.log(`[node-status] -> ${newStatus}`);
+    }
+  }
+
+  function logFullUtxoDbChange(newVal) {
+    if (newVal === lastHasFullUtxoDb) return;
+    const prev = lastHasFullUtxoDb;
+    lastHasFullUtxoDb = newVal;
+    if (prev === null) {
+      // First observation. Surface it once so operators can confirm the
+      // sidecar booted in the expected mode. Quiet for full mode (the
+      // expected steady state); louder for partial.
+      if (newVal === true) {
+        console.log("[node-status] sidecar reports HAS_FULL_UTXO_DB — full-ledger mode");
+      } else {
+        console.warn(
+          "[node-status] PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG risk: sidecar booted WITHOUT HAS_FULL_UTXO_DB. " +
+          "Dapps will silently drop incoming txs from non-tracked senders. " +
+          "Restart with a fresh archive snapshot."
+        );
+      }
+      return;
+    }
+    if (prev === true && newVal === false) {
+      console.error(
+        "[node-status] PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG triggered: sidecar dropped HAS_FULL_UTXO_DB mid-session " +
+        "(likely a Replace fired against an orphan-tail snapshot). Dapps will start silently dropping incoming txs. " +
+        "Restart the sidecar with a fresh archive snapshot to recover."
+      );
+    } else if (prev === false && newVal === true) {
+      // Recovery only happens on restart with a good snapshot — but log
+      // it anyway in case someone manually intervenes.
+      console.log("[node-status] sidecar regained HAS_FULL_UTXO_DB — full-ledger mode restored");
     }
   }
 
@@ -1596,6 +1695,13 @@ function createNodeStatusProbe(opts) {
         ? data.blockchain.best_tip.height
         : null;
       if (status === "Synced") hasBeenSynced = true;
+      // Parse `node.flags` (e.g. "HAS_FULL_UTXO_DB | HAS_FULL_IDENTITY_DB")
+      // for the partial-ledger downgrade signal. Absence means the sidecar
+      // is operating in partial mode and the source-null bug is live.
+      const flagsStr = (data && data.node && typeof data.node.flags === "string")
+        ? data.node.flags
+        : "";
+      const hasFullUtxoDb = flagsStr.includes("HAS_FULL_UTXO_DB");
       snapshot = {
         status,
         peers: connectedPeers.length,
@@ -1603,9 +1709,11 @@ function createNodeStatusProbe(opts) {
         peerBestTipHeight,
         error: null,
         hasBeenSynced,
+        hasFullUtxoDb,
         at: Date.now(),
       };
       logStatusChange(status, null);
+      logFullUtxoDbChange(hasFullUtxoDb);
     } catch (e) {
       snapshot = {
         status: "unreachable",
@@ -1614,6 +1722,10 @@ function createNodeStatusProbe(opts) {
         peerBestTipHeight: null,
         error: e && e.message ? e.message : String(e),
         hasBeenSynced,
+        // Don't claim partial mode just because the probe couldn't reach
+        // the sidecar — keep the last observed value so a transient
+        // network blip doesn't fire a false alarm.
+        hasFullUtxoDb: lastHasFullUtxoDb,
         at: Date.now(),
       };
       logStatusChange("unreachable", snapshot.error);
@@ -1648,6 +1760,7 @@ function createNodeStatusProbe(opts) {
         peerBestTipHeight: null,
         error: null,
         hasBeenSynced: false,
+        hasFullUtxoDb: null,
         at: Date.now(),
       };
       lastStatus = "mock";
