@@ -487,12 +487,133 @@ function setLoading(pct, msg) {
   if (_loaderStatus) _loaderStatus.textContent = msg;
 }
 
-function dismissLoader() {
+// Two-gate dismissal: the loader stays up until BOTH the engine is
+// ready (WS init received, snapshot loaded, sim caught up) AND the
+// chain is ready (node `Synced`, `sands` SSE stream up). The chain
+// poll runs in parallel with engine init below — whichever finishes
+// first is held by `tryDismissLoader()` until the other catches up.
+//
+// Without the chain gate, falling-sands silently degrades to
+// single-player mode during a node/SSE outage: the user can draw
+// locally but other players' strokes never appear, with no signal
+// in the UI as to why. With the gate, the existing loader UI stays
+// up and surfaces the actual state ("Node syncing…", "Connecting to
+// live updates…") until the chain is actually feeding the engine.
+const _SANDS_STREAM_KEY = "sands";
+let _engineLoaderReady = false;
+let _chainLoaderReady = false;
+let _loaderDismissed = false;
+
+function tryDismissLoader() {
+  if (_loaderDismissed) return;
+  if (!_engineLoaderReady || !_chainLoaderReady) return;
+  _loaderDismissed = true;
+  setLoading(100, "Ready!");
   if (_loaderOverlay) {
     _loaderOverlay.classList.add("fade-out");
     setTimeout(() => { _loaderOverlay.style.display = "none"; }, 500);
   }
 }
+
+function _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Mirrors usernode-loading.js's shouldDismiss() so the two gating
+// strategies (overlay-style for other dapps, in-place for sands) make
+// the same trust-after-first-sync decision.
+async function pollChainReady() {
+  const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
+    ? await window.usernode.isMockEnabled()
+    : false;
+  if (mockEnabled) {
+    _chainLoaderReady = true;
+    tryDismissLoader();
+    return;
+  }
+
+  while (!_chainLoaderReady) {
+    let snap = null;
+    try {
+      const resp = await fetch("/__usernode/node_status", { cache: "no-store" });
+      if (resp.status === 404) {
+        // Probe endpoint not wired (older server / different deployment).
+        // Fail open rather than hanging the loader forever.
+        _chainLoaderReady = true;
+        tryDismissLoader();
+        return;
+      }
+      if (!resp.ok) { await _sleep(1000); continue; }
+      snap = await resp.json();
+    } catch (_) {
+      await _sleep(1000);
+      continue;
+    }
+
+    if (snap.status === "mock" || snap.status === "unknown") {
+      _chainLoaderReady = true;
+      tryDismissLoader();
+      return;
+    }
+
+    // Stream-readiness gate. If the server hasn't registered our key
+    // (older deploy, missing wiring), fail open — same behavior as
+    // usernode-loading.js — so a misconfiguration doesn't strand the
+    // user behind a permanent overlay.
+    const hasStreamMap = !!snap.streams;
+    const streamRegistered = hasStreamMap
+      && Object.prototype.hasOwnProperty.call(snap.streams, _SANDS_STREAM_KEY);
+    const streamOk = !hasStreamMap || !streamRegistered
+      || snap.streams[_SANDS_STREAM_KEY] === true;
+
+    if (streamOk) {
+      if (snap.status === "Synced") {
+        _chainLoaderReady = true;
+        tryDismissLoader();
+        return;
+      }
+      // Trust-after-first-sync: subsequent Connected/Syncing means the
+      // node is just applying new tip blocks; safe to dismiss.
+      if (snap.hasBeenSynced && (snap.status === "Connected" || snap.status === "Syncing")) {
+        _chainLoaderReady = true;
+        tryDismissLoader();
+        return;
+      }
+    }
+
+    // Only override the loader text once the engine side is done — until
+    // then, the WS init handler is the one driving the bar (Loading
+    // engine → Connecting to server → Server loading → Loading snapshot
+    // → Catching up).
+    if (_engineLoaderReady) {
+      if (!streamOk) {
+        setLoading(95, "Connecting to live updates\u2026");
+      } else if (snap.status === "Connecting") {
+        setLoading(80, "Node connecting to network\u2026");
+      } else if (snap.status === "Connected") {
+        setLoading(85, "Node joining network\u2026");
+      } else if (snap.status === "Syncing") {
+        const our = snap.bestTipHeight;
+        const peer = snap.peerBestTipHeight;
+        if (typeof our === "number" && typeof peer === "number" && peer > 0) {
+          const pct = Math.max(85, Math.min(99, 85 + (our / peer) * 14));
+          setLoading(Math.round(pct), "Node syncing chain\u2026 block " + our + " / " + peer);
+        } else {
+          setLoading(85, "Node syncing chain\u2026");
+        }
+      } else if (snap.status === "unreachable") {
+        setLoading(80, "Waiting for node\u2026");
+      } else {
+        setLoading(80, "Waiting for node\u2026");
+      }
+    }
+
+    await _sleep(500);
+  }
+}
+
+// Kick off the chain-readiness gate immediately — no need to wait for
+// WASM/WS. By the time the engine finishes replay, the chain poll has
+// usually already hit `Synced` and the loader dismisses promptly.
+pollChainReady();
 
 // =============================================================================
 // CONFIGURATION
@@ -1331,10 +1452,19 @@ function handleMessage(event) {
 
       console.log(`[sands-init] ready at tick ${simTick}, frozen=${!!msg.frozen}, activeUntil=${clientActiveUntilTick}`);
 
-      setLoading(100, "Ready!");
       statusEl.className = "ok";
       statusEl.textContent = "Running locally";
-      dismissLoader();
+      // Engine side of the loader gate is satisfied. If the chain side
+      // (pollChainReady) has also flipped, this dismisses the overlay
+      // immediately; otherwise the chain poller takes over the loader
+      // text and dismisses once Synced + sands stream is up.
+      _engineLoaderReady = true;
+      if (_chainLoaderReady) {
+        setLoading(100, "Ready!");
+      } else {
+        setLoading(80, "Waiting for node\u2026");
+      }
+      tryDismissLoader();
 
       if (!localStorage.getItem("sands:introDismissed")) {
         setTimeout(() => {

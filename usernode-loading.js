@@ -10,7 +10,7 @@
  *
  *   <script src="/usernode-bridge.js"></script>
  *   <script src="/usernode-loading.js"></script>
- *   <script>UsernodeLoading.init({ appName: "Echo" });</script>
+ *   <script>UsernodeLoading.init({ appName: "Echo", streamKey: "echo" });</script>
  *
  * Reads the cached snapshot exposed by `createNodeStatusProbe` in
  * `examples/lib/dapp-server.js` at `GET /__usernode/node_status`. The
@@ -20,6 +20,16 @@
  * Auto-skips in `--local-dev` (via window.usernode.isMockEnabled). Also
  * stays out of the way when the probe endpoint isn't wired (404) or the
  * snapshot reports `status: "mock"` / `"unknown"` with no NODE_RPC_URL.
+ *
+ * `streamKey` (recommended): the dapp's per-app cache stream name (e.g.
+ * "lastwin", "echo", "om"). When set, the overlay also waits for
+ * `snapshot.streams[streamKey] === true` — i.e. the dapp-server's
+ * SSE link to the node has reconnected and its initial backfill has
+ * completed. Without this gate, the overlay can dismiss the moment the
+ * node reports `Synced` even if the dapp-server's per-dapp stream is
+ * still in its post-boot reconnect backoff, leaving newly-sent txs
+ * stranded (they land on chain but aren't in the dapp-server's cache,
+ * so the bridge's inclusion poll times out → "Sending forever").
  */
 (function () {
   "use strict";
@@ -156,11 +166,24 @@
     });
   }
 
-  function describeStatus(snap) {
+  function describeStatus(snap, streamKey) {
     var s = snap && snap.status;
     var ourTip = (snap && typeof snap.bestTipHeight === "number") ? snap.bestTipHeight : null;
     var peerTip = (snap && typeof snap.peerBestTipHeight === "number") ? snap.peerBestTipHeight : null;
     var peers = (snap && typeof snap.peers === "number") ? snap.peers : 0;
+
+    // Node is fine but our dapp's stream isn't ready yet. Show that
+    // rather than "Node synced" — the user is actually waiting on the
+    // dapp-server's SSE socket / backfill, not the chain.
+    if (snap && (s === "Synced" || s === "Connected" || s === "Syncing") &&
+        !streamGateOk(snap, streamKey)) {
+      return {
+        title: "Connecting to live updates…",
+        meta: "Almost ready",
+        percent: 95,
+        indeterminate: true,
+      };
+    }
 
     if (s === "Synced") return { title: "Node synced", meta: "", percent: 100, indeterminate: false };
     if (s === "Syncing") {
@@ -189,11 +212,29 @@
     return { title: "Node starting…", meta: "", percent: 0, indeterminate: true };
   }
 
-  function shouldDismiss(snap, requireSynced) {
+  function streamGateOk(snap, streamKey) {
+    // No gate requested → pass.
+    if (!streamKey) return true;
+    // Probe pre-dates the streams map (older server) or didn't surface a
+    // value for this key (caller passed a typo, or the server hasn't
+    // registered it). Fail open rather than holding the overlay up
+    // forever on a misconfiguration — preserves the previous behavior
+    // for any deployment that hasn't wired the registration yet.
+    if (!snap.streams) return true;
+    if (!Object.prototype.hasOwnProperty.call(snap.streams, streamKey)) return true;
+    return snap.streams[streamKey] === true;
+  }
+
+  function shouldDismiss(snap, requireSynced, streamKey) {
     if (!snap) return false;
     if (snap.__notWired) return true;          // probe endpoint missing
     if (snap.status === "mock") return true;    // server is in --local-dev
     if (snap.status === "unknown") return true; // probe disabled (no NODE_RPC_URL)
+    // Per-dapp stream readiness gate: even if the node reports `Synced`,
+    // hold the overlay until the dapp-server's own SSE link to the node
+    // has come up and its initial backfill has completed. See file
+    // header for why this matters.
+    if (!streamGateOk(snap, streamKey)) return false;
     if (snap.status === "Synced") return true;
     if (requireSynced) return false;
     // Trust-after-first-sync: once the probe has ever observed `Synced` for
@@ -223,6 +264,9 @@
     var requireSynced = !!opts.requireSynced;
     var reShowOnRegression = !!opts.reShowOnRegression;
     var onStatusChange = typeof opts.onStatusChange === "function" ? opts.onStatusChange : null;
+    // Per-dapp stream gate: name of the dapp-server cache whose live SSE
+    // link must also be up before we dismiss. See file header.
+    var streamKey = opts.streamKey != null ? String(opts.streamKey) : null;
 
     var bridgeMockCheck = (window.usernode && typeof window.usernode.isMockEnabled === "function")
       ? window.usernode.isMockEnabled()
@@ -289,12 +333,12 @@
     function tick() {
       fetchSnapshot().then(function (snap) {
         fireStatusChange(snap);
-        if (shouldDismiss(snap, requireSynced)) {
+        if (shouldDismiss(snap, requireSynced, streamKey)) {
           dismiss();
           return;
         }
         if (!ui) ensureOverlayMounted();
-        applyDescription(describeStatus(snap));
+        applyDescription(describeStatus(snap, streamKey));
       }).catch(function (err) {
         // Network errors mean we genuinely can't tell — keep the last
         // known render up rather than thrash the UI.
@@ -324,7 +368,7 @@
       // endpoints / unknown / mock / Synced → never paint anything.
       fetchSnapshot().then(function (snap) {
         fireStatusChange(snap);
-        if (shouldDismiss(snap, requireSynced)) {
+        if (shouldDismiss(snap, requireSynced, streamKey)) {
           // No overlay, no polling. Optional regression re-show is opt-in
           // (default off) — most dapps would rather not flicker an overlay
           // mid-session if the sidecar reconnects.
@@ -334,7 +378,7 @@
           return;
         }
         ensureOverlayMounted();
-        applyDescription(describeStatus(snap));
+        applyDescription(describeStatus(snap, streamKey));
         pollTimer = setInterval(tick, pollIntervalMs);
       }).catch(function (err) {
         // First-call network failure: still show the overlay so the user

@@ -337,10 +337,26 @@ const usernamesCache = createUsernamesCache({
 usernamesCache.start();
 
 // ── Sidecar /status probe (powers usernode-loading.js overlay) ──────────────
+//
+// The probe surfaces both node /status (Synced/Syncing/etc.) AND per-dapp
+// stream readiness. Registering a cache here lets each dapp's loader gate
+// its dismiss on its own SSE link being up — without this, the overlay
+// can disappear the moment the node says Synced even if our SSE
+// reconnect backoff hasn't fired yet, which is exactly the window where
+// "Sending forever" lives.
 const nodeStatusProbe = createNodeStatusProbe({
   nodeRpcUrl: process.env.NODE_RPC_URL,
   localDev: LOCAL_DEV,
 });
+nodeStatusProbe.registerStream("om", () => omCache.isStreamReady());
+nodeStatusProbe.registerStream("lastwin", () => lastwinCache.isStreamReady());
+nodeStatusProbe.registerStream("echo", () => echoCache.isStreamReady());
+nodeStatusProbe.registerStream("usernames", () => usernamesCache.isStreamReady());
+// sandsCache is created inside an async IIFE (engine replay needs to finish
+// first), so register a lazy lambda — the registration is read fresh on
+// every snapshot, so it returns false until the cache exists, then tracks
+// the real readiness.
+nodeStatusProbe.registerStream("sands", () => !!sandsCache && sandsCache.isStreamReady());
 nodeStatusProbe.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────

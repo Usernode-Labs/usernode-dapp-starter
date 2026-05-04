@@ -95,10 +95,15 @@ const usernamesCache = createUsernamesCache({
 usernamesCache.start();
 
 // ── Sidecar /status probe (powers usernode-loading.js overlay) ──────────────
+// Per-dapp stream registrations gate the loader's dismiss on each
+// cache's SSE link being up + backfilled, not just on node /status
+// being Synced. See `lib/dapp-server.js` createNodeStatusProbe docs.
 const nodeStatusProbe = createNodeStatusProbe({
   nodeRpcUrl: NODE_RPC_URL,
   localDev: LOCAL_DEV,
 });
+nodeStatusProbe.registerStream("lastwin", () => gameCache.isStreamReady());
+nodeStatusProbe.registerStream("usernames", () => usernamesCache.isStreamReady());
 nodeStatusProbe.start();
 
 // ── HTTP server ──────────────────────────────────────────────────────────────

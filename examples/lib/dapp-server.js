@@ -526,6 +526,10 @@ function _streamNodeSse(opts) {
   const recipient = opts.recipient;
   const onEvent = opts.onEvent;
   const onClose = opts.onClose;
+  // Fired exactly once when the upstream returns 200 — i.e. the SSE
+  // connection is actually live and ready to deliver events. Used by
+  // callers to track per-stream readiness for the node-status probe.
+  const onOpen = typeof opts.onOpen === "function" ? opts.onOpen : null;
   const url = new URL(`${nodeRpcUrl}/transactions/stream`);
   url.searchParams.set("recipient", recipient);
   const transport = url.protocol === "https:" ? https : http;
@@ -552,6 +556,9 @@ function _streamNodeSse(opts) {
       res.resume();
       safeClose(new Error(`SSE HTTP ${res.statusCode}`));
       return;
+    }
+    if (onOpen) {
+      try { onOpen(); } catch (_) {}
     }
     res.setEncoding("utf8");
     let buf = "";
@@ -643,6 +650,31 @@ function createNodeRecentTxStream(opts) {
   let trackedOwnerEnsured = !ensureTrackedOwner;
   let catchupTimer = null;
 
+  // Readiness model: the stream is "ready" when the SSE socket is open
+  // *and* the node is tracking this recipient. Either condition flipping
+  // false means we may silently miss events until the next reconnect, so
+  // we surface this to the node-status probe (which the dapp-loading
+  // overlay reads) to keep the UI gated until we're truly live.
+  let sseOpen = false;
+  let lastReady = false;
+  const readyListeners = new Set();
+  function isReady() {
+    return trackedOwnerEnsured && sseOpen;
+  }
+  function fireReadyIfChanged() {
+    const r = isReady();
+    if (r === lastReady) return;
+    lastReady = r;
+    for (const cb of readyListeners) {
+      try { cb(r); } catch (_) {}
+    }
+  }
+  function onReadyChange(cb) {
+    if (typeof cb !== "function") return () => {};
+    readyListeners.add(cb);
+    return () => { readyListeners.delete(cb); };
+  }
+
   function trimSeenIds() {
     if (seenTxIds.size <= seenIdsCap) return;
     const arr = Array.from(seenTxIds);
@@ -671,6 +703,7 @@ function createNodeRecentTxStream(opts) {
       await walletAddTrackedOwner({ nodeRpcUrl, owner: recipient });
       trackedOwnerEnsured = true;
       console.log(`[${name}] tracked-owner registered with node`);
+      fireReadyIfChanged();
     } catch (e) {
       // Non-fatal: the SSE will simply yield no events until tracking is
       // established. Surface to logs and let the reconnect loop retry.
@@ -691,6 +724,7 @@ function createNodeRecentTxStream(opts) {
         // The recipient isn't tracked yet — re-register and retry on the
         // next reconnect cycle.
         trackedOwnerEnsured = false;
+        fireReadyIfChanged();
       }
       // Sort oldest-first as a defensive measure (the endpoint already
       // guarantees this, but downstream consumers expect chronological).
@@ -716,14 +750,22 @@ function createNodeRecentTxStream(opts) {
     stream = _streamNodeSse({
       nodeRpcUrl,
       recipient,
+      onOpen: () => {
+        sseOpen = true;
+        // Reset the reconnect backoff the moment the socket comes up,
+        // not on first event — quiet streams (no recipient activity)
+        // shouldn't be punished with longer backoffs after a hiccup.
+        backoffMs = initialBackoffMs;
+        fireReadyIfChanged();
+      },
       onEvent: (entry) => {
         dispatchEntry(entry);
         trimSeenIds();
-        // Reset backoff on first successful event.
-        backoffMs = initialBackoffMs;
       },
       onClose: (err) => {
         stream = null;
+        sseOpen = false;
+        fireReadyIfChanged();
         if (stopped) return;
         if (err) {
           console.warn(`[${name}] SSE closed: ${err.message}; reconnecting in ${backoffMs}ms`);
@@ -773,7 +815,7 @@ function createNodeRecentTxStream(opts) {
   // wrapper) anyway.
   void onChainReset;
 
-  return { start, close, setInitialLastHeight, addSeenIds };
+  return { start, close, setInitialLastHeight, addSeenIds, isReady, onReadyChange };
 }
 
 // ── Bulk transaction fetch ───────────────────────────────────────────────────
@@ -1176,11 +1218,33 @@ function createAppStateCache(opts) {
 
   let started = false;
 
+  // Tracks whether the cache has finished its initial historical fill.
+  // Surfaced via `isStreamReady()` so the dapp-loading overlay can keep
+  // the UI gated until the cache has both (a) caught up on history and
+  // (b) wired its live feeder. Without (a) the user could click "send"
+  // against a partially-hydrated state and see broken-looking results;
+  // without (b) sends would land on chain without ever appearing in the
+  // dapp UI.
+  //   - localDev: ready as soon as start() finishes (no real chain).
+  //   - backfill:false: caller is doing its own backfill (e.g. sands
+  //     replay) — defer the flag to the caller (set true on start()).
+  //   - default: flips true at the end of the explorer-driven backfill.
+  let backfillDone = false;
+  let nodeStream = null;
+
+  function isStreamReady() {
+    if (!started) return false;
+    if (!backfillDone) return false;
+    if (nodeStream) return nodeStream.isReady();
+    return true;
+  }
+
   async function start() {
     if (started) return;
     started = true;
 
     if (localDev) {
+      backfillDone = true;
       if (mockTransactions) {
         let idx = 0;
         setInterval(() => {
@@ -1238,6 +1302,10 @@ function createAppStateCache(opts) {
       }
       console.log(`[${name}] backfill complete: ${processed} tx(s) processed (lastHeight=${lastHeight ?? "none"})`);
     }
+    // Caller-managed backfill (backfill:false) is treated as "done" as
+    // soon as start() reaches this point — the caller's own pipeline has
+    // already finished by definition (the cache constructor returned).
+    backfillDone = true;
 
     for (const queryField of queryFields) {
       // Direct-to-node SSE + catch-up replaces the explorer poller for the
@@ -1252,6 +1320,7 @@ function createAppStateCache(opts) {
           name: `${name}:node-stream`,
           initialLastHeight: lastHeight,
         });
+        nodeStream = stream;
         if (backfillIds.length) stream.addSeenIds(backfillIds);
         stream.start();
         continue;
@@ -1271,7 +1340,14 @@ function createAppStateCache(opts) {
     }
   }
 
-  return { start, handleRequest, processTransaction, getRawTransactions };
+  return {
+    start,
+    handleRequest,
+    processTransaction,
+    getRawTransactions,
+    isStreamReady,
+    name,
+  };
 }
 
 // ── Global usernames cache ──────────────────────────────────────────────────
@@ -1395,6 +1471,8 @@ function createUsernamesCache(opts) {
     getStateResponse,
     reset,
     usernamesPubkey,
+    isStreamReady: cache.isStreamReady,
+    name: cache.name,
   };
 }
 
@@ -1415,6 +1493,8 @@ function createUsernamesCache(opts) {
 //     peerBestTipHeight: number | null, // max best_tip_height across
 //                                       // connected peers — for sync %
 //     error:             string | null, // populated when last cycle failed
+//     streams:           { [name]: bool }, // per-dapp stream readiness;
+//                                       // see registerStream() below
 //     at:                number,        // ms since epoch when refreshed
 //   }
 //
@@ -1446,6 +1526,30 @@ function createNodeStatusProbe(opts) {
   // whether `Syncing` / `Connected` is "we already trust this node, it's
   // just applying new blocks" vs "fresh boot, please wait".
   let hasBeenSynced = false;
+
+  // Per-dapp stream readiness sources. Each registered stream contributes
+  // a boolean to `snapshot.streams[name]`. Callers (the dapp-loading
+  // overlay) opt into gating their dismiss on a specific stream via
+  // `UsernodeLoading.init({ streamKey: "<name>" })`. Computed fresh on
+  // every read so the loader doesn't have to wait one tick interval to
+  // observe an SSE that just came up.
+  const streamSources = new Map();
+  function registerStream(streamName, isReadyFn) {
+    if (typeof streamName !== "string" || !streamName) {
+      throw new Error("registerStream: streamName required");
+    }
+    if (typeof isReadyFn !== "function") {
+      throw new Error("registerStream: isReadyFn required");
+    }
+    streamSources.set(streamName, isReadyFn);
+  }
+  function readStreams() {
+    const out = {};
+    for (const [streamName, fn] of streamSources) {
+      try { out[streamName] = !!fn(); } catch (_) { out[streamName] = false; }
+    }
+    return out;
+  }
 
   let snapshot = {
     status: "unknown",
@@ -1570,13 +1674,13 @@ function createNodeStatusProbe(opts) {
   }
 
   function get() {
-    return snapshot;
+    return { ...snapshot, streams: readStreams() };
   }
 
   function handleRequest(req, res, pathname) {
     if (pathname !== ROUTE) return false;
     if (req.method !== "GET" && req.method !== "HEAD") return false;
-    const body = JSON.stringify(snapshot);
+    const body = JSON.stringify({ ...snapshot, streams: readStreams() });
     const headers = {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
@@ -1592,7 +1696,7 @@ function createNodeStatusProbe(opts) {
     return true;
   }
 
-  return { start, stop, get, handleRequest };
+  return { start, stop, get, handleRequest, registerStream };
 }
 
 // ── Path resolution ──────────────────────────────────────────────────────────

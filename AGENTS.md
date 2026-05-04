@@ -740,7 +740,7 @@ Include the script and call `init()` near the existing bridge / usernames includ
 <script src="/usernode-bridge.js"></script>
 <script src="/usernode-usernames.js"></script>
 <script src="/usernode-loading.js"></script>
-<script>UsernodeLoading.init({ appName: "Echo" });</script>
+<script>UsernodeLoading.init({ appName: "Echo", streamKey: "echo" });</script>
 ```
 
 `init(opts)` accepts:
@@ -748,12 +748,36 @@ Include the script and call `init()` near the existing bridge / usernames includ
 | Option | Default | Description |
 |---|---|---|
 | `appName` | `document.title` | Title shown in the overlay |
+| `streamKey` | none | Name of the dapp-server cache (`"lastwin"`, `"echo"`, `"om"`, etc.) whose live SSE link must also be up before the overlay dismisses. **Strongly recommended for any dapp with `useNodeStream` enabled** — without this, the overlay dismisses the moment the node reports `Synced` even if the dapp-server's per-app SSE is still in its post-boot reconnect backoff, leaving newly-sent txs stranded (they land on chain but never appear in the dapp UI). See "Per-app stream gate" below. |
 | `pollIntervalMs` | `500` | Cadence for `GET /__usernode/node_status` while the overlay is up. Endpoint is local + tiny so fast polling is cheap, and it gives intermediate states (`Connecting` → `Connected` → `Syncing`) time to surface |
 | `requireSynced` | `false` | When `true`, wait for `Synced` on every load. Default uses the trust-after-first-sync logic above |
 | `reShowOnRegression` | `false` | If `true`, the overlay re-appears when the snapshot drops back to `Connecting`/`unreachable` mid-session |
 | `onStatusChange(snap)` | none | Optional callback fired whenever the snapshot changes — useful for surfacing status into a dapp's own status bar |
 
 The loader **auto-skips** when `window.usernode.isMockEnabled()` returns true (`--local-dev`), and dismisses immediately when the probe endpoint returns 404 / `status: "mock"` / `status: "unknown"`. It only stays up when the snapshot reports a real not-yet-ready state.
+
+### Per-app stream gate (`streamKey`)
+
+Node `Synced` is the chain's readiness signal. It is **not** the same as "the dapp-server's SSE link to that node is up". Those are two independent connections with two independent retry cycles:
+
+- The probe's `node-status` poll updates within ~500ms of the node coming up.
+- The dapp-server's per-app `createNodeRecentTxStream` (used for the `recipient` queryField when `useNodeStream` is on, which is the default whenever `nodeRpcUrl` is set) has a **30s reconnect backoff** after each failure — and it fails immediately on every poll/SSE attempt while the node is still booting.
+
+So during the boot race, this race is reachable: node finishes booting → probe flips to `Synced` → loader dismisses → user clicks "send" → tx is included on chain (visible in the wallet UI) → but the dapp-server's SSE is still asleep waiting on its 30s timer → the tx never lands in the dapp's cache → bridge times out polling for inclusion → "Sending forever".
+
+Wiring `streamKey` closes this gap. The loader keeps the overlay up until both the node says `Synced` **and** `snapshot.streams[streamKey] === true`. The cache reports `streamReady = backfillDone && (no SSE || sseSocketOpen && trackedOwnerRegistered)`. Failing open is built in: if the server hasn't registered `streamKey` (older deploy, typo, etc.) the loader treats it as "nothing to wait for" rather than hanging forever.
+
+To wire the server side, register each cache with the probe before starting it:
+
+```js
+const nodeStatusProbe = createNodeStatusProbe({ nodeRpcUrl, localDev });
+nodeStatusProbe.registerStream("lastwin", () => lastwinCache.isStreamReady());
+nodeStatusProbe.registerStream("echo", () => echoCache.isStreamReady());
+nodeStatusProbe.registerStream("usernames", () => usernamesCache.isStreamReady());
+nodeStatusProbe.start();
+```
+
+The lambda is read fresh on every snapshot, so registering before the cache exists (e.g. caches built inside an async IIFE) is safe — it just returns false until `cache` is assigned.
 
 ### Server (one helper per server)
 
@@ -782,6 +806,11 @@ The snapshot served at `GET /__usernode/node_status` looks like:
   "peerBestTipHeight": 12483,      // max across connected peers — drives the % bar
   "error":             null,
   "hasBeenSynced":     true,       // latched true once probe observes `Synced`; resets on server restart
+  "streams": {                     // per-dapp readiness — see streamKey above
+    "lastwin":   true,
+    "echo":      true,
+    "usernames": true
+  },
   "at":                1714672193412
 }
 ```
@@ -790,7 +819,9 @@ The snapshot served at `GET /__usernode/node_status` looks like:
 
 ### When to skip the loader
 
-Skip it when the dapp already gates its UI on something else (e.g. falling-sands' WASM loader). Layering two overlays adds no information.
+Skip the shared `usernode-loading.js` overlay when the dapp already has its own loading UI that owns the page-load gate (e.g. falling-sands has a WASM/replay loading bar). **But the chain-readiness check still has to happen** — silent degradation during a node/SSE outage is the failure mode `streamKey` exists to prevent.
+
+The pattern is: keep the dapp's own loading UI, but extend it to also poll `/__usernode/node_status` and only dismiss when both the dapp-side init AND the chain-readiness gate pass. Reuse the same trust-after-first-sync logic from `usernode-loading.js`'s `shouldDismiss()` — `Synced` plus `streams[streamKey] === true`, or `hasBeenSynced` + `Connected`/`Syncing` + `streams[streamKey] === true`. Falling-sands' `pollChainReady()` in `examples/falling-sands/index.html` is the reference implementation.
 
 ---
 

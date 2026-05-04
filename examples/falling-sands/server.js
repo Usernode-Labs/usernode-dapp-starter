@@ -55,7 +55,6 @@ const nodeStatusProbe = createNodeStatusProbe({
   nodeRpcUrl: NODE_RPC_URL,
   localDev: LOCAL_DEV,
 });
-nodeStatusProbe.start();
 
 // ── Async init (discover chain info, run engine-owned backfill, then wire cache) ──
 //
@@ -67,6 +66,12 @@ nodeStatusProbe.start();
 // exactly where the engine's replay ended.
 let engine = null;
 let engineCache = null;
+
+// Register the sands stream lazily — engineCache is null until the IIFE
+// below builds it. Lambda is read fresh on every snapshot, so it returns
+// false during replay and tracks real readiness once the cache exists.
+nodeStatusProbe.registerStream("sands", () => !!engineCache && engineCache.isStreamReady());
+nodeStatusProbe.start();
 
 (async function init() {
   const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
