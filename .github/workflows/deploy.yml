@@ -10,129 +10,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ----------------------------------------------------------------------
-      # Archive snapshot: fetch from a testnet seed and stream into the
-      # `examples_node-archive` docker volume on prod BEFORE the deploy step
-      # brings the stack up.
+      # Single SSH session into prod that does:
+      #   1. git pull dapp-starter (brings new code + vendored scripts)
+      #   2. write .env from secrets
+      #   3. fetch a fresh archive snapshot from testnet-seed1 directly
+      #      (uses prod's existing SSH access to the seed; no GH-runner-side
+      #      seed key required)
+      #   4. stream the snapshot into the examples_node-archive docker volume
+      #      (or fail-fast if the fetch failed AND the existing volume is
+      #      empty, to avoid silently degrading to partial-ledger mode and
+      #      re-triggering PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG)
+      #   5. docker compose up the dapp + sidecar node
       #
-      # Why: PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md — the dapp sidecar runs
-      # in partial-ledger mode by default (the `--wallet-owner` flags trigger
-      # the wallet-seed shortcut, which hydrates a partial UTXO overlay
-      # instead of the full tree). That breaks `RecentTxEntry.source`
-      # resolution for ~half the inbound traffic. Booting from a full
-      # archive snapshot fixes it: the node loads the full tree at startup,
-      # and from then on every block is applied in full mode and source
-      # resolution is authoritative.
+      # Required GitHub Actions secrets:
+      #   SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY  - prod
+      #   DEPLOY_PATH                            - prod path to repo
+      #   APP_*, ECHO_*, OM_*, SANDS_*,          - dapp config
+      #   USERNAMES_*, VOTE_ENCRYPT_SEED,
+      #   USERNODE_IMAGE
       #
-      # Required GitHub Actions secrets (one-time setup):
-      #   SEED_SSH_KEY    — private key authorized on testnet-seed1
-      #                     (matches the public key in seed1's authorized_keys)
-      #   GH_PAT_USERNODE — PAT with `repo` scope on Usernode-Labs/usernode
-      #                     (only needed if the repo stays private; remove
-      #                     the `token:` line below if it's public)
-      #
-      # Existing secrets reused: SSH_KEY, SSH_HOST, SSH_PORT, SSH_USER.
-      #
-      # The fetch+stream pipeline is ~1–2 min for a several-hundred-MB
-      # snapshot. Skipping it (e.g. seed temporarily unreachable) is safe
-      # because the node has `--archive` and persists snapshots itself —
-      # the existing volume just gets reused.
-      # ----------------------------------------------------------------------
-      - name: Checkout usernode (for fetch-archive-snapshot.sh)
-        uses: actions/checkout@v4
-        with:
-          repository: Usernode-Labs/usernode
-          path: usernode-src
-          token: ${{ secrets.GH_PAT_USERNODE }}
-
-      - name: Configure SSH (testnet seeds + prod)
-        env:
-          SEED_SSH_KEY: ${{ secrets.SEED_SSH_KEY }}
-          PROD_SSH_KEY: ${{ secrets.SSH_KEY }}
-          PROD_HOST:    ${{ secrets.SSH_HOST }}
-          PROD_PORT:    ${{ secrets.SSH_PORT }}
-          PROD_USER:    ${{ secrets.SSH_USER }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SEED_SSH_KEY" > ~/.ssh/seed_key && chmod 600 ~/.ssh/seed_key
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/prod_key && chmod 600 ~/.ssh/prod_key
-          cat > ~/.ssh/config <<EOF
-          Host testnet-seed1
-            HostName 65.109.68.86
-            User usernode
-            IdentityFile ~/.ssh/seed_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-          Host testnet-seed2
-            HostName 65.109.99.245
-            User usernode
-            IdentityFile ~/.ssh/seed_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-          Host prod
-            HostName ${PROD_HOST}
-            Port ${PROD_PORT}
-            User ${PROD_USER}
-            IdentityFile ~/.ssh/prod_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-          EOF
-          chmod 600 ~/.ssh/config
-
-      - name: Fetch archive snapshot from testnet-seed1
-        id: fetch_archive
-        continue-on-error: true
-        run: |
-          set -euxo pipefail
-          mkdir -p ./archive-staging
-          ./usernode-src/scripts/fetch-archive-snapshot.sh testnet-seed1 ./archive-staging --replace
-          echo "==> Staged archive size:"
-          du -sh archive-staging
-
-      - name: Stream archive into prod docker volume
-        if: steps.fetch_archive.outcome == 'success'
-        run: |
-          set -euxo pipefail
-          # Stream the staged snapshot over SSH directly into a one-shot
-          # alpine container that writes into the `examples_node-archive`
-          # named volume on prod. No intermediate tarball ever lives on
-          # the prod box.
-          #
-          # `examples_node-archive` is the default compose-derived volume
-          # name (project = `examples` from the compose file's parent dir,
-          # service-volume = `node-archive`). If you ever set
-          # COMPOSE_PROJECT_NAME or `name:` in the compose file, update
-          # the volume name here to match.
-          tar -czf - -C archive-staging . | ssh prod \
-            'docker run --rm -i -v examples_node-archive:/archive alpine sh -c "rm -rf /archive/* && tar -xzf - -C /archive && echo \"==> Volume populated: $(du -sh /archive | cut -f1)\""'
-
-      - name: Verify prod has a usable existing archive (fail-fast on degradation)
-        if: steps.fetch_archive.outcome != 'success'
-        run: |
-          set -euo pipefail
-          # Fetch failed. The sidecar's --archive flag will self-write new
-          # snapshots over time, so a non-empty existing volume is fine to
-          # reuse. But an EMPTY volume means the sidecar boots without an
-          # archive → wallet-seed shortcut → partial-ledger mode → the
-          # original RecentTxEntry.source = null bug, which silently breaks
-          # every dapp that filters on `from`. Better to fail the deploy
-          # loudly than to ship that.
-          echo "==> Fetch failed; probing existing archive on prod..."
-          ARCHIVE_SIZE=$(
-            ssh prod \
-              'docker run --rm -v examples_node-archive:/archive alpine du -sb /archive 2>/dev/null | cut -f1' \
-            || echo 0
-          )
-          echo "==> Existing archive size on prod: ${ARCHIVE_SIZE:-0} bytes"
-          # A live archive (chain_id + checkpoint binprots + blocks dir) is
-          # tens to hundreds of MB. Anything under 1 MB is effectively empty
-          # (likely just the volume's lost+found or a stale chain_id stub).
-          if [ "${ARCHIVE_SIZE:-0}" -lt 1000000 ]; then
-            echo "::error::Archive fetch from testnet-seed1 failed AND prod has no usable existing archive (${ARCHIVE_SIZE:-0} bytes). Refusing to deploy a partial-ledger sidecar — that would silently break every dapp via PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG. Fix the seed access (or pre-seed the volume manually) and re-run."
-            exit 1
-          fi
-          echo "::warning::Archive fetch failed but prod has an existing archive (${ARCHIVE_SIZE} bytes from a previous deploy or self-write). Continuing with that snapshot — sidecar will boot in full mode."
-
+      # Required prod-side prerequisites:
+      #   - prod can `ssh testnet-seed1` (the script's default target).
+      #     Verify with `ssh prod 'ssh -o BatchMode=yes -o ConnectTimeout=5
+      #     testnet-seed1 echo ok'` — should print `ok`. If not, configure
+      #     ~/.ssh/config on prod to map `testnet-seed1` to the seed host
+      #     with an identity file that's authorized there. Match what
+      #     usernode/scripts/fetch-archive-snapshot.sh expects.
+      #   - prod has docker + bash + tar + ssh + scp (it already does;
+      #     the existing deploy uses all of these).
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
@@ -140,6 +45,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          command_timeout: 30m
           script: |
             set -euxo pipefail
             REPO_DIR=${{ secrets.DEPLOY_PATH }}
@@ -148,16 +54,17 @@ jobs:
             echo "==> Git status:"
             git status --short
 
+            echo "==> Pulling latest code..."
+            git pull --recurse-submodules
+            git submodule update --init --recursive
+
             echo "==> Writing .env from secrets..."
             # SANDS_APP_PUBKEY / OM_APP_PUBKEY / USERNAMES_PUBKEY are public
             # addresses (no secret-key counterparts) but routed through GH
             # secrets to keep the .env writer single-sourced.
             #
             # USERNODE_IMAGE is optional: leave the secret unset (or empty)
-            # and compose falls back to `usernodelabs/usernode:latest`. Set
-            # it to e.g. `ghcr.io/your-org/usernode:my-branch` to run a
-            # locally-built image on prod (must be linux/amd64; see the
-            # `usernode-image-amd64` Make target).
+            # and compose falls back to `usernodelabs/usernode:latest`.
             cat > .env <<'ENVEOF'
             APP_PUBKEY=${{ secrets.APP_PUBKEY }}
             APP_SECRET_KEY=${{ secrets.APP_SECRET_KEY }}
@@ -173,9 +80,57 @@ jobs:
             sed -i 's/^[[:space:]]*//' .env
             echo "==> .env written ($(wc -l < .env) lines)"
 
-            echo "==> Pulling latest code..."
-            git pull --recurse-submodules
-            git submodule update --init --recursive
+            # ----------------------------------------------------------
+            # Archive snapshot: fetch from testnet-seed1 directly from
+            # prod (reuses prod's existing seed SSH access — no GH-runner-
+            # side key needed). Why: PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md
+            # — the sidecar's `--wallet-owner` flags trigger the wallet-
+            # seed shortcut (partial-ledger overlay) by default. Booting
+            # from a full archive snapshot fixes it: node loads the full
+            # tree at startup and applies every subsequent block in full
+            # mode, so RecentTxEntry.source is authoritative.
+            # ----------------------------------------------------------
+            STAGING_DIR="/tmp/usernode-archive-staging-$$"
+            ARCHIVE_VOLUME="examples_node-archive"
+            FETCH_OK=0
+
+            echo "==> Fetching fresh archive snapshot from testnet-seed1..."
+            mkdir -p "$STAGING_DIR"
+            if ./scripts/fetch-archive-snapshot.sh testnet-seed1 "$STAGING_DIR" --replace; then
+              FETCH_OK=1
+              echo "==> Staged archive size:"
+              du -sh "$STAGING_DIR"
+            else
+              echo "==> WARNING: archive fetch from testnet-seed1 failed."
+            fi
+
+            if [ "$FETCH_OK" = "1" ]; then
+              echo "==> Streaming staged snapshot into docker volume $ARCHIVE_VOLUME..."
+              # One-shot alpine container that wipes the existing volume
+              # contents and unpacks the fresh snapshot in place.
+              tar -czf - -C "$STAGING_DIR" . | docker run --rm -i \
+                -v "$ARCHIVE_VOLUME:/archive" alpine \
+                sh -c 'rm -rf /archive/* /archive/.[!.]* /archive/..?* 2>/dev/null; tar -xzf - -C /archive && echo "==> Volume populated: $(du -sh /archive | cut -f1)"'
+              rm -rf "$STAGING_DIR"
+            else
+              # Fetch failed. The sidecar's --archive flag will self-write
+              # new snapshots over time, so a non-empty existing volume is
+              # fine to reuse. But an EMPTY volume means the sidecar boots
+              # without an archive → wallet-seed shortcut → partial-ledger
+              # mode → silent dapp breakage. Fail loudly instead.
+              echo "==> Probing existing archive volume..."
+              ARCHIVE_SIZE=$(docker run --rm -v "$ARCHIVE_VOLUME:/archive" alpine du -sb /archive 2>/dev/null | cut -f1 || echo 0)
+              echo "==> Existing archive size: ${ARCHIVE_SIZE:-0} bytes"
+              # A live archive (chain_id + checkpoint binprots + blocks dir)
+              # is tens to hundreds of MB. Anything under 1 MB is effectively
+              # empty (likely just a stale chain_id stub).
+              if [ "${ARCHIVE_SIZE:-0}" -lt 1000000 ]; then
+                echo "::error::Archive fetch from testnet-seed1 FAILED and prod has no usable existing archive (${ARCHIVE_SIZE:-0} bytes). Refusing to deploy a partial-ledger sidecar — that would silently break every dapp via PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG. Fix prod's SSH access to testnet-seed1 (or pre-seed the volume manually) and re-run."
+                rm -rf "$STAGING_DIR"
+                exit 1
+              fi
+              echo "::warning::Archive fetch failed but prod has an existing archive (${ARCHIVE_SIZE} bytes from a previous deploy or self-write). Continuing with that snapshot — sidecar will boot in full mode."
+            fi
 
             echo "==> Stopping old containers..."
             docker compose down || true
@@ -186,19 +141,18 @@ jobs:
 
             echo "==> Deploying combined examples server..."
             cd "$REPO_DIR/examples"
-            # --env-file ../.env feeds compose-time ${VAR} substitution (e.g.
-            # --wallet-owner ${APP_PUBKEY}). Without it, compose only reads
-            # examples/.env (doesn't exist) and substitutes empty strings,
-            # which crashes the node sidecar with a bech32 parse error.
+            # --env-file ../.env feeds compose-time ${VAR} substitution
+            # (e.g. --wallet-owner ${APP_PUBKEY}). Without it, compose only
+            # reads examples/.env (doesn't exist) and substitutes empty
+            # strings, which crashes the node sidecar with a bech32 parse
+            # error.
             COMPOSE="docker compose --env-file ../.env"
             $COMPOSE down || true
             echo "==> Pulling latest node sidecar image..."
             # Tolerant of failure: if USERNODE_IMAGE points at a tag that
             # only exists locally (e.g. `usernode:local-amd64` from a
             # one-off `docker save`/`docker load`), `pull` will 404 — but
-            # `up -d` will still find the image in the local daemon. We
-            # only want to abort if the image is genuinely unavailable,
-            # which `up -d` reports clearly.
+            # `up -d` will still find the image in the local daemon.
             $COMPOSE pull node || echo "==> pull skipped (image may be local-only); continuing"
             $COMPOSE up -d --build 2>&1
             $COMPOSE ps
