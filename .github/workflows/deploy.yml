@@ -106,10 +106,32 @@ jobs:
           tar -czf - -C archive-staging . | ssh prod \
             'docker run --rm -i -v examples_node-archive:/archive alpine sh -c "rm -rf /archive/* && tar -xzf - -C /archive && echo \"==> Volume populated: $(du -sh /archive | cut -f1)\""'
 
-      - name: Note if archive fetch was skipped
+      - name: Verify prod has a usable existing archive (fail-fast on degradation)
         if: steps.fetch_archive.outcome != 'success'
         run: |
-          echo "::warning::Archive fetch from testnet-seed1 failed; deploy will reuse whatever is already in the node-archive volume on prod. The node has --archive (read+write) so this is safe as long as the volume is not empty. If this is a fresh deploy, the node will start with no archive and produce a partial-ledger sidecar (the bug returns until the next successful fetch)."
+          set -euo pipefail
+          # Fetch failed. The sidecar's --archive flag will self-write new
+          # snapshots over time, so a non-empty existing volume is fine to
+          # reuse. But an EMPTY volume means the sidecar boots without an
+          # archive → wallet-seed shortcut → partial-ledger mode → the
+          # original RecentTxEntry.source = null bug, which silently breaks
+          # every dapp that filters on `from`. Better to fail the deploy
+          # loudly than to ship that.
+          echo "==> Fetch failed; probing existing archive on prod..."
+          ARCHIVE_SIZE=$(
+            ssh prod \
+              'docker run --rm -v examples_node-archive:/archive alpine du -sb /archive 2>/dev/null | cut -f1' \
+            || echo 0
+          )
+          echo "==> Existing archive size on prod: ${ARCHIVE_SIZE:-0} bytes"
+          # A live archive (chain_id + checkpoint binprots + blocks dir) is
+          # tens to hundreds of MB. Anything under 1 MB is effectively empty
+          # (likely just the volume's lost+found or a stale chain_id stub).
+          if [ "${ARCHIVE_SIZE:-0}" -lt 1000000 ]; then
+            echo "::error::Archive fetch from testnet-seed1 failed AND prod has no usable existing archive (${ARCHIVE_SIZE:-0} bytes). Refusing to deploy a partial-ledger sidecar — that would silently break every dapp via PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG. Fix the seed access (or pre-seed the volume manually) and re-run."
+            exit 1
+          fi
+          echo "::warning::Archive fetch failed but prod has an existing archive (${ARCHIVE_SIZE} bytes from a previous deploy or self-write). Continuing with that snapshot — sidecar will boot in full mode."
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
