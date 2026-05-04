@@ -657,10 +657,20 @@ function createEngine(opts) {
     try { memo = typeof rawTx.memo === "string" ? JSON.parse(rawTx.memo) : rawTx.memo; }
     catch (_) { return; }
     const from = rawTx.source || rawTx.from_pubkey || rawTx.from || "unknown";
-    const txId = rawTx.tx_id || rawTx.id || rawTx.txid || rawTx.hash || rawTx.tx_hash || "";
     const timestampMs = rawTx.timestamp_ms || (rawTx.created_at ? Date.parse(rawTx.created_at) : Date.now());
-    applyDrawMemo(memo, `${from.slice(0, 16)}… (${txId ? txId.slice(0, 8) + "…" : "mock"})`);
-    addTransaction({ timestamp_ms: timestampMs, memo, from });
+    // Hand the memo to addTransaction and let it run the canonical path:
+    //   tick forward to drawTick → applyDrawMemo → broadcast.
+    // Painting here too would consume mulberry32 (Cell::new draws Math.random
+    // for `ra`) on the server but not on clients (clients only paint at the
+    // broadcast tick), causing the shared host PRNG to drift between server
+    // and client and breaking cell-init and species-paths that mix Math.random
+    // (fungus / fire / plant / seed cascades).
+    addTransaction({
+      timestamp_ms: timestampMs,
+      inclusion_latency_ms: rawTx.inclusion_latency_ms,
+      memo,
+      from,
+    });
   }
 
   function reset() {

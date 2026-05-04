@@ -176,11 +176,24 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // Serve the WASM binary
+  // Serve the WASM binary. Revalidate via ETag (mtime+size) on every load
+  // so a stale browser-cached module can't silently drift the client physics
+  // away from the server's after a deploy. Same fix as in examples/server.js.
   if (pathname === "/sandtable_bg.wasm") {
     try {
+      const stat = fs.statSync(WASM_PATH);
+      const etag = `"${stat.size.toString(16)}-${stat.mtimeMs.toString(36)}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { "ETag": etag, "Cache-Control": "no-cache" });
+        res.end();
+        return;
+      }
       const buf = fs.readFileSync(WASM_PATH);
-      return send(res, 200, { "Content-Type": MIME_TYPES[".wasm"], "Cache-Control": "public, max-age=86400" }, buf);
+      return send(res, 200, {
+        "Content-Type": MIME_TYPES[".wasm"],
+        "Cache-Control": "no-cache",
+        "ETag": etag,
+      }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read WASM: " + e.message);
     }

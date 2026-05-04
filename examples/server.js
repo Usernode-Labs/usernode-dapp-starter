@@ -423,10 +423,28 @@ const server = http.createServer((req, res) => {
   }
 
   // Falling-sands WASM binary
+  //
+  // Revalidate on every load via ETag (mtime+size). The previous
+  // `Cache-Control: public, max-age=86400` allowed browser tabs to keep a
+  // stale WASM for up to 24h after a deploy, which silently drifted client
+  // physics from server physics until a hard refresh — same failure mode as
+  // the mulberry32-drift issue, but rooted in a different module version.
   if (pathname === "/sandtable_bg.wasm" || pathname === "/falling-sands/sandtable_bg.wasm") {
     try {
-      const buf = fs.readFileSync(path.join(__dirname, "falling-sands", "sandspiel", "crate", "pkg", "sandtable_bg.wasm"));
-      return send(res, 200, { "Content-Type": "application/wasm", "Cache-Control": "public, max-age=86400" }, buf);
+      const wasmFilePath = path.join(__dirname, "falling-sands", "sandspiel", "crate", "pkg", "sandtable_bg.wasm");
+      const stat = fs.statSync(wasmFilePath);
+      const etag = `"${stat.size.toString(16)}-${stat.mtimeMs.toString(36)}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { "ETag": etag, "Cache-Control": "no-cache" });
+        res.end();
+        return;
+      }
+      const buf = fs.readFileSync(wasmFilePath);
+      return send(res, 200, {
+        "Content-Type": "application/wasm",
+        "Cache-Control": "no-cache",
+        "ETag": etag,
+      }, buf);
     } catch (e) {
       return send(res, 500, { "Content-Type": "text/plain" }, "Failed to read WASM: " + e.message);
     }
