@@ -57,6 +57,12 @@ const SANDS_APP_PUBKEY =
   process.env.SANDS_APP_PUBKEY ||
   "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 
+// Pubkey permitted to issue `{ app: "falling-sands", type: "reset" }`
+// memos. Unset → no admin and the client never shows the reset UI.
+// engine.js enforces this in both the live `addTransaction` path and the
+// historical replay pass.
+const SANDS_ADMIN_PUBKEY = process.env.SANDS_ADMIN_PUBKEY || null;
+
 // ── Static file paths (with fallbacks for local dev vs Docker) ───────────────
 const BRIDGE_PATH = resolvePath(path.join(__dirname, "usernode-bridge.js"), path.join(__dirname, "..", "usernode-bridge.js"));
 const USERNAMES_PATH = resolvePath(path.join(__dirname, "usernode-usernames.js"), path.join(__dirname, "..", "usernode-usernames.js"));
@@ -198,6 +204,7 @@ let sandsCache = null;
     wasmLoaderPath: require.resolve("./falling-sands/wasm-loader"),
     chainId: chainInfo.chainId,
     epoch: chainInfo.genesisTimestampMs,
+    adminPubkey: SANDS_ADMIN_PUBKEY,
     replayTxs,
   };
   if (process.env.SNAPSHOT_DIR) {

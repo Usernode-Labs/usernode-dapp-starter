@@ -49,6 +49,11 @@ function createEngine(opts) {
   const snapshotDir = (opts && opts.snapshotDir) || __dirname;
   const chainId = (opts && opts.chainId) || null;
   const TICK_EPOCH = (opts && opts.epoch) || DEFAULT_TICK_EPOCH;
+  // Pubkey permitted to issue `{ app: "falling-sands", type: "reset" }`
+  // memos. Any reset memo from a different sender is silently ignored
+  // (both live and during historical replay), so only the configured
+  // admin can wipe the shared canvas back to its seeded default.
+  const adminPubkey = (opts && opts.adminPubkey) || null;
 
   function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERVAL_MS); }
   function tickToTimestamp(tick) { return TICK_EPOCH + tick * TICK_INTERVAL_MS; }
@@ -64,11 +69,30 @@ function createEngine(opts) {
 
   const universe = Universe.new(WIDTH, HEIGHT);
 
-  const { sourcesEnabled } = seedUniverse(universe, Species, memory, {
+  // Captured once so reseedUniverse() (the reset path) can reproduce the
+  // same starting content as engine boot — source placements, cup walls,
+  // flag bits. Must stay in sync with the initial seedUniverse call below.
+  const seedOpts = {
     openBottom: process.env.FALLING_SANDS_OPEN_BOTTOM !== "false",
     sources: process.env.FALLING_SANDS_SOURCES !== "false",
     plantAbsorbs: process.env.FALLING_SANDS_PLANT_ABSORBS !== "false",
-  });
+  };
+
+  const { sourcesEnabled } = seedUniverse(universe, Species, memory, seedOpts);
+
+  // Resets the universe back to its initial seeded content. Called when
+  // an admin reset memo is applied (live or during replay). Wipes cells
+  // (universe.reset), zeros the burns buffer (seedUniverse only handles
+  // cells + winds), and re-runs the initial seeding so sources and
+  // cup walls come back. Leaves prng / rng_state / generation where
+  // they are — determinism across server + clients is maintained via the
+  // captured snapshot broadcast, not by rewinding the PRNGs to genesis.
+  function reseedUniverse() {
+    universe.reset();
+    const burnsPtr = universe.burns();
+    new Uint8Array(memory.buffer, burnsPtr, FRAME_SIZE).fill(0);
+    seedUniverse(universe, Species, memory, seedOpts);
+  }
 
   // ── Tick state ──────────────────────────────────────────────────────────
 
@@ -106,6 +130,24 @@ function createEngine(opts) {
       }
     }
     console.log(`[chain] applied drawing: ${memo.s.length} stroke(s) from ${fromLabel}`);
+    return true;
+  }
+
+  // True iff this memo is an admin-authored reset command. Enforced at
+  // the memo level — any sender that isn't the configured adminPubkey is
+  // ignored (we still log so operators can see the attempt). Returning
+  // false here means the caller should treat the memo as a no-op, same
+  // as an unrecognised memo shape.
+  function isAdminResetMemo(memo, fromPubkey) {
+    if (!memo || memo.app !== "falling-sands" || memo.type !== "reset") return false;
+    if (!adminPubkey) {
+      console.warn(`[reset] ignoring reset memo from ${fromPubkey || "?"} — no SANDS_ADMIN_PUBKEY configured`);
+      return false;
+    }
+    if (fromPubkey !== adminPubkey) {
+      console.warn(`[reset] ignoring reset memo from ${(fromPubkey || "?").slice(0, 16)}… — not admin`);
+      return false;
+    }
     return true;
   }
 
@@ -250,21 +292,29 @@ function createEngine(opts) {
     tickCount = 0;
   }
 
-  // Parse replay txs: extract timestamp + drawing memo, filter to sands draws
-  const replayDraws = [];
+  // Parse replay txs: extract timestamp + drawing memo, filter to sands
+  // events (draws + admin resets). Resets from non-admin senders are
+  // filtered here so the replay loop doesn't need a second validation
+  // pass. `kind` is either "draw" or "reset".
+  const replayEvents = [];
   for (const tx of replayTxs) {
     try {
       if (!tx.memo) continue;
       const memo = typeof tx.memo === "string" ? JSON.parse(tx.memo) : tx.memo;
-      if (memo.app !== "falling-sands" || memo.type !== "draw") continue;
+      if (memo.app !== "falling-sands") continue;
+      const from = tx.source || tx.from_pubkey || "chain";
+      let kind = null;
+      if (memo.type === "draw") kind = "draw";
+      else if (memo.type === "reset" && isAdminResetMemo(memo, from)) kind = "reset";
+      if (!kind) continue;
       const ts = tx.timestamp_ms || (tx.created_at ? Date.parse(tx.created_at) : 0);
       if (!ts) continue;
       const txTick = computeDrawTick({ timestamp_ms: ts, inclusion_latency_ms: tx.inclusion_latency_ms });
       if (txTick <= tickCount) continue;
-      replayDraws.push({ tick: txTick, memo, from: tx.source || tx.from_pubkey || "chain" });
+      replayEvents.push({ tick: txTick, memo, from, kind });
     } catch (_) {}
   }
-  replayDraws.sort((a, b) => a.tick - b.tick);
+  replayEvents.sort((a, b) => a.tick - b.tick);
 
   // Genesis window: simulate 10 min from wherever we start
   activeUntilTick = tickCount + WINDOW_TICKS;
@@ -297,6 +347,7 @@ function createEngine(opts) {
     const replayT0 = Date.now();
     let lastProgressLog = replayT0;
     let drawsApplied = 0;
+    let resetsApplied = 0;
     let physicsTicksSimulated = 0;
     let ticksSkipped = 0;
 
@@ -306,7 +357,9 @@ function createEngine(opts) {
 
     {
       const fromLabel = snapshotLoaded ? `snapshot tick ${tickCount}` : "genesis (tick 0)";
-      console.log(`[replay] starting from ${fromLabel}, timeline span ${totalSpan} ticks (${(totalSpan / TICK_HZ).toFixed(1)}s), ${replayDraws.length} draw txs, window=${WINDOW_SECONDS}s`);
+      const nDraws = replayEvents.filter(e => e.kind === "draw").length;
+      const nResets = replayEvents.filter(e => e.kind === "reset").length;
+      console.log(`[replay] starting from ${fromLabel}, timeline span ${totalSpan} ticks (${(totalSpan / TICK_HZ).toFixed(1)}s), ${nDraws} draw txs, ${nResets} admin reset txs, window=${WINDOW_SECONDS}s`);
     }
 
     // Tuned so the entire combined examples server (HTTP, /__usernames/state,
@@ -334,31 +387,41 @@ function createEngine(opts) {
         if (now - lastProgressLog >= 2000) {
           const elapsed = ((now - replayT0) / 1000).toFixed(1);
           const rate = physicsTicksSimulated > 0 ? (physicsTicksSimulated / ((now - replayT0) / 1000)).toFixed(0) : "?";
-          console.log(`[replay] tick ${tickCount} — ${elapsed}s elapsed — ${rate} ticks/s — ${physicsTicksSimulated} simulated, ${ticksSkipped} skipped — ${drawsApplied}/${replayDraws.length} draws`);
+          console.log(`[replay] tick ${tickCount} — ${elapsed}s elapsed — ${rate} ticks/s — ${physicsTicksSimulated} simulated, ${ticksSkipped} skipped — ${drawsApplied}/${replayEvents.length} draws, ${resetsApplied} resets`);
           lastProgressLog = now;
         }
       }
     }
 
-    for (const draw of replayDraws) {
-      const drawTick = Math.min(draw.tick, nowTick);
+    for (const ev of replayEvents) {
+      const evTick = Math.min(ev.tick, nowTick);
 
-      if (drawTick > activeUntilTick) {
+      if (evTick > activeUntilTick) {
         const windowEnd = Math.min(activeUntilTick, nowTick);
         if (tickCount < windowEnd) await advancePhysicsTo(windowEnd);
-        const gap = drawTick - tickCount;
+        const gap = evTick - tickCount;
         if (gap > 0) {
           ticksSkipped += gap;
-          tickCount = drawTick;
+          tickCount = evTick;
         }
       } else {
-        if (tickCount < drawTick) await advancePhysicsTo(drawTick);
+        if (tickCount < evTick) await advancePhysicsTo(evTick);
       }
 
-      activeUntilTick = Math.max(activeUntilTick, drawTick + WINDOW_TICKS);
-
-      applyDrawMemo(draw.memo, `${(draw.from || "").slice(0, 16)}… (replay)`);
-      drawsApplied++;
+      if (ev.kind === "reset") {
+        // Wipe everything applied before this point in history — the reset
+        // is the authoritative boundary. Physics window restarts from the
+        // reset tick so the subsequent draws aren't stranded in a frozen
+        // state during the replay.
+        reseedUniverse();
+        activeUntilTick = tickCount + WINDOW_TICKS;
+        resetsApplied++;
+        console.log(`[replay] applied admin reset at tick ${tickCount} by ${(ev.from || "").slice(0, 16)}…`);
+      } else {
+        activeUntilTick = Math.max(activeUntilTick, evTick + WINDOW_TICKS);
+        applyDrawMemo(ev.memo, `${(ev.from || "").slice(0, 16)}… (replay)`);
+        drawsApplied++;
+      }
 
       // Update progress after skips (which are instant)
       replayProgress = Math.min(0.99, (tickCount - replayStartTick) / totalSpan);
@@ -375,7 +438,7 @@ function createEngine(opts) {
 
     {
       const elapsed = ((Date.now() - replayT0) / 1000).toFixed(1);
-      console.log(`[replay] complete in ${elapsed}s — ${physicsTicksSimulated} ticks simulated (${(physicsTicksSimulated / TICK_HZ).toFixed(1)}s of physics), ${ticksSkipped} skipped — ${drawsApplied} draws applied — canonical tick ${tickCount}`);
+      console.log(`[replay] complete in ${elapsed}s — ${physicsTicksSimulated} ticks simulated (${(physicsTicksSimulated / TICK_HZ).toFixed(1)}s of physics), ${ticksSkipped} skipped — ${drawsApplied} draws applied, ${resetsApplied} admin resets applied — canonical tick ${tickCount}`);
     }
 
     captureSnapshot();
@@ -400,6 +463,45 @@ function createEngine(opts) {
 
   // ── Transaction management ──────────────────────────────────────────────
 
+  // Advances the canonical tick counter to `targetTick`, running physics
+  // if we're still inside the active window and jumping past any frozen
+  // gap (matching the draw-path behaviour so draws and resets share
+  // identical time-advancement semantics).
+  function advanceToTick(targetTick) {
+    if (targetTick > tickCount && targetTick > activeUntilTick) {
+      tickCount = targetTick;
+    } else if (targetTick > tickCount) {
+      const target = Math.min(targetTick, activeUntilTick);
+      while (tickCount < target) {
+        universe.tick();
+        tickCount++;
+      }
+      if (targetTick > tickCount) tickCount = targetTick;
+    }
+  }
+
+  // Apply an admin reset live: advance the sim clock to the reset's
+  // canonical tick, wipe the universe back to its seeded content, clear
+  // the per-snapshot tx log (nothing pre-reset should reach a freshly
+  // connecting client), capture + persist the new canonical state, and
+  // push it to every already-connected client as a `resync`. Starts a
+  // fresh physics window from the reset tick so users see motion instead
+  // of reconnecting into a frozen canvas.
+  function applyResetLive(tx) {
+    const resetTick = computeDrawTick(tx);
+    advanceToTick(resetTick);
+
+    reseedUniverse();
+    activeUntilTick = tickCount + WINDOW_TICKS;
+
+    transactionsSinceSnapshot = [];
+    captureSnapshot();
+    saveSnapshotToDisk();
+    broadcastResync();
+
+    console.log(`[reset] admin reset applied at tick ${tickCount} by ${(tx.from || "").slice(0, 16)}…`);
+  }
+
   function addTransaction(txData) {
     const tx = {
       timestamp_ms: txData.timestamp_ms || Date.now(),
@@ -409,20 +511,22 @@ function createEngine(opts) {
     };
 
     const isDraw = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "draw";
+    const isReset = tx.memo && tx.memo.app === "falling-sands" && tx.memo.type === "reset";
+
+    if (isReset) {
+      if (isAdminResetMemo(tx.memo, tx.from)) {
+        applyResetLive(tx);
+      }
+      // Even when ignored (non-admin sender or no admin configured) we
+      // don't push into transactionsSinceSnapshot — replaying a rejected
+      // reset on a fresh client would be pointless and just bloats the
+      // init payload.
+      return;
+    }
 
     if (isDraw) {
       const drawTick = computeDrawTick(tx);
-
-      if (drawTick > tickCount && drawTick > activeUntilTick) {
-        tickCount = drawTick;
-      } else if (drawTick > tickCount) {
-        const target = Math.min(drawTick, activeUntilTick);
-        while (tickCount < target) {
-          universe.tick();
-          tickCount++;
-        }
-        if (drawTick > tickCount) tickCount = drawTick;
-      }
+      advanceToTick(drawTick);
 
       applyDrawMemo(tx.memo, `${(tx.from || "").slice(0, 16)}… (live)`);
 
@@ -459,6 +563,7 @@ function createEngine(opts) {
       epoch: TICK_EPOCH,
       tickHz: TICK_HZ,
       activeUntilTick,
+      adminPubkey,
     });
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && readyClients.has(client)) {
@@ -499,6 +604,11 @@ function createEngine(opts) {
       transactions: transactionsSinceSnapshot,
       frozen,
       activeUntilTick: frozen ? tickCount : activeUntilTick,
+      // Surfaced so the client can conditionally show the admin reset
+      // button without needing a separate HTTP endpoint. `null` when
+      // SANDS_ADMIN_PUBKEY isn't configured — the client treats that as
+      // "no admin".
+      adminPubkey,
     };
     safeSend(ws, JSON.stringify(initMsg));
   }

@@ -84,23 +84,28 @@
       color: #aaa;
     }
     .quick-btn.recent { flex-shrink: 0; }
-    @media (max-width: 420px) {
-      .quick-btn.recent { display: none; }
-    }
 
     #brush-label { font-size: 11px; color: #8896ab; }
     #brush-size { width: 80px; accent-color: #6ea8fe; }
 
+    /* The right slot is always reserved so the layout doesn't snap when
+       the user starts/finishes a drawing session. Width fits a compact
+       budget meter (24px) + ✕ (34px) + ✓ (34px) + two 6px gaps = 104px.
+       Children inside hide/show based on state via JS.
+       Both `flex` and `width` set defensively so neither flex sizing
+       nor any browser-specific basis fallback can collapse the slot. */
     .tb-right {
       margin-left: auto;
-      display: none;
+      display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 6px;
-      flex-shrink: 1;
-      min-width: 0;
+      flex: 0 0 104px;
+      width: 104px;
+      min-width: 104px;
+      box-sizing: border-box;
       overflow: hidden;
     }
-    .tb-right.visible { display: flex; }
     .fab {
       width: 34px; height: 34px;
       padding: 0;
@@ -155,12 +160,13 @@
     .tx-progress-bar .tx-label.err  { color: #ff6b6b; }
     .hide { display: none !important; }
     #budget-meter {
-      width: 48px;
+      width: 24px;
       height: 10px;
       background: rgba(255,255,255,0.1);
       border-radius: 5px;
       overflow: hidden;
       border: 1px solid rgba(255,255,255,0.15);
+      flex-shrink: 0;
     }
     #budget-fill {
       height: 100%;
@@ -344,6 +350,55 @@
     #info-content li { margin-bottom: 4px; }
     #info-content .muted { color: #5a6a80; }
 
+    /* Admin-only section inside the info overlay. Hidden by default; we
+       un-hide it from JS when the current user's address matches the
+       server-reported adminPubkey. Visually separated from the user-facing
+       copy above with a divider + amber accent so it's unambiguously a
+       destructive operator control, not something a normal user should
+       see and tap by accident. */
+    #admin-section {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+    }
+    #admin-section h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      color: #e6a817;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    #admin-reset-btn {
+      display: block;
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px 14px;
+      border: 1px solid rgba(255,107,107,0.4);
+      border-radius: 8px;
+      background: rgba(255,107,107,0.12);
+      color: #ff8b8b;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s, transform 0.1s;
+    }
+    #admin-reset-btn:hover { background: rgba(255,107,107,0.22); }
+    #admin-reset-btn:active { transform: scale(0.98); }
+    #admin-reset-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    #admin-reset-status {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #8896ab;
+      min-height: 14px;
+    }
+    #admin-reset-status.err { color: #ff6b6b; }
+    #admin-reset-status.ok { color: #5dd39e; }
+
     /* ── Loading overlay ──────────────────────────── */
     #loading-overlay {
       position: fixed;
@@ -415,12 +470,17 @@
   <label id="brush-label">Brush</label>
   <input id="brush-size" type="range" min="1" max="15" value="4" />
   <button class="quick-btn" id="info-btn" type="button" title="Help">?</button>
+  <!-- The .tb-right slot is always rendered so the toolbar layout
+       doesn't snap when the user starts/finishes drawing, but its
+       children start hidden — refreshFabs() reveals them only while
+       there are pending strokes (or shows the progress bar during
+       send/apply). The slot is just empty space until then. -->
   <div class="tb-right" id="fab-bar">
-    <div id="budget-meter">
+    <div id="budget-meter" style="display:none">
       <div id="budget-fill"></div>
     </div>
-    <button class="fab" id="btn-discard" title="Discard">&#x2715;</button>
-    <button class="fab" id="btn-send" title="Send">&#x2713;</button>
+    <button class="fab" id="btn-discard" title="Discard" style="display:none">&#x2715;</button>
+    <button class="fab" id="btn-send" title="Send" style="display:none">&#x2713;</button>
     <div class="tx-progress-bar hide" id="send-progress">
       <div class="tx-track"><div class="tx-fill"></div></div>
       <div class="tx-label">Sending...</div>
@@ -444,6 +504,12 @@
     </ul>
     <p>Each stroke is stored as a transaction memo on the Usernode blockchain. Your device runs the physics engine (WASM) locally.</p>
     <p class="muted">Tap anywhere outside this panel to close.</p>
+    <div id="admin-section" class="hide">
+      <h3>Admin</h3>
+      <p class="muted">You're signed in as the canvas admin. Resetting wipes everyone's drawings back to the seeded default. This is recorded on-chain as an admin reset memo.</p>
+      <button id="admin-reset-btn" type="button">Reset shared canvas</button>
+      <div id="admin-reset-status"></div>
+    </div>
   </div>
 </div>
 
@@ -637,6 +703,14 @@ function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERV
 const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
 
+// Populated from the server's WS init/resync message. null when
+// SANDS_ADMIN_PUBKEY isn't configured server-side; non-null means reset
+// memos from that address are honored and the client shows the admin UI
+// only to that user. Kept as a module-scope let so maybeShowAdminUI can
+// re-evaluate after both the bridge and the WS init arrive (whichever
+// order they land in).
+let adminPubkey = null;
+
 const EXPLORER_BASE = window.location.origin + "/explorer-api";
 (async function setupExplorer() {
   const mockEnabled = window.usernode && typeof window.usernode.isMockEnabled === "function"
@@ -694,12 +768,18 @@ let brushSize = 4;
 
 let recentIds = [1, 3, 6];
 const MAX_RECENT = 3;
+// How many recent-species swatches the quick bar is currently allowed to show.
+// fitToolbar() shrinks this whenever the toolbar would overflow the viewport
+// (narrow phones, especially when the send/discard fab-bar is visible) and
+// restores up to MAX_RECENT once there is room again.
+let recentLimit = MAX_RECENT;
 const speciesById = {};
 SPECIES.forEach(sp => { speciesById[sp.id] = sp; });
 
 const currentSwatchEl = document.getElementById("current-swatch");
 const currentNameEl   = document.getElementById("current-name");
 const currentElBtn    = document.getElementById("current-el");
+const toolbarEl       = document.getElementById("toolbar");
 const quickBar        = document.getElementById("quick-bar");
 const pickerOverlay   = document.getElementById("picker-overlay");
 const pickerGrid      = document.getElementById("picker-grid");
@@ -713,7 +793,8 @@ function refreshCurrent() {
 
 function refreshQuickBar() {
   quickBar.innerHTML = "";
-  recentIds.forEach(id => {
+  const visibleRecents = recentIds.slice(0, recentLimit);
+  visibleRecents.forEach(id => {
     const sp = speciesById[id];
     if (!sp) return;
     const btn = document.createElement("div");
@@ -729,6 +810,86 @@ function refreshQuickBar() {
   eraser.textContent = "\uD83E\uDDF9";
   eraser.addEventListener("click", () => { selectedSpecies = 0; refreshCurrent(); });
   quickBar.appendChild(eraser);
+}
+
+// Adaptive toolbar fit. The fab-bar (.tb-right) reserves a fixed 104px
+// slot via `flex: 0 0 104px` so the layout doesn't snap when the user
+// starts/finishes a drawing session — ✕/✓ + budget meter always have
+// space, and recents/brush stay sized for the worst case from the start.
+//
+// What can still overflow: when the viewport is narrow enough that
+// even (current swatch + sep + eraser + brush slider + info + 104px
+// fab-bar) doesn't fit, we need to drop pieces off the left/middle.
+//
+// Strategy: count recent swatches down from MAX_RECENT until the
+// toolbar fits. As a last resort (zero recents and still clipping)
+// hide the "Brush" text label — the slider stays usable.
+let _fitInProgress = false;
+function fitToolbar() {
+  if (!toolbarEl || _fitInProgress) return;
+  _fitInProgress = true;
+  try {
+    const fabBarEl = document.getElementById("fab-bar");
+    const brushLabelEl = document.getElementById("brush-label");
+
+    // Reset to the most-permissive state and re-measure from there so the
+    // recents/brush-label come back as soon as space is available again.
+    let limit = MAX_RECENT;
+    recentLimit = limit;
+    refreshQuickBar();
+    if (brushLabelEl) brushLabelEl.style.display = "";
+
+    // Overflow detection by bounding-rect comparison. We can't rely on
+    // toolbarEl.scrollWidth here: body{overflow:hidden} + #toolbar's
+    // default overflow:visible means flex children can extend past
+    // #toolbar visually, but scrollWidth is reported equal to
+    // clientWidth (because the overflow isn't "scrollable" from
+    // #toolbar's perspective). We instead check whether the fab-bar
+    // (the rightmost flex item, with `flex: 0 0 104px`) has been pushed
+    // past the toolbar's right edge — that's the actual failure mode
+    // when the left-side items don't fit alongside the reserved slot.
+    // +1 px tolerance for sub-pixel rounding.
+    function overflowing() {
+      if (!fabBarEl) return false;
+      const fabRight = fabBarEl.getBoundingClientRect().right;
+      const tbRight = toolbarEl.getBoundingClientRect().right;
+      if (fabRight > tbRight + 1) return true;
+      // Also catch internal fab-bar clipping just in case (long label
+      // in the progress bar etc.).
+      if (fabBarEl.scrollWidth > fabBarEl.clientWidth + 1) return true;
+      return false;
+    }
+
+    while (limit > 0 && overflowing()) {
+      limit--;
+      recentLimit = limit;
+      refreshQuickBar();
+    }
+
+    if (brushLabelEl) {
+      brushLabelEl.style.display = overflowing() ? "none" : "";
+    }
+
+    // Layout diagnostic — prints once per fit pass.
+    try {
+      const vw = window.innerWidth;
+      const tbRect = toolbarEl.getBoundingClientRect();
+      const fabRect = fabBarEl ? fabBarEl.getBoundingClientRect() : null;
+      console.log("[toolbar-fit]", {
+        viewport: vw,
+        recentLimit,
+        brushLabelHidden: brushLabelEl ? brushLabelEl.style.display === "none" : null,
+        toolbarRight: Math.round(tbRect.right),
+        fabBarLeft: fabRect ? Math.round(fabRect.left) : null,
+        fabBarRight: fabRect ? Math.round(fabRect.right) : null,
+        fabBarWidth: fabRect ? Math.round(fabRect.width) : null,
+        fabPastToolbar: fabRect ? Math.round(fabRect.right - tbRect.right) : null,
+        fabPastViewport: fabRect ? Math.round(fabRect.right - vw) : null,
+      });
+    } catch (_) { /* diagnostic only */ }
+  } finally {
+    _fitInProgress = false;
+  }
 }
 
 function selectSpecies(id) {
@@ -780,6 +941,20 @@ pickerOverlay.addEventListener("click", (e) => {
 brushSlider.addEventListener("input", () => { brushSize = parseInt(brushSlider.value, 10); });
 refreshCurrent();
 refreshQuickBar();
+fitToolbar();
+window.addEventListener("resize", fitToolbar);
+// fab-bar visibility (and width) changes whenever the user enters/exits a
+// drawing session, the send progress bar appears, or the apply countdown
+// runs — all of which can push the right side of the header off-screen.
+// A ResizeObserver fires on each of those size changes and re-fits.
+try {
+  const _fabResizeObserver = new ResizeObserver(() => fitToolbar());
+  _fabResizeObserver.observe(document.getElementById("fab-bar"));
+} catch (_) {
+  // Older WebViews may not have ResizeObserver; window resize alone is
+  // enough to handle viewport changes — fab-bar growth on a wide-enough
+  // screen wasn't the failure mode this fix targets.
+}
 
 // =============================================================================
 // CANVAS SETUP
@@ -1391,6 +1566,11 @@ function handleMessage(event) {
         TICK_EPOCH = msg.epoch;
       }
 
+      if (msg.adminPubkey !== undefined) {
+        adminPubkey = msg.adminPubkey || null;
+        maybeShowAdminUI();
+      }
+
       // Config
       if (msg.config) {
         WIDTH = msg.config.width || WIDTH;
@@ -1478,9 +1658,15 @@ function handleMessage(event) {
 
     } else if (msg.type === "resync") {
       // Error-recovery fallback: reload snapshot and restart simulation.
-      // Normal draws arrive as lightweight "tx" messages instead.
-      console.warn("[sands-resync] received full resync (error recovery)");
+      // Normal draws arrive as lightweight "tx" messages instead. Admin
+      // resets also come through here — the server wipes state, captures
+      // a fresh snapshot, and resyncs everyone at once.
+      console.warn("[sands-resync] received full resync (admin reset or error recovery)");
       if (msg.epoch && typeof msg.epoch === "number") TICK_EPOCH = msg.epoch;
+      if (msg.adminPubkey !== undefined) {
+        adminPubkey = msg.adminPubkey || null;
+        maybeShowAdminUI();
+      }
 
       if (simInterval) clearInterval(simInterval);
       simInterval = null;
@@ -1894,11 +2080,20 @@ redrawOverlay = function() {
 // strokes, so hide them whenever a send is in flight, the apply countdown
 // is running, or the progress bar is otherwise on screen — otherwise the
 // buttons pop back in alongside "Applying in Ns" and read as stuck.
+// Last-known fab-bar state signature. refreshFabs runs on every paint
+// move, but the fab-bar's contents only change at coarse-grained state
+// transitions (start/end of a drawing session, send started, progress →
+// countdown → confirmed). Re-running fitToolbar (which forces a layout
+// read) on every paint move would be wasteful; gate it on the signature
+// so we only refit when something actually changed.
+//
+// Note: the fab-bar's outer slot is always rendered (CSS reserves a
+// fixed width for it) — we only toggle its children, so the toolbar
+// layout doesn't snap when the user starts/finishes drawing.
+let _lastFabSig = "";
 function refreshFabs() {
   const inflight = sending || _applyRaf !== null;
   const progressVisible = sendProgressEl && !sendProgressEl.classList.contains("hide");
-  if (pendingStrokes.length > 0 || inflight || progressVisible) fabBar.classList.add("visible");
-  else fabBar.classList.remove("visible");
   const showButtons = pendingStrokes.length > 0 && !inflight && !progressVisible;
   btnSend.style.display = showButtons ? "" : "none";
   btnDiscard.style.display = showButtons ? "" : "none";
@@ -1907,6 +2102,12 @@ function refreshFabs() {
   // just the progress bar.
   if (budgetMeter) budgetMeter.style.display = showButtons ? "" : "none";
   refreshBudget();
+
+  const sig = `${showButtons}|${progressVisible}`;
+  if (sig !== _lastFabSig) {
+    _lastFabSig = sig;
+    if (typeof fitToolbar === "function") fitToolbar();
+  }
 }
 
 function eventToSim(e) {
@@ -2034,7 +2235,6 @@ function startApplyCountdown() {
   const fill = sendProgressEl.querySelector(".tx-fill");
   const label = sendProgressEl.querySelector(".tx-label");
   if (sendProgressEl.classList.contains("hide")) sendProgressEl.classList.remove("hide");
-  fabBar.classList.add("visible");
   function tick() {
     const remain = applyAtMs - Date.now();
     if (remain <= 0) {
@@ -2205,6 +2405,95 @@ window.addEventListener("touchend", endPaint);
     }
   });
 })();
+
+// ── Admin reset ─────────────────────────────────────────────────────────────
+//
+// `adminPubkey` is set from the server's WS init/resync payload (see
+// engine.js). We cache the current user's address the first time we can
+// resolve it so `maybeShowAdminUI` can run synchronously on subsequent
+// evaluations (e.g. when a later resync re-confirms admin state). The
+// reset button submits a tiny `{ app: "falling-sands", type: "reset" }`
+// memo to APP_PUBKEY — the server's engine is the single enforcement
+// point (it validates `tx.from === adminPubkey` before applying and
+// replaying), so we don't try to forge any client-side security here.
+// The UI-level gate is purely a cosmetic filter so non-admins don't see
+// a button that would be rejected server-side anyway.
+
+let _myAddressCache = null;
+let _myAddressLookup = null;
+
+async function getMyAddressCached() {
+  if (_myAddressCache) return _myAddressCache;
+  if (_myAddressLookup) return _myAddressLookup;
+  _myAddressLookup = (async () => {
+    try {
+      if (typeof getNodeAddress !== "function") return null;
+      const addr = await getNodeAddress();
+      _myAddressCache = addr || null;
+      return _myAddressCache;
+    } catch (e) {
+      console.warn("[admin] getNodeAddress failed:", e);
+      return null;
+    } finally {
+      _myAddressLookup = null;
+    }
+  })();
+  return _myAddressLookup;
+}
+
+const adminSectionEl = document.getElementById("admin-section");
+const adminResetBtn = document.getElementById("admin-reset-btn");
+const adminResetStatus = document.getElementById("admin-reset-status");
+
+async function maybeShowAdminUI() {
+  if (!adminSectionEl) return;
+  const myAddr = await getMyAddressCached();
+  const isAdmin = !!(adminPubkey && myAddr && myAddr === adminPubkey);
+  adminSectionEl.classList.toggle("hide", !isAdmin);
+}
+
+// Kick off an initial evaluation — when the bridge is still booting this
+// just primes the cache without flashing the section. The real show/hide
+// happens when WS init arrives and calls maybeShowAdminUI().
+maybeShowAdminUI();
+
+function setAdminStatus(msg, cls) {
+  if (!adminResetStatus) return;
+  adminResetStatus.textContent = msg || "";
+  adminResetStatus.className = cls || "";
+}
+
+if (adminResetBtn) {
+  adminResetBtn.addEventListener("click", async () => {
+    if (adminResetBtn.disabled) return;
+    const confirmed = window.confirm(
+      "Reset the shared canvas for everyone? This wipes all drawings back to the seeded default and is recorded on-chain."
+    );
+    if (!confirmed) return;
+
+    adminResetBtn.disabled = true;
+    setAdminStatus("Sending reset…", "");
+    try {
+      const memo = JSON.stringify({ app: "falling-sands", type: "reset" });
+      await sendTransaction(APP_PUBKEY, 1, memo, {
+        ...TX_SEND_OPTS,
+        // Bridge's inclusion poll is wasteful here — the server's WS
+        // resync broadcast is our confirmation signal: the sim visibly
+        // snaps back to the seeded state on every client as soon as the
+        // engine applies the reset.
+        waitForInclusion: false,
+        confirmTitle: "Reset canvas for everyone",
+        confirmSubtitle: "Wipes all drawings back to the seeded default. This is recorded on-chain.",
+      });
+      setAdminStatus("Reset queued — canvas will refresh once it's included on-chain.", "ok");
+    } catch (e) {
+      console.error("[admin] reset failed:", e);
+      setAdminStatus("Reset failed: " + (e && e.message ? e.message : e), "err");
+    } finally {
+      adminResetBtn.disabled = false;
+    }
+  });
+}
 </script>
 </body>
 </html>

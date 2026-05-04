@@ -30,6 +30,12 @@ const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588u
 // with `--enable-recent-tx-stream`).
 const NODE_RPC_URL = process.env.NODE_RPC_URL || null;
 
+// Pubkey permitted to issue `{ app: "falling-sands", type: "reset" }`
+// memos. Any reset from a different sender is silently ignored (engine.js
+// enforces this in both live and replay paths). Unset → no admin and
+// the client never shows the reset UI.
+const ADMIN_PUBKEY = process.env.SANDS_ADMIN_PUBKEY || null;
+
 // ── Static file paths ────────────────────────────────────────────────────────
 const BRIDGE_PATH = resolvePath(
   path.join(__dirname, "usernode-bridge.js"),
@@ -95,6 +101,7 @@ nodeStatusProbe.start();
     chainId: chainInfo.chainId,
     epoch: chainInfo.genesisTimestampMs,
     replayTxs,
+    adminPubkey: ADMIN_PUBKEY,
   };
   if (process.env.SNAPSHOT_DIR) {
     const dir = path.resolve(process.env.SNAPSHOT_DIR);
