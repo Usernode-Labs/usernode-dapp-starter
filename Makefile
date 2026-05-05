@@ -1,4 +1,4 @@
-.PHONY: up down start stop restart logs ps build examples-up examples-up-local examples-down examples-logs node node-full node-status fetch-archive bootstrap-prod-archive usernode-image usernode-image-amd64
+.PHONY: up down start stop restart logs ps build examples-up examples-up-local examples-down examples-logs node node-full node-full-no-fetch node-status fetch-archive bootstrap-prod-archive usernode-image usernode-image-amd64
 
 USERNODE_BIN        ?= ../usernode/target/release/usernode
 USERNODE_REPO       ?= ../usernode
@@ -79,19 +79,22 @@ node:
 #   ~/.ssh/config entries for testnet-seed1 / testnet-seed2 with
 #   IdentityFile pointing at the right key. See PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG.md.
 #
-# Auto-fetches the archive on first run if $(ARCHIVE_DIR) is missing or empty.
-# To refresh an existing archive, run `make fetch-archive` explicitly.
+# Always re-fetches the archive before booting, so each `make node-full`
+# starts from a fresh snapshot whose best_tip is on the canonical fork.
+# A stale archive is the silent failure mode: the node will load it,
+# apply its local tail in full mode, then receive live P2P blocks on a
+# different fork and fall back to partial-overlay applies — exactly what
+# this target is meant to avoid. To skip the fetch (e.g. iterating
+# offline), run `make node-full-no-fetch`.
 #
 # Verify it's actually full mode (in another terminal):
 #   make node-status                                   # poll /status until Synced
 #   grep -m1 'kind = "UtxoDb.InitFromArchive"' node.log   # archive load happened
-#   grep -c   'apply_mode = "full"'    node.log
-#   grep -c   'apply_mode = "partial"' node.log         # should stay flat after boot
-node-full:
-	@if [ -z "$$(ls -A '$(ARCHIVE_DIR)' 2>/dev/null)" ]; then \
-		echo "==> Archive missing or empty at $(ARCHIVE_DIR) — fetching from $(ARCHIVE_SEED_HOST)"; \
-		$(MAKE) fetch-archive; \
-	fi
+#   grep -c   'apply_mode: "full"'    node.log
+#   grep -c   'apply_mode: "partial"' node.log         # should stay flat after boot
+node-full: fetch-archive node-full-no-fetch
+
+node-full-no-fetch:
 	@echo "=========================================="
 	@echo "  make node-full -- starting at: $$(date '+%Y-%m-%d %H:%M:%S')"
 	@echo "  Archive: $(ARCHIVE_DIR)"
