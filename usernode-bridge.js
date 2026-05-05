@@ -474,13 +474,24 @@
   // the bridge POSTs to "${url}/getTransactions". Response shape is
   // { items: [...], count, total_in_cache } — same items[] contract as
   // window.getTransactions, so the existing matcher works unchanged.
-  function _serverCacheUrl() {
+  //
+  // Per-call override: callers may pass `opts.serverCacheUrl` to route a
+  // single send/wait at a different cache than the page-global default.
+  // Used by usernode-usernames.js so a `setUsername()` call (whose tx
+  // lands in the global usernames cache, not the host dapp's cache)
+  // resolves against the correct waiter — without it, the SSE waiter
+  // sits on the wrong cache and times out at the 180s server-side cap
+  // even though the tx was confirmed on chain seconds after submission.
+  function _serverCacheUrl(opts) {
+    if (opts && typeof opts.serverCacheUrl === "string" && opts.serverCacheUrl) {
+      return opts.serverCacheUrl;
+    }
     var u = window.usernode && window.usernode.serverCacheUrl;
     return typeof u === "string" && u ? u : null;
   }
 
-  function _fetchInclusionPage(query) {
-    var base = _serverCacheUrl();
+  function _fetchInclusionPage(query, opts) {
+    var base = _serverCacheUrl(opts);
     if (!base) return window.getTransactions(query);
     return fetch(base + "/getTransactions", {
       method: "POST",
@@ -546,7 +557,7 @@
       opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 180000;
 
     var sseAvailable =
-      _serverCacheUrl() &&
+      _serverCacheUrl(opts) &&
       typeof window.EventSource !== "undefined" &&
       !(opts && opts.forcePolling);
 
@@ -554,7 +565,7 @@
       return _waitViaPolling(expected, opts);
     }
 
-    return _waitViaSse(expected, timeoutMs).then(
+    return _waitViaSse(expected, timeoutMs, opts).then(
       function (matched) {
         _notifyNativeTxObserved(
           extractTxId(matched) || (expected && expected.txId),
@@ -575,7 +586,7 @@
     );
   }
 
-  function _waitViaSse(expected, timeoutMs) {
+  function _waitViaSse(expected, timeoutMs, opts) {
     return new Promise(function (resolve, reject) {
       var clientId = _ensureClientId();
       var params = new URLSearchParams();
@@ -589,7 +600,7 @@
       params.set("timeoutMs", String(timeoutMs));
       params.set("clientId", clientId);
 
-      var url = _serverCacheUrl() + "/waitForTx?" + params.toString();
+      var url = _serverCacheUrl(opts) + "/waitForTx?" + params.toString();
       var startedAt = Date.now();
       var es;
       try {
@@ -689,7 +700,7 @@
   // never-ending retry loop.
   function _openPassiveSseTelemetry(expected, opts) {
     if (opts && opts.forcePolling) return;
-    if (!_serverCacheUrl()) return;
+    if (!_serverCacheUrl(opts)) return;
     if (typeof window.EventSource === "undefined") return;
 
     var hasNarrowing = !!(
@@ -715,7 +726,7 @@
     params.set("timeoutMs", String(timeoutMs));
     params.set("clientId", clientId);
 
-    var url = _serverCacheUrl() + "/waitForTx?" + params.toString();
+    var url = _serverCacheUrl(opts) + "/waitForTx?" + params.toString();
     var es;
     try { es = new EventSource(url, { withCredentials: false }); }
     catch (_) { return; }
@@ -750,13 +761,13 @@
       query.sender = expected.from_pubkey;
     }
 
-    var transportLabel = _serverCacheUrl() ? "server-cache" : "getTransactions";
+    var transportLabel = _serverCacheUrl(opts) ? "server-cache" : "getTransactions";
     var startedAt = Date.now();
     var attempt = 0;
 
     function poll() {
       attempt++;
-      return _fetchInclusionPage(query).then(function (resp) {
+      return _fetchInclusionPage(query, opts).then(function (resp) {
         var items = normalizeTransactionsResponse(resp);
         var found = null;
         for (var i = 0; i < items.length; i++) {
