@@ -123,7 +123,17 @@ function createEcho(opts) {
   const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
   const RETRY_MAX_ATTEMPTS = 30;
   const RETRY_TTL_MS = 60 * 60 * 1000;
-  const TRANSIENT_RE = /no UTXOs for owner|wallet send already pending|sidecar not ready|signer not configured|tracked owner not registered|ECONNREFUSED|ECONNRESET|ETIMEDOUT|HTTP 5\d\d/i;
+  const TRANSIENT_RE = /no UTXOs for owner|wallet send already pending|sidecar not ready|signer not configured|tracked owner not registered|queued tx not included|ECONNREFUSED|ECONNRESET|ETIMEDOUT|HTTP 5\d\d/i;
+
+  // After /wallet/send returns queued:true with a tx_id, the sidecar can still
+  // drop the tx silently — we've seen it disappear from mempool without ever
+  // making it into a block (likely orphaned during a short fork). Without
+  // active recovery the event sits at status="echoing" forever and the only
+  // unblock is a container restart. The watchdog scheduleInclusionCheck() polls
+  // /blockchain/tx/<id> + /mempool after a grace period and requeues via
+  // scheduleRetry if both report it absent. 90s easily clears typical
+  // 5–15s testnet inclusion latency.
+  const INCLUSION_CHECK_MS = 90 * 1000;
 
   // requestTxId → event row
   const events = new Map();
@@ -161,6 +171,7 @@ function createEcho(opts) {
   function trimEvents() {
     if (events.size <= MAX_EVENTS) return;
     const sorted = Array.from(events.entries()).sort((a, b) => b[1].requestTs - a[1].requestTs);
+    const dropped = sorted.slice(Math.min(MAX_EVENTS, sorted.length));
     events.clear();
     for (let i = 0; i < Math.min(MAX_EVENTS, sorted.length); i++) {
       events.set(sorted[i][0], sorted[i][1]);
@@ -171,6 +182,13 @@ function createEcho(opts) {
       if (!events.has(id)) {
         if (state.timer) clearTimeout(state.timer);
         retryState.delete(id);
+      }
+    }
+    // Same for inclusion-watchdog timers attached to the dropped events.
+    for (const [, ev] of dropped) {
+      if (ev && ev._inclusionTimer) {
+        clearTimeout(ev._inclusionTimer);
+        ev._inclusionTimer = null;
       }
     }
   }
@@ -319,6 +337,10 @@ function createEcho(opts) {
           event.echoConfirmedTs = tx.ts;
           event.echoConfirmedAtServerMs = Date.now();
           event.status = "confirmed";
+          if (event._inclusionTimer) {
+            clearTimeout(event._inclusionTimer);
+            event._inclusionTimer = null;
+          }
           console.log(`[echo] confirmed (id-match): req=${event.requestTxId.slice(0, 12)}… echo=${tx.id.slice(0, 12)}…`);
         }
         return;
@@ -332,11 +354,15 @@ function createEcho(opts) {
         event.echoConfirmedAtServerMs = Date.now();
         if (!event.echoTxId) event.echoTxId = tx.id;
         event.status = "confirmed";
-        // Cancel any retry that might still fire for this tx.
+        // Cancel any retry / inclusion watchdog that might still fire.
         const state = retryState.get(ref);
         if (state && state.timer) {
           clearTimeout(state.timer);
           retryState.delete(ref);
+        }
+        if (event._inclusionTimer) {
+          clearTimeout(event._inclusionTimer);
+          event._inclusionTimer = null;
         }
         console.log(`[echo] confirmed (memo-match): req=${ref.slice(0, 12)}… echo=${tx.id.slice(0, 12)}…`);
       }
@@ -373,6 +399,63 @@ function createEcho(opts) {
       console.error("[echo] ensureReady error:", e.message);
       return false;
     }
+  }
+
+  // Watchdog: after the sidecar accepts /wallet/send and gives us a tx_id,
+  // verify the tx actually lands. If it's neither on chain nor in mempool
+  // after the grace period, requeue via scheduleRetry. Re-arms itself while
+  // the tx is still in mempool (no decision yet) or while the sidecar is
+  // unreachable (don't requeue blindly).
+  function scheduleInclusionCheck(tx, event) {
+    if (event._inclusionTimer) clearTimeout(event._inclusionTimer);
+    const t = setTimeout(async () => {
+      event._inclusionTimer = null;
+      if (event.echoConfirmedTs != null) return;
+      if (respondedRefs.has(tx.id)) return;
+      if (event.status !== "echoing" || !event.echoTxId) return;
+      if (!events.has(tx.id)) return;
+
+      const echoTxId = event.echoTxId;
+      let included = false;
+      try {
+        const r = await httpJson("GET", `${nodeRpcUrl}/blockchain/tx/${encodeURIComponent(echoTxId)}`);
+        included = !!(r && r.included);
+      } catch (_) {
+        scheduleInclusionCheck(tx, event);
+        return;
+      }
+      if (included) {
+        // Chain poller will catch up via handleOutgoing.
+        return;
+      }
+
+      let inMempool = false;
+      try {
+        const r = await httpJson("GET", `${nodeRpcUrl}/mempool`);
+        const entries = (r && r.entries) || [];
+        inMempool = entries.some(function (e) {
+          if (!e) return false;
+          const id = e.id || e.tx_id || (e.tx && (e.tx.id || e.tx.tx_id));
+          return id === echoTxId;
+        });
+      } catch (_) {
+        scheduleInclusionCheck(tx, event);
+        return;
+      }
+      if (inMempool) {
+        scheduleInclusionCheck(tx, event);
+        return;
+      }
+
+      const ageS = Math.round((Date.now() - (event.echoSentAtServerMs || event.requestSeenAtServerMs)) / 1000);
+      console.log(
+        `[echo] echo ${String(echoTxId).slice(0, 12)}… missing on chain & mempool after ${ageS}s — requeueing for req=${tx.id.slice(0, 12)}…`
+      );
+      event.echoTxId = null;
+      scheduleRetry(tx, event, "queued tx not included");
+    }, INCLUSION_CHECK_MS);
+    if (typeof t.unref === "function") t.unref();
+    event._inclusionTimer = t;
   }
 
   async function sendEchoFor(tx, event) {
@@ -412,6 +495,10 @@ function createEcho(opts) {
       const state = retryState.get(tx.id);
       if (state && state.timer) clearTimeout(state.timer);
       retryState.delete(tx.id);
+      if (event._inclusionTimer) {
+        clearTimeout(event._inclusionTimer);
+        event._inclusionTimer = null;
+      }
       return;
     }
 
@@ -446,6 +533,9 @@ function createEcho(opts) {
         if (state && state.timer) clearTimeout(state.timer);
         retryState.delete(tx.id);
         console.log(`[echo] queued ${replyAmount} → ${tx.from.slice(0, 16)}… (req=${tx.id.slice(0, 12)}…, rpc=${sendDurationMs}ms)`);
+        // The sidecar can still drop this tx silently before inclusion. Arm
+        // a watchdog that requeues if the tx_id never makes it on-chain.
+        if (event.echoTxId) scheduleInclusionCheck(tx, event);
       } else {
         const errMsg = (resp && resp.error) || "send not queued";
         if (TRANSIENT_RE.test(errMsg)) {
@@ -476,6 +566,10 @@ function createEcho(opts) {
       const state = retryState.get(tx.id);
       if (state && state.timer) clearTimeout(state.timer);
       retryState.delete(tx.id);
+      if (event._inclusionTimer) {
+        clearTimeout(event._inclusionTimer);
+        event._inclusionTimer = null;
+      }
       return;
     }
     // Cap retries by attempt count and overall age so failures don't loop forever.
@@ -561,6 +655,12 @@ function createEcho(opts) {
   function reset() {
     seenTxIds.clear();
     inFlight.clear();
+    for (const ev of events.values()) {
+      if (ev && ev._inclusionTimer) {
+        clearTimeout(ev._inclusionTimer);
+        ev._inclusionTimer = null;
+      }
+    }
     events.clear();
     respondedRefs.clear();
     for (const state of retryState.values()) {
