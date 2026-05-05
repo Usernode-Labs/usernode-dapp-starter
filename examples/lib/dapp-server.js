@@ -3010,25 +3010,55 @@ const STATUS_PAGE_HTML = `<!doctype html>
       return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
     }
 
-    // ── Preserve <details> open state across re-renders ──────────────────
+    // ── Preserve <details> open state across re-renders + reloads ────────
     //
     // Every renderer below replaces its body via innerHTML on each SSE /
     // poll frame (~1s cadence). Without intervention any <details> the
     // user collapsed snaps right back to whatever default the renderer
-    // picked. The fix is the simplest possible one: before each render,
-    // snapshot the current open state of every tracked <details> from
-    // the live DOM, then after the render re-apply those states. The
-    // render-emitted 'open' attribute only takes effect for ids that
-    // didn't exist before (new caches, new pending sources) — those
-    // pick up the renderer's default heuristic. Anything already on
-    // the page keeps whatever state it had a moment ago, regardless
-    // of whether the user toggled it or it was just sitting at its
-    // default. Result: state never changes on its own, ever.
+    // picked.
+    //
+    // The fix is two layers, each dead simple:
+    //
+    //   1. INTRA-SESSION (live re-renders): before each render, snapshot
+    //      the current open state of every tracked <details> from the
+    //      live DOM, then after the render re-apply those states. No
+    //      event listeners, no race against async toggle events on
+    //      <details> — just a synchronous read of the current DOM.
+    //
+    //   2. CROSS-RELOAD: after every render, mirror the same map to
+    //      localStorage. On the very first render after a reload the
+    //      DOM is empty, so the snapshot falls back to the persisted
+    //      map. Result: collapsed state survives F5 / page navigations.
+    //
+    // The renderer-emitted "open" attribute only takes effect for ids
+    // that didn't exist before (new caches, new pending sources) — those
+    // pick up the renderer's default heuristic. Anything we've ever seen
+    // before keeps whatever state it had, regardless of whether the user
+    // toggled it explicitly or it was just sitting at its default.
+    var STORAGE_KEY = "dappStatus.openStates";
     function detailsId(prefix, name) {
       return "ds-" + prefix + "-" + String(name || "unknown").replace(/[^A-Za-z0-9_-]/g, "_");
     }
+    function loadOpenStatesFromStorage() {
+      try {
+        var raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return {};
+        var parsed = JSON.parse(raw);
+        return (parsed && typeof parsed === "object") ? parsed : {};
+      } catch (_) { return {}; }
+    }
     function captureOpenStates() {
-      var map = {};
+      // Always seed from localStorage and let the live DOM win for ids
+      // currently rendered. Naively returning DOM-only when DOM is
+      // non-empty drops persisted state for ids that haven't appeared
+      // yet — e.g. the first SSE frame may not contain pending sources
+      // (server hasn't seen any), so the very first render leaves
+      // ds-pending-* out of the DOM. When a later frame introduces
+      // them, a DOM-only snapshot has no entry to restore them from
+      // and the default heuristic snaps them open, clobbering the
+      // user's persisted preference. Merging keeps that preference
+      // until a render actually writes it.
+      var map = loadOpenStatesFromStorage();
       var els = document.querySelectorAll('details[id^="ds-"]');
       for (var i = 0; i < els.length; i++) map[els[i].id] = !!els[i].open;
       return map;
@@ -3041,6 +3071,24 @@ const STATUS_PAGE_HTML = `<!doctype html>
           els[i].open = map[id];
         }
       }
+    }
+    // Mirror state into localStorage. We merge three sources, in order:
+    //   - existing localStorage  (don't lose long-absent ids)
+    //   - the pre-render snapshot (catches user toggles right before an
+    //     element disappears from the next render — without this their
+    //     last action would be lost when the element vanishes)
+    //   - the post-render DOM    (covers ids added by this render that
+    //     weren't in the snapshot)
+    function persistOpenStates(captured) {
+      var saved = loadOpenStatesFromStorage();
+      if (captured) {
+        for (var k in captured) {
+          if (Object.prototype.hasOwnProperty.call(captured, k)) saved[k] = !!captured[k];
+        }
+      }
+      var els = document.querySelectorAll('details[id^="ds-"]');
+      for (var i = 0; i < els.length; i++) saved[els[i].id] = !!els[i].open;
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(saved)); } catch (_) {}
     }
 
     // ── Renderers ─────────────────────────────────────────────────────────
@@ -3443,6 +3491,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
         console.error("[status] render failed:", e);
       }
       restoreOpenStates(openStates);
+      persistOpenStates(openStates);
     }
 
     function setConn(state) {
