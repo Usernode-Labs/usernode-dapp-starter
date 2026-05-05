@@ -181,6 +181,54 @@ function httpsJson(method, urlStr, body) {
   });
 }
 
+// Multi-host explorer JSON requester. The canonical "talk to the
+// explorer" entrypoint for everything in this file (chain poller,
+// backfill, discovery, genesis-account scan). Walks
+// `orderedExplorerUpstreams()` (probe-healthy hosts first) on every
+// call, trying each host in sequence. On a connect/HTTP failure we
+// downgrade that host's entry in `_explorerHostHealth` so subsequent
+// calls skip it until the probe re-validates; on success we don't
+// touch health (the probe owns the canonical view — overwriting here
+// would lose chainId/latency).
+//
+//   pathFromHost(host) → string
+//     Builds the URL for `host`. Most callers use:
+//       (h) => `${explorerProto(h)}://${h}${base}/active_chain`
+//     so http/https selection still works per-host.
+//
+//   opts.explicitUpstream
+//     If set, pin to that one host (no fallback). Honors
+//     `opts.upstream` overrides plumbed through from outer callers
+//     who explicitly want single-host behavior (e.g. tests).
+//
+// Throws after exhausting all hosts. Caller decides whether to swallow
+// (e.g. discoverChainId logs and returns null) or propagate.
+async function httpsJsonExplorer(method, pathFromHost, body, opts) {
+  const explicitUpstream = opts && opts.explicitUpstream;
+  const hosts = explicitUpstream ? [explicitUpstream] : orderedExplorerUpstreams();
+  if (!hosts.length) throw new Error("No explorer hosts configured");
+
+  const errors = [];
+  for (const host of hosts) {
+    const url = pathFromHost(host);
+    try {
+      return await httpsJson(method, url, body);
+    } catch (e) {
+      const errMsg = e && e.message ? e.message : String(e);
+      errors.push(`${host}: ${errMsg}`);
+      setExplorerUpstreamHealth(host, {
+        host,
+        status: "unreachable",
+        chainId: null,
+        latencyMs: null,
+        error: errMsg,
+        at: Date.now(),
+      });
+    }
+  }
+  throw new Error(`All explorer hosts failed: ${errors.join("; ")}`);
+}
+
 // ── Explorer API proxy ───────────────────────────────────────────────────────
 //
 // Returns true if the request was handled (pathname starts with /explorer-api/).
@@ -417,7 +465,12 @@ function createChainPoller(opts) {
   const onTransaction = opts.onTransaction;
   const onChainReset = opts.onChainReset || null;
   const intervalMs = opts.intervalMs || 3000;
-  const upstream = opts.upstream || getExplorerUpstream();
+  // `explicitUpstream` honors callers that explicitly pin to one host
+  // (tests, single-host overrides). When unset (the default), each
+  // request resolves the active host fresh via httpsJsonExplorer →
+  // orderedExplorerUpstreams(), so a poller booted before the probe
+  // populated health no longer freezes onto a dead host forever.
+  const explicitUpstream = opts.upstream || null;
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const queryField = opts.queryField || "account";
   const maxPages = opts.maxPages || 200;
@@ -431,7 +484,12 @@ function createChainPoller(opts) {
   let pollCount = 0;
 
   async function fetchActiveChainId() {
-    const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
+    const data = await httpsJsonExplorer(
+      "GET",
+      (h) => `${explorerProto(h)}://${h}${upstreamBase}/active_chain`,
+      null,
+      { explicitUpstream },
+    );
     return (data && data.chain_id) ? data.chain_id : null;
   }
 
@@ -483,8 +541,6 @@ function createChainPoller(opts) {
     }
 
     pollCount++;
-    const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
-    const url = `${baseUrl}/transactions`;
     const MAX_PAGES = maxPages;
     let cursor = null, totalItems = 0;
     const newTxs = [];
@@ -496,7 +552,12 @@ function createChainPoller(opts) {
         const body = { [queryField]: appPubkey, limit: 50 };
         if (cursor) body.cursor = cursor;
         if (fromHeight != null) body.from_height = fromHeight;
-        const resp = await httpsJson("POST", url, body);
+        const resp = await httpsJsonExplorer(
+          "POST",
+          (h) => `${explorerProto(h)}://${h}${upstreamBase}/${chainId}/transactions`,
+          body,
+          { explicitUpstream },
+        );
 
         if (pollCount <= 2 && page === 0) {
           const keys = resp ? Object.keys(resp) : [];
@@ -968,14 +1029,12 @@ async function fetchAllTransactions(opts) {
   const chainId = opts.chainId;
   const appPubkey = opts.appPubkey;
   const queryField = opts.queryField || "recipient";
-  const upstream = opts.upstream || getExplorerUpstream();
+  const explicitUpstream = opts.upstream || null;
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const maxPages = opts.maxPages || 500;
 
   if (!chainId || !appPubkey) return { transactions: [], lastHeight: null };
 
-  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
-  const url = `${baseUrl}/transactions`;
   const allTxs = [];
   let lastHeight = null;
   let cursor = null;
@@ -984,7 +1043,12 @@ async function fetchAllTransactions(opts) {
     for (let page = 0; page < maxPages; page++) {
       const body = { [queryField]: appPubkey, limit: 50 };
       if (cursor) body.cursor = cursor;
-      const resp = await httpsJson("POST", url, body);
+      const resp = await httpsJsonExplorer(
+        "POST",
+        (h) => `${explorerProto(h)}://${h}${upstreamBase}/${chainId}/transactions`,
+        body,
+        { explicitUpstream },
+      );
 
       const items = Array.isArray(resp) ? resp
         : (resp && Array.isArray(resp.items)) ? resp.items
@@ -1039,14 +1103,18 @@ async function fetchAllTransactions(opts) {
 // Returns { chainId, genesisTimestampMs } — either field may be null on failure.
 
 async function discoverChainInfo(opts) {
-  const upstream = (opts && opts.upstream) || getExplorerUpstream();
+  const explicitUpstream = (opts && opts.upstream) || null;
   const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
-  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}`;
 
   const result = { chainId: null, genesisTimestampMs: null };
 
   try {
-    const data = await httpsJson("GET", `${baseUrl}/active_chain`);
+    const data = await httpsJsonExplorer(
+      "GET",
+      (h) => `${explorerProto(h)}://${h}${upstreamBase}/active_chain`,
+      null,
+      { explicitUpstream },
+    );
     if (data && data.chain_id) result.chainId = data.chain_id;
   } catch (e) {
     console.warn(`[chain-info] could not discover chain: ${e.message}`);
@@ -1056,7 +1124,12 @@ async function discoverChainInfo(opts) {
   if (!result.chainId) return result;
 
   try {
-    const data = await httpsJson("GET", `${baseUrl}/${result.chainId}/blocks?limit=2`);
+    const data = await httpsJsonExplorer(
+      "GET",
+      (h) => `${explorerProto(h)}://${h}${upstreamBase}/${result.chainId}/blocks?limit=2`,
+      null,
+      { explicitUpstream },
+    );
     const blocks = (data && data.items) || [];
 
     if (blocks.length >= 2) {
@@ -1088,13 +1161,18 @@ async function discoverChainInfo(opts) {
 // destination addresses that received genesis distributions.
 
 async function fetchGenesisAccounts(opts) {
-  const upstream = (opts && opts.upstream) || getExplorerUpstream();
+  const explicitUpstream = (opts && opts.upstream) || null;
   const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
 
   let chainId = opts && opts.chainId;
   if (!chainId) {
     try {
-      const data = await httpsJson("GET", `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`);
+      const data = await httpsJsonExplorer(
+        "GET",
+        (h) => `${explorerProto(h)}://${h}${upstreamBase}/active_chain`,
+        null,
+        { explicitUpstream },
+      );
       chainId = data && data.chain_id;
     } catch (e) {
       console.warn(`[genesis] could not discover chain: ${e.message}`);
@@ -1103,7 +1181,6 @@ async function fetchGenesisAccounts(opts) {
   }
   if (!chainId) return [];
 
-  const baseUrl = `${explorerProto(upstream)}://${upstream}${upstreamBase}/${chainId}`;
   const accounts = new Set();
 
   try {
@@ -1111,7 +1188,12 @@ async function fetchGenesisAccounts(opts) {
     for (let page = 0; page < 20; page++) {
       const body = { to_height: 1, limit: 200 };
       if (cursor) body.cursor = cursor;
-      const resp = await httpsJson("POST", `${baseUrl}/transactions`, body);
+      const resp = await httpsJsonExplorer(
+        "POST",
+        (h) => `${explorerProto(h)}://${h}${upstreamBase}/${chainId}/transactions`,
+        body,
+        { explicitUpstream },
+      );
 
       const items = (resp && Array.isArray(resp.items)) ? resp.items
         : (resp && Array.isArray(resp.transactions)) ? resp.transactions
@@ -1214,7 +1296,12 @@ function createAppStateCache(opts) {
   const localDev = !!opts.localDev;
   const mockTransactions = opts.mockTransactions || null;
   const intervalMs = opts.intervalMs || 3000;
-  const upstream = opts.upstream || getExplorerUpstream();
+  // Only freeze a host when the caller explicitly pinned one (tests,
+  // single-host overrides). Otherwise forward `null` to the inner
+  // helpers so each request goes through httpsJsonExplorer and resolves
+  // the active host fresh against the probe's health table — caches
+  // booted before the probe has data no longer freeze onto a dead host.
+  const explicitUpstream = opts.upstream || null;
   const upstreamBase = opts.upstreamBase || getExplorerUpstreamBase();
   const wantBackfill = opts.backfill !== false;
   // Optional caller-supplied seed for the live poller. Useful when the dapp
@@ -1781,7 +1868,7 @@ function createAppStateCache(opts) {
     // chronologically), then start live pollers.
     let chainId = null;
     try {
-      const info = await discoverChainInfo({ upstream, upstreamBase });
+      const info = await discoverChainInfo({ upstream: explicitUpstream, upstreamBase });
       chainId = info.chainId;
     } catch (_) {}
 
@@ -1795,7 +1882,7 @@ function createAppStateCache(opts) {
             chainId,
             appPubkey,
             queryField,
-            upstream,
+            upstream: explicitUpstream,
             upstreamBase,
           });
           allTxs.push(...fetched.transactions);
@@ -1850,7 +1937,7 @@ function createAppStateCache(opts) {
         onTransaction: processTransaction,
         onChainReset: _onChainResetWrapped,
         intervalMs,
-        upstream,
+        upstream: explicitUpstream,
         upstreamBase,
       });
       if (lastHeight != null) poller.setInitialLastHeight(lastHeight);
