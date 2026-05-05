@@ -41,9 +41,81 @@ function loadEnvFile(filePath) {
   }
 }
 
-function getExplorerUpstream() {
-  return process.env.EXPLORER_UPSTREAM || "alpha1.usernodelabs.org";
+// Returns the list of explorer upstream hosts in preferred order. Both
+// `alpha1` and `alpha2` are operated by the same provider and serve the
+// same chain; if one is down, the other is the obvious fallback.
+//
+// Configuration precedence:
+//   1. EXPLORER_UPSTREAMS  — comma-separated list, e.g.
+//                            "alpha1.usernodelabs.org,alpha2.usernodelabs.org"
+//   2. EXPLORER_UPSTREAM   — single-host (legacy); used as a 1-element list
+//   3. Default fallback list: [alpha1, alpha2].
+function getExplorerUpstreams() {
+  const list = process.env.EXPLORER_UPSTREAMS;
+  if (typeof list === "string" && list.trim()) {
+    return list.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  const single = process.env.EXPLORER_UPSTREAM;
+  if (typeof single === "string" && single.trim()) {
+    return [single.trim()];
+  }
+  return ["alpha1.usernodelabs.org", "alpha2.usernodelabs.org"];
 }
+
+// Shared host-health table. Updated by the node-status probe (canonical
+// source) and, on connect failure, by the proxy. Read by the proxy and
+// chain pollers to pick a healthy host.
+//
+// Empty / no entry for a host = "haven't probed yet, optimistically use".
+// Entry with status === "ok" = "use this one."
+// Entry with any other status = "skip if there's a healthier alternative."
+const _explorerHostHealth = new Map();
+
+function setExplorerUpstreamHealth(host, info) {
+  if (!host) return;
+  _explorerHostHealth.set(host, info);
+}
+
+function getExplorerHostHealth(host) {
+  return _explorerHostHealth.get(host) || null;
+}
+
+// Picks the first host whose latest probe is `ok` (or never been probed,
+// optimistic). Falls back to the first configured host if every host has
+// been probed and none is ok — the caller still attempts a request, since
+// the host could be transiently down between probe ticks.
+function pickActiveExplorerUpstream() {
+  const hosts = getExplorerUpstreams();
+  for (const host of hosts) {
+    const info = _explorerHostHealth.get(host);
+    if (!info) return host;          // never probed → primary wins
+    if (info.status === "ok") return host;
+  }
+  return hosts[0];
+}
+
+// Returns the configured host list ordered by health: every "ok" host
+// first (in configured order), then every other host. Used by the proxy
+// fallback walker so we always try the most likely-healthy host first.
+function orderedExplorerUpstreams() {
+  const hosts = getExplorerUpstreams();
+  const ok = [], rest = [];
+  for (const host of hosts) {
+    const info = _explorerHostHealth.get(host);
+    if (!info || info.status === "ok") ok.push(host);
+    else rest.push(host);
+  }
+  return ok.concat(rest);
+}
+
+// Backwards-compat alias: previously this was a hard-coded single host.
+// Now returns whichever configured host the probe says is currently
+// healthy. Existing callers (`opts.upstream || getExplorerUpstream()`)
+// continue to work and silently gain fallback support.
+function getExplorerUpstream() {
+  return pickActiveExplorerUpstream();
+}
+
 function getExplorerUpstreamBase() {
   return process.env.EXPLORER_UPSTREAM_BASE != null
     ? process.env.EXPLORER_UPSTREAM_BASE
@@ -112,57 +184,116 @@ function httpsJson(method, urlStr, body) {
 // ── Explorer API proxy ───────────────────────────────────────────────────────
 //
 // Returns true if the request was handled (pathname starts with /explorer-api/).
+//
+// Multi-host fallback: when no explicit `opts.upstream` is provided, the
+// proxy walks `orderedExplorerUpstreams()` (probe-healthy hosts first) and
+// retries the next host on a pre-response connect error. Once a host
+// returns headers we commit to it for that response. Connect failures
+// downgrade the host's health entry so subsequent requests skip it
+// without retrying — the next probe tick will bring it back if it
+// recovers. If every configured host fails, we return 502 with a list
+// of per-host errors (matches the existing behavior, just enumerated).
 
 function handleExplorerProxy(req, res, pathname, opts) {
-  const upstream = (opts && opts.upstream) || getExplorerUpstream();
-  const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
   const prefix = "/explorer-api/";
-
   if (!pathname.startsWith(prefix)) return false;
 
+  const explicitUpstream = opts && opts.upstream;
+  const upstreamBase = (opts && opts.upstreamBase) || getExplorerUpstreamBase();
   const upstreamPath = upstreamBase + "/" + pathname.slice(prefix.length);
-  const proto = explorerProto(upstream);
-  const upstreamUrl = new URL(`${proto}://${upstream}${upstreamPath}`);
+
+  // Honor an explicit upstream (caller is overriding fallback on purpose,
+  // e.g. for testing). Otherwise try every configured host in
+  // health-aware order.
+  const upstreams = explicitUpstream ? [explicitUpstream] : orderedExplorerUpstreams();
 
   void (async () => {
-    try {
-      let bodyBuf = null;
-      if (req.method === "POST") {
+    let bodyBuf = null;
+    if (req.method === "POST") {
+      try {
         const chunks = [];
         for await (const chunk of req) {
           chunks.push(chunk);
           if (chunks.reduce((s, c) => s + c.length, 0) > 1_000_000) {
-            res.writeHead(413, { "Content-Type": "text/plain" });
-            res.end("Body too large");
+            if (!res.headersSent) {
+              res.writeHead(413, { "Content-Type": "text/plain" });
+              res.end("Body too large");
+            }
             return;
           }
         }
         bodyBuf = Buffer.concat(chunks);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Proxy error: ${err.message}` }));
+        }
+        return;
       }
-      const proxyReq = explorerTransport(upstream).request(upstreamUrl, {
-        method: req.method,
-        headers: {
-          "content-type": req.headers["content-type"] || "application/json",
-          accept: "application/json",
-          ...(bodyBuf ? { "content-length": bodyBuf.length } : {}),
-        },
-      }, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode || 502, {
-          "content-type": proxyRes.headers["content-type"] || "application/json",
-          "access-control-allow-origin": "*",
+    }
+
+    const errors = [];
+    for (const upstream of upstreams) {
+      const proto = explorerProto(upstream);
+      const upstreamUrl = new URL(`${proto}://${upstream}${upstreamPath}`);
+
+      // Each iteration: succeed (resolves true, response already piped)
+      // or fail at connect (resolves false, we move on to the next host).
+      const succeeded = await new Promise((resolve) => {
+        let settled = false;
+        const proxyReq = explorerTransport(upstream).request(upstreamUrl, {
+          method: req.method,
+          headers: {
+            "content-type": req.headers["content-type"] || "application/json",
+            accept: "application/json",
+            ...(bodyBuf ? { "content-length": bodyBuf.length } : {}),
+          },
+        }, (proxyRes) => {
+          settled = true;
+          // We have headers — committed to this host. Pipe and resolve
+          // when the body completes (or errors mid-stream, in which case
+          // there's nothing useful to do besides closing the response).
+          res.writeHead(proxyRes.statusCode || 502, {
+            "content-type": proxyRes.headers["content-type"] || "application/json",
+            "access-control-allow-origin": "*",
+          });
+          proxyRes.pipe(res);
+          proxyRes.on("end", () => resolve(true));
+          proxyRes.on("error", () => resolve(true));
         });
-        proxyRes.pipe(res);
+        proxyReq.on("error", (err) => {
+          if (settled) return; // already responded; ignore late socket noise
+          settled = true;
+          errors.push(`${upstream}: ${err.message}`);
+          // Downgrade health so the next request skips this host until
+          // the probe reverifies. We don't upgrade on success because
+          // the probe owns the canonical health view and we'd lose
+          // chainId/latency by overwriting here.
+          setExplorerUpstreamHealth(upstream, {
+            host: upstream,
+            status: "unreachable",
+            chainId: null,
+            latencyMs: null,
+            error: err.message,
+            at: Date.now(),
+          });
+          resolve(false);
+        });
+        if (bodyBuf) proxyReq.write(bodyBuf);
+        proxyReq.end();
       });
-      proxyReq.on("error", (err) => {
-        console.error(`Explorer proxy error: ${err.message}`);
-        res.writeHead(502, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: `Proxy error: ${err.message}` }));
-      });
-      if (bodyBuf) proxyReq.write(bodyBuf);
-      proxyReq.end();
-    } catch (err) {
+
+      if (succeeded) return;
+    }
+
+    // Every host failed before producing a response.
+    if (!res.headersSent) {
+      const msg = errors.length
+        ? `All explorer hosts unreachable: ${errors.join("; ")}`
+        : "No explorer hosts configured";
+      console.error(`[explorer-proxy] ${msg}`);
       res.writeHead(502, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: `Proxy error: ${err.message}` }));
+      res.end(JSON.stringify({ error: msg, hosts: errors }));
     }
   })();
 
@@ -1968,9 +2099,24 @@ function createNodeStatusProbe(opts) {
     hasFullUtxoDb: null,
     at: Date.now(),
   };
+  // Aggregated explorer snapshot. `hosts[]` carries the per-host detail
+  // for the dashboard; `status` is the rolled-up signal that loaders gate
+  // on (`ok` if every host is healthy, `degraded` if at least one is, and
+  // `unreachable`/`bad_response` only if every host fails). `host` and
+  // `activeHost` point to whichever host the proxy/pollers should use
+  // right now (first ok host, or first configured host as a last resort).
   let explorerSnapshot = {
     status: "unknown",
-    host: getExplorerUpstream(),
+    host: getExplorerUpstreams()[0] || null,
+    activeHost: null,
+    hosts: getExplorerUpstreams().map((host) => ({
+      host,
+      status: "unknown",
+      chainId: null,
+      latencyMs: null,
+      error: null,
+      at: Date.now(),
+    })),
     chainId: null,
     latencyMs: null,
     error: null,
@@ -2115,55 +2261,90 @@ function createNodeStatusProbe(opts) {
     }
   }
 
-  // Independent block-explorer probe. Hits the cheapest endpoint
-  // (`/active_chain`) which the existing chain pollers already use for
-  // discovery — confirms the explorer's HTTP front door is up AND it's
-  // returning JSON that parses. Latches `explorerHasBeenOk` once seen
+  // Independent block-explorer probe. Hits `/active_chain` (the cheapest
+  // endpoint, also used during chain-id discovery) on every configured
+  // host in parallel. Caches per-host health into the shared
+  // `_explorerHostHealth` table so the proxy and chain pollers automatically
+  // pick a healthy host. Latches `explorerHasBeenOk` once any host is
   // healthy so the loaders can apply trust-after-first-ok semantics.
+  //
+  // Aggregation:
+  //   - all hosts ok            → status: "ok"
+  //   - some ok, some not       → status: "degraded"  (loaders treat as ok)
+  //   - all bad_response        → status: "bad_response"
+  //   - otherwise (any down)    → status: "unreachable"
   async function tickExplorer() {
-    const upstream = getExplorerUpstream();
+    const hosts = getExplorerUpstreams();
     const upstreamBase = getExplorerUpstreamBase();
-    const url = `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`;
-    const startedAt = Date.now();
-    try {
-      const data = await httpsJson("GET", url);
-      const chainId = (data && typeof data.chain_id === "string") ? data.chain_id : null;
-      if (!chainId) {
-        explorerSnapshot = {
-          status: "bad_response",
-          host: upstream,
-          // Keep last known chainId so the dashboard doesn't blank out
-          // on a transient malformed response.
-          chainId: explorerSnapshot.chainId,
-          latencyMs: Date.now() - startedAt,
-          error: "missing chain_id in /active_chain response",
-          at: Date.now(),
-        };
-        logExplorerStatusChange("bad_response", explorerSnapshot.error);
-      } else {
-        explorerHasBeenOk = true;
-        explorerSnapshot = {
+    const results = await Promise.all(hosts.map(async (host) => {
+      const url = `${explorerProto(host)}://${host}${upstreamBase}/active_chain`;
+      const startedAt = Date.now();
+      try {
+        const data = await httpsJson("GET", url);
+        const chainId = (data && typeof data.chain_id === "string") ? data.chain_id : null;
+        if (!chainId) {
+          return {
+            host,
+            status: "bad_response",
+            chainId: null,
+            latencyMs: Date.now() - startedAt,
+            error: "missing chain_id in /active_chain response",
+            at: Date.now(),
+          };
+        }
+        return {
+          host,
           status: "ok",
-          host: upstream,
           chainId,
           latencyMs: Date.now() - startedAt,
           error: null,
           at: Date.now(),
         };
-        logExplorerStatusChange("ok", null);
+      } catch (e) {
+        return {
+          host,
+          status: "unreachable",
+          chainId: null,
+          latencyMs: null,
+          error: e && e.message ? e.message : String(e),
+          at: Date.now(),
+        };
       }
-    } catch (e) {
-      const errMsg = e && e.message ? e.message : String(e);
-      explorerSnapshot = {
-        status: "unreachable",
-        host: upstream,
-        chainId: explorerSnapshot.chainId,
-        latencyMs: null,
-        error: errMsg,
-        at: Date.now(),
-      };
-      logExplorerStatusChange("unreachable", errMsg);
-    }
+    }));
+
+    // Update the shared health table so `pickActiveExplorerUpstream()` /
+    // `orderedExplorerUpstreams()` (used by proxy + pollers) see fresh
+    // data on the next call.
+    for (const info of results) setExplorerUpstreamHealth(info.host, info);
+
+    const okHosts = results.filter((r) => r.status === "ok");
+    const allOk = okHosts.length === results.length;
+    const anyOk = okHosts.length > 0;
+    if (anyOk) explorerHasBeenOk = true;
+
+    let aggStatus;
+    if (allOk) aggStatus = "ok";
+    else if (anyOk) aggStatus = "degraded";
+    else if (results.every((r) => r.status === "bad_response")) aggStatus = "bad_response";
+    else aggStatus = "unreachable";
+
+    const active = okHosts[0] || null;
+    // Surface a representative error: prefer the first failure on a host
+    // we'd otherwise want to use, so the dashboard / loader meta line
+    // names the actual problem.
+    const firstErr = results.find((r) => r.error);
+
+    explorerSnapshot = {
+      status: aggStatus,
+      host: active ? active.host : (results[0] ? results[0].host : null),
+      activeHost: active ? active.host : null,
+      hosts: results,
+      chainId: active ? active.chainId : null,
+      latencyMs: active ? active.latencyMs : null,
+      error: active ? null : (firstErr ? firstErr.error : null),
+      at: Date.now(),
+    };
+    logExplorerStatusChange(aggStatus, explorerSnapshot.error);
   }
 
   async function tick() {
@@ -2207,9 +2388,15 @@ function createNodeStatusProbe(opts) {
         hasFullUtxoDb: null,
         at: Date.now(),
       };
+      const mockHosts = getExplorerUpstreams();
       explorerSnapshot = {
         status: "mock",
-        host: getExplorerUpstream(),
+        host: mockHosts[0] || null,
+        activeHost: null,
+        hosts: mockHosts.map((h) => ({
+          host: h, status: "mock", chainId: null,
+          latencyMs: null, error: null, at: Date.now(),
+        })),
         chainId: null,
         latencyMs: null,
         error: null,
@@ -2730,7 +2917,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
       var cls = "muted";
       if (s === "Synced" || s === "ok") cls = "ok";
       else if (s === "Syncing" || s === "Connected") cls = "accent";
-      else if (s === "Connecting" || s === "bad_response") cls = "warn";
+      else if (s === "Connecting" || s === "bad_response" || s === "degraded") cls = "warn";
       else if (s === "unreachable") cls = "err";
       else if (s === "mock") cls = "muted";
       return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
@@ -2830,14 +3017,13 @@ const STATUS_PAGE_HTML = `<!doctype html>
       }
       body.className = "";
       var rows = [];
+
+      // Top-line summary (aggregated status, active host, first-ok latch).
       rows.push('<div class="kv">');
       rows.push('<div class="label">Status</div><div class="val">' + statusBadge(ex.status) +
         (ex.error ? ' <span class="err-text">' + esc(ex.error) + '</span>' : '') + '</div>');
-      rows.push('<div class="label">Host</div><div class="val mono">' + esc(ex.host || "—") + '</div>');
-      rows.push('<div class="label">Chain id</div><div class="val mono">' +
-        (ex.chainId ? esc(ex.chainId) : '—') + '</div>');
-      rows.push('<div class="label">Latency</div><div class="val">' +
-        (ex.latencyMs != null ? esc(String(ex.latencyMs)) + ' ms' : '—') + '</div>');
+      rows.push('<div class="label">Active host</div><div class="val mono">' +
+        esc(ex.activeHost || ex.host || "—") + '</div>');
       rows.push('<div class="label">First-ok?</div><div class="val">' +
         (n && n.explorerHasBeenOk
           ? '<span class="badge ok">yes</span>'
@@ -2845,6 +3031,32 @@ const STATUS_PAGE_HTML = `<!doctype html>
       rows.push('<div class="label">Last refresh</div><div class="val">' + fmtTime(ex.at) +
         ' <span class="small">(' + fmtAge(Date.now() - (ex.at || Date.now())) + ' ago)</span></div>');
       rows.push('</div>');
+
+      // Per-host table — one row per configured upstream so operators
+      // can see at a glance which fallback is currently carrying traffic.
+      var hosts = Array.isArray(ex.hosts) ? ex.hosts : [];
+      if (hosts.length) {
+        rows.push('<div style="margin-top:12px">');
+        rows.push('<table><thead><tr>' +
+          '<th>Host</th><th>Status</th><th>Chain id</th>' +
+          '<th>Latency</th><th>Error</th><th>Last refresh</th>' +
+          '</tr></thead><tbody>');
+        for (var i = 0; i < hosts.length; i++) {
+          var h = hosts[i];
+          var isActive = ex.activeHost && h.host === ex.activeHost;
+          rows.push('<tr>' +
+            '<td class="mono">' + esc(h.host || "—") +
+              (isActive ? ' <span class="badge accent">active</span>' : '') + '</td>' +
+            '<td>' + statusBadge(h.status) + '</td>' +
+            '<td class="mono">' + (h.chainId ? esc(h.chainId) : '—') + '</td>' +
+            '<td>' + (h.latencyMs != null ? esc(String(h.latencyMs)) + ' ms' : '—') + '</td>' +
+            '<td><span class="small">' + esc(h.error || "") + '</span></td>' +
+            '<td><span class="small">' + fmtTime(h.at) + '</span></td>' +
+            '</tr>');
+        }
+        rows.push('</tbody></table></div>');
+      }
+
       body.innerHTML = rows.join('');
     }
 

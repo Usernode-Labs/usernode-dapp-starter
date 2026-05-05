@@ -172,6 +172,9 @@
     var peerTip = (snap && typeof snap.peerBestTipHeight === "number") ? snap.peerBestTipHeight : null;
     var peers = (snap && typeof snap.peers === "number") ? snap.peers : 0;
     var explorer = snap && snap.explorer ? snap.explorer : null;
+    // "degraded" = some hosts up, some down. The proxy/pollers fall over
+    // to a healthy host transparently, so we don't treat it as down.
+    // Only `unreachable` / `bad_response` (every host failing) blocks.
     var explorerDown = explorer
       && (explorer.status === "unreachable" || explorer.status === "bad_response");
 
@@ -180,7 +183,19 @@
     // Show that explicitly instead of the misleading "Connecting to live
     // updates…" message that points at the wrong subsystem.
     if (snap && explorerDown && !snap.explorerHasBeenOk) {
-      var meta = explorer.host ? String(explorer.host) : "";
+      var meta = "";
+      // With multiple hosts configured, name the one(s) we tried so the
+      // operator can see which fallback chain failed.
+      if (explorer.hosts && explorer.hosts.length) {
+        var hostBits = [];
+        for (var hi = 0; hi < explorer.hosts.length; hi++) {
+          var h = explorer.hosts[hi];
+          if (h && h.host) hostBits.push(String(h.host));
+        }
+        if (hostBits.length) meta = hostBits.join(", ");
+      } else if (explorer.host) {
+        meta = String(explorer.host);
+      }
       if (explorer.error) meta = meta ? meta + " · " + explorer.error : String(explorer.error);
       return {
         title: "Explorer unreachable…",
@@ -249,7 +264,10 @@
     // probe wasn't extended yet.
     if (!snap || !snap.explorer) return true;
     var s = snap.explorer.status;
-    if (s === "ok" || s === "mock" || s === "unknown") return true;
+    // "degraded" = some hosts up, some down. The proxy and chain pollers
+    // fall through to a healthy host, so the dapp behaves as if the
+    // explorer were fully up. Loader proceeds.
+    if (s === "ok" || s === "degraded" || s === "mock" || s === "unknown") return true;
     // Trust-after-first-ok: once we've seen the explorer healthy at
     // least once this server lifetime, the dapp's caches have had a
     // chance to backfill. After that, an explorer outage is tolerable

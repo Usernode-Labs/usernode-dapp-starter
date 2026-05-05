@@ -634,12 +634,16 @@ async function pollChainReady() {
     // explorer, so on a never-yet-ok explorer hold the loader until it
     // recovers. Fail open if the probe doesn't surface explorer state
     // (older server) — same fail-open posture as the stream gate.
+    //
+    // "degraded" = ≥1 configured host up; the proxy and chain pollers
+    // automatically fall over to a healthy one, so we proceed.
     const explorer = snap.explorer || null;
     const explorerStatus = explorer ? explorer.status : null;
     const explorerDown = explorer
       && (explorerStatus === "unreachable" || explorerStatus === "bad_response");
     const explorerOk = !explorer
       || explorerStatus === "ok"
+      || explorerStatus === "degraded"
       || explorerStatus === "mock"
       || explorerStatus === "unknown"
       || snap.explorerHasBeenOk === true;
@@ -665,11 +669,18 @@ async function pollChainReady() {
     // → Catching up).
     if (_engineLoaderReady) {
       if (explorerDown && !snap.explorerHasBeenOk) {
-        // Highest precedence: explorer-down on a fresh boot blocks
-        // backfill, which is the actual problem worth surfacing.
-        const host = explorer && explorer.host ? String(explorer.host) : "";
-        setLoading(80, host
-          ? "Explorer unreachable\u2026 (" + host + ")"
+        // Highest precedence: every configured host is down on a fresh
+        // boot, which blocks cache backfill — the actual problem worth
+        // naming. List the hosts so operators can see which fallback
+        // chain failed.
+        let hostList = "";
+        if (explorer && Array.isArray(explorer.hosts) && explorer.hosts.length) {
+          hostList = explorer.hosts.map((h) => h && h.host).filter(Boolean).join(", ");
+        } else if (explorer && explorer.host) {
+          hostList = String(explorer.host);
+        }
+        setLoading(80, hostList
+          ? "Explorer unreachable\u2026 (" + hostList + ")"
           : "Explorer unreachable\u2026");
       } else if (!streamOk) {
         setLoading(95, "Connecting to live updates\u2026");
