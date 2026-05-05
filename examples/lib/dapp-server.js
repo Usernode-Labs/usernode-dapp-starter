@@ -1436,7 +1436,7 @@ function createAppStateCache(opts) {
       sender: expected.from_pubkey || null,
       recipient: expected.destination_pubkey || null,
       memoPreview: memoStr != null ? memoStr.slice(0, 120) : null,
-      txIdHash: expected.txId ? String(expected.txId).slice(0, 12) : null,
+      txId: expected.txId ? String(expected.txId) : null,
       clientId: meta.clientId || null,
     });
     if (recentWaiters.length > RECENT_WAITERS_LIMIT) {
@@ -1845,9 +1845,7 @@ function createAppStateCache(opts) {
         sender: w.expected.from_pubkey || null,
         recipient: w.expected.destination_pubkey || null,
         memoPreview: memoStr != null ? memoStr.slice(0, 120) : null,
-        txIdHash: w.expected.txId
-          ? String(w.expected.txId).slice(0, 12)
-          : null,
+        txId: w.expected.txId ? String(w.expected.txId) : null,
         clientId: w.clientId,
       });
     }
@@ -2895,6 +2893,9 @@ const STATUS_PAGE_HTML = `<!doctype html>
     th { font-weight: 600; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
     tr:last-child td { border-bottom: none; }
     .mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    /* Mono cells hold full pubkeys / tx ids — break inside the cell so a
+     * single 64-char hash doesn't widen the table past the viewport. */
+    td.mono { word-break: break-all; overflow-wrap: anywhere; }
     .sync-bar { width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
     .sync-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
     .sync-fill.full { background: var(--ok); }
@@ -2977,18 +2978,11 @@ const STATUS_PAGE_HTML = `<!doctype html>
     var $ = function (id) { return document.getElementById(id); };
 
     // ── Formatting helpers ────────────────────────────────────────────────
-    function shortAddr(p) {
-      if (!p) return "—";
-      var s = String(p);
-      if (s.length <= 16) return s;
-      return s.slice(0, 10) + "…" + s.slice(-4);
-    }
-    function shortId(s) {
-      if (!s) return "—";
-      var x = String(s);
-      if (x.length <= 14) return x;
-      return x.slice(0, 8) + "…" + x.slice(-4);
-    }
+    // Public keys and tx ids are always shown in full on this page — it's
+    // a debugging dashboard, so unambiguous copy-pasteable values matter
+    // more than visual density. CSS on td.mono lets them wrap.
+    function fullAddr(p) { return p ? String(p) : "—"; }
+    function fullId(s) { return s ? String(s) : "—"; }
     function fmtAge(ms) {
       if (ms == null || !isFinite(ms)) return "—";
       var s = Math.floor(ms / 1000);
@@ -3301,7 +3295,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
           : '<span class="small">0</span>';
         rows.push('<tr>',
           '<td><strong>' + esc(c.name) + '</strong></td>',
-          '<td class="mono">' + esc(shortAddr(c.appPubkey)) + '</td>',
+          '<td class="mono">' + esc(fullAddr(c.appPubkey)) + '</td>',
           '<td><span class="small">' + esc((c.queryFields || []).join(', ')) + '</span></td>',
           '<td>' + fmtNum(c.count) + '</td>',
           '<td>' + waitersCell + '</td>',
@@ -3347,9 +3341,9 @@ const STATUS_PAGE_HTML = `<!doctype html>
             else if (/(fail|error|reject)/i.test(it.status || "")) statusCls = "err";
             else if (/(pend|wait|in.?flight|echoing|sending|active|in.?progress)/i.test(it.status || "")) statusCls = "accent";
             html += '<tr>' +
-              '<td class="mono">' + esc(shortId(it.id)) + '</td>' +
+              '<td class="mono">' + esc(fullId(it.id)) + '</td>' +
               '<td>' + esc(it.kind || "—") + '</td>' +
-              '<td class="mono">' + esc(shortAddr(it.fromOrTo || it.to || it.from)) + '</td>' +
+              '<td class="mono">' + esc(fullAddr(it.fromOrTo || it.to || it.from)) + '</td>' +
               '<td>' + (it.amount != null ? fmtNum(it.amount) : "—") + '</td>' +
               '<td><span class="badge ' + statusCls + '">' + esc(it.status || "—") + '</span></td>' +
               '<td>' + fmtAge(it.ageMs) + '</td>' +
@@ -3407,16 +3401,16 @@ const STATUS_PAGE_HTML = `<!doctype html>
           html += '<div class="small" style="margin:6px 0 4px;font-weight:600">Active</div>';
           html += '<table><thead><tr>' +
             '<th>Age</th><th>Sender</th><th>Memo</th>' +
-            '<th>Tx hint</th><th>Client</th><th>Timeout</th>' +
+            '<th>Tx id</th><th>Client</th><th>Timeout</th>' +
             '</tr></thead><tbody>';
           for (var j = 0; j < ws.length; j++) {
             var w = ws[j];
             html += '<tr>' +
               '<td>' + fmtAge(w.ageMs) + '</td>' +
-              '<td class="mono">' + esc(shortAddr(w.sender)) + '</td>' +
+              '<td class="mono">' + esc(fullAddr(w.sender)) + '</td>' +
               '<td><span class="small">' + esc(fmtMemo(w.memoPreview)) + '</span></td>' +
-              '<td class="mono">' + esc(w.txIdHash || '—') + '</td>' +
-              '<td class="mono">' + esc(w.clientId ? String(w.clientId).slice(0, 8) : '—') + '</td>' +
+              '<td class="mono">' + esc(fullId(w.txId || w.txIdHash)) + '</td>' +
+              '<td class="mono">' + esc(fullId(w.clientId)) + '</td>' +
               '<td><span class="small">' + fmtAge(w.timeoutMs) + '</span></td>' +
               '</tr>';
           }
@@ -3436,7 +3430,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
           html += '<div class="small" style="margin:10px 0 4px;font-weight:600">Recent</div>';
           html += '<table><thead><tr>' +
             '<th>Status</th><th>Ended</th><th>Took</th>' +
-            '<th>Sender</th><th>Memo</th><th>Tx hint</th><th>Client</th>' +
+            '<th>Sender</th><th>Memo</th><th>Tx id</th><th>Client</th>' +
             '</tr></thead><tbody>';
           for (var k = 0; k < rs.length; k++) {
             var r = rs[k];
@@ -3445,10 +3439,10 @@ const STATUS_PAGE_HTML = `<!doctype html>
               '<td>' + waiterFinalBadge(r.finalStatus) + '</td>' +
               '<td><span class="small">' + fmtAge(endedAge) + ' ago</span></td>' +
               '<td><span class="small">' + fmtAge(r.durationMs) + '</span></td>' +
-              '<td class="mono">' + esc(shortAddr(r.sender)) + '</td>' +
+              '<td class="mono">' + esc(fullAddr(r.sender)) + '</td>' +
               '<td><span class="small">' + esc(fmtMemo(r.memoPreview)) + '</span></td>' +
-              '<td class="mono">' + esc(r.txIdHash || '—') + '</td>' +
-              '<td class="mono">' + esc(r.clientId ? String(r.clientId).slice(0, 8) : '—') + '</td>' +
+              '<td class="mono">' + esc(fullId(r.txId || r.txIdHash)) + '</td>' +
+              '<td class="mono">' + esc(fullId(r.clientId)) + '</td>' +
               '</tr>';
           }
           html += '</tbody></table>';
@@ -3493,10 +3487,10 @@ const STATUS_PAGE_HTML = `<!doctype html>
             var t = recent[j];
             var age = t.ts ? (now - t.ts) : null;
             html += '<tr>' +
-              '<td class="mono">' + esc(shortId(t.id)) + '</td>' +
-              '<td class="mono">' + esc(shortAddr(t.from)) + '</td>' +
+              '<td class="mono">' + esc(fullId(t.id)) + '</td>' +
+              '<td class="mono">' + esc(fullAddr(t.from)) + '</td>' +
               '<td><span class="arrow">→</span></td>' +
-              '<td class="mono">' + esc(shortAddr(t.to)) + '</td>' +
+              '<td class="mono">' + esc(fullAddr(t.to)) + '</td>' +
               '<td>' + (t.amount != null ? fmtNum(t.amount) : "—") + '</td>' +
               '<td><span class="small">' + esc(fmtMemo(t.memo)) + '</span></td>' +
               '<td>' + (t.blockHeight != null ? fmtNum(t.blockHeight) : '—') + '</td>' +
