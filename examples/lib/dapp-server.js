@@ -1234,6 +1234,16 @@ async function fetchGenesisAccounts(opts) {
 //   - mockTransactions     — array from createMockApi; drained on a 1s timer in localDev.
 //   - intervalMs           — live-poll interval (default 3000).
 //   - backfill             — run fetchAllTransactions once at start (default true).
+//   - initialRawTxs        — optional array of raw explorer txs to pre-seed
+//     the visible /status history without running them through
+//     processTransaction. Use when the dapp ran its own backfill outside
+//     this helper (engine constructor, custom replay logic) and the
+//     caller-managed processing has already consumed those txs — but
+//     they still need to be visible to operators checking /status.
+//   - initialLastHeight    — seed the live poller from this block height
+//     (used together with initialSeenIds when backfill is disabled).
+//   - initialSeenIds       — tx ids the live poller should treat as
+//     already-processed (dedup safety net for overlapping fetches).
 //   - name                 — short label for log lines.
 //   - nodeRpcUrl           — optional. URL of a usernode RPC server.
 //     When set, the `recipient` queryField switches to the node's SSE
@@ -1310,6 +1320,13 @@ function createAppStateCache(opts) {
   // needs the poller to start from where that left off.
   const initialLastHeight = opts.initialLastHeight != null ? opts.initialLastHeight : null;
   const initialSeenIds = Array.isArray(opts.initialSeenIds) ? opts.initialSeenIds : null;
+  // Pre-seed the visible raw-tx store without replaying through
+  // processTransaction. Falling-sands needs this: its engine already
+  // consumed historical txs in its constructor, so re-routing them
+  // through processTransaction would double-apply. Without seeding, the
+  // /status "Recent Transactions" panel for sands sits empty until new
+  // live txs arrive, which on a low-traffic dapp can be hours.
+  const initialRawTxs = Array.isArray(opts.initialRawTxs) ? opts.initialRawTxs : null;
   const name = opts.name || appPubkey.slice(0, 12) + "…";
   // Direct-to-node fast path. Defaults ON whenever `nodeRpcUrl` is set so
   // dapps don't need to plumb a feature flag — sub-second live-tail is
@@ -1340,6 +1357,15 @@ function createAppStateCache(opts) {
   // it.
   const rawTxs = []; // chronological insertion order
   const rawTxIds = new Set();
+  if (initialRawTxs && initialRawTxs.length) {
+    for (const tx of initialRawTxs) {
+      if (!tx || typeof tx !== "object") continue;
+      const id = _appStateExtractId(tx);
+      if (id && rawTxIds.has(id)) continue;
+      if (id) rawTxIds.add(id);
+      rawTxs.push(tx);
+    }
+  }
   const cacheRoutePrefix = `/__usernode/cache/${appPubkey}`;
 
   // Listeners notified after every processTransaction. Used by
@@ -2927,6 +2953,13 @@ const STATUS_PAGE_HTML = `<!doctype html>
 
     <div class="card">
       <h2>Recent Transactions</h2>
+      <div class="small" style="margin:-6px 0 10px;color:var(--muted)">
+        Last 20 transactions per dapp from each cache's
+        in-memory store. Caches are rebuilt from chain history on every
+        server restart and grow unbounded while running, so
+        <code>total</code> reflects everything seen since boot, not just
+        what's shown.
+      </div>
       <div id="recentBody" class="empty">Loading…</div>
     </div>
 

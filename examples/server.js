@@ -219,10 +219,12 @@ let sandsCache = null;
   // (they receive "loading" messages with progress until replay finishes).
   engine.attachWebSocket(server);
 
-  // Replay is async — yields to the event loop so the server stays responsive.
-  await engine.init();
-  engine.startTickLoop();
-
+  // Build the cache *before* replay so it shows up on /status with
+  // count=0, streamReady=false while the engine catches up. Without
+  // this, fresh boots with a discarded snapshot (epoch mismatch, etc.)
+  // hide sands entirely for tens of minutes — invisible to operators
+  // unless they read docker logs. Polling doesn't start until after
+  // replay, so the engine sees the same tx stream it always did.
   sandsCache = createAppStateCache({
     name: "sands",
     appPubkey: SANDS_APP_PUBKEY,
@@ -231,6 +233,7 @@ let sandsCache = null;
     backfill: false,                  // engine handles its own (windowed replay)
     initialLastHeight: lastHeight,    // seed live poller from where replay ended
     initialSeenIds: replayTxIds,
+    initialRawTxs: replayTxs,         // seed visible /status history (engine already consumed these via the constructor; this just makes them visible without re-running processTransaction)
     processTransaction: engine.processChainTransaction,
     handleRequest: engine.handleRequest,
     onChainReset(newId, oldId) {
@@ -241,8 +244,21 @@ let sandsCache = null;
     mockTransactions: LOCAL_DEV ? mockApi.transactions : null,
     nodeRpcUrl: LASTWIN_NODE_RPC_URL,
   });
+  // dappServerStatus is created synchronously in the same file; the IIFE
+  // yielded at `await discoverChainInfo()` long before this point, so
+  // it's guaranteed to be live here.
+  dappServerStatus.registerCache(sandsCache);
+  console.log("[sands] cache registered with /status (replay still in progress)");
+
+  // Replay is async — yields to the event loop so the server stays responsive.
+  await engine.init();
+  engine.startTickLoop();
+
   sandsCache.start();
-})();
+  console.log("[sands] live polling started after replay completion");
+})().catch((err) => {
+  console.error("[sands] engine init failed:", err);
+});
 
 // ── Opinion Market vote encryption ───────────────────────────────────────────
 const voteEncryption = createVoteEncryption({
@@ -389,22 +405,9 @@ dappServerStatus.registerCache(omCache);
 dappServerStatus.registerCache(lastwinCache);
 dappServerStatus.registerCache(echoCache);
 dappServerStatus.registerCache(usernamesCache);
-// sandsCache is created inside the async initEngine() IIFE above. Poll for
-// it and register once it exists (cap at 60s; if the engine never inits
-// we'd rather show partial status than spin forever).
-{
-  const start = Date.now();
-  const sandsRegPoll = setInterval(() => {
-    if (sandsCache) {
-      dappServerStatus.registerCache(sandsCache);
-      clearInterval(sandsRegPoll);
-    } else if (Date.now() - start > 60000) {
-      clearInterval(sandsRegPoll);
-      console.warn("[status] sands cache never came up — leaving unregistered");
-    }
-  }, 500);
-  if (sandsRegPoll.unref) sandsRegPoll.unref();
-}
+// sandsCache is registered from inside the async initEngine() IIFE above
+// (replay can take many minutes; a fixed timeout silently dropped it
+// from /status — see comment in initEngine).
 dappServerStatus.registerPending("lastwin", () => lastOneWins.getPending());
 dappServerStatus.registerPending("echo", () => echo.getPending());
 
