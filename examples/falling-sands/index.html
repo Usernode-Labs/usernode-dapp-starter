@@ -399,6 +399,67 @@
     #admin-reset-status.err { color: #ff6b6b; }
     #admin-reset-status.ok { color: #5dd39e; }
 
+    /* ── Admin reset confirm modal ──────────────────────
+     * Hand-rolled because window.confirm() is silently a
+     * no-op in some Flutter WebView WKUIDelegate setups,
+     * which made the production reset button look dead. */
+    #admin-confirm-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 600;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+    }
+    #admin-confirm-overlay.open { display: flex; }
+    #admin-confirm-content {
+      padding: 22px;
+      max-width: 360px;
+      width: 90%;
+      background: #131820;
+      border-radius: 16px;
+      border: 1px solid rgba(255,107,107,0.3);
+      font-size: 13px;
+      line-height: 1.6;
+      color: #cdd6e4;
+    }
+    #admin-confirm-content h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      color: #ff8b8b;
+    }
+    #admin-confirm-content p { margin: 0 0 14px; }
+    #admin-confirm-actions {
+      display: flex;
+      gap: 8px;
+    }
+    #admin-confirm-actions button {
+      flex: 1 1 auto;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s, transform 0.1s;
+    }
+    #admin-confirm-actions button:active { transform: scale(0.98); }
+    #admin-confirm-cancel {
+      border: 1px solid rgba(255,255,255,0.15);
+      background: transparent;
+      color: #cdd6e4;
+    }
+    #admin-confirm-cancel:hover { background: rgba(255,255,255,0.06); }
+    #admin-confirm-ok {
+      border: 1px solid rgba(255,107,107,0.4);
+      background: rgba(255,107,107,0.18);
+      color: #ff8b8b;
+    }
+    #admin-confirm-ok:hover { background: rgba(255,107,107,0.32); }
+
     /* ── Loading overlay ──────────────────────────── */
     #loading-overlay {
       position: fixed;
@@ -509,6 +570,17 @@
       <p class="muted">You're signed in as the canvas admin. Resetting wipes everyone's drawings back to the seeded default. This is recorded on-chain as an admin reset memo.</p>
       <button id="admin-reset-btn" type="button">Reset shared canvas</button>
       <div id="admin-reset-status"></div>
+    </div>
+  </div>
+</div>
+
+<div id="admin-confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title">
+  <div id="admin-confirm-content">
+    <h2 id="admin-confirm-title">Reset shared canvas?</h2>
+    <p>This wipes everyone's drawings back to the seeded default and is recorded on-chain.</p>
+    <div id="admin-confirm-actions">
+      <button id="admin-confirm-cancel" type="button">Cancel</button>
+      <button id="admin-confirm-ok" type="button">Reset</button>
     </div>
   </div>
 </div>
@@ -2502,12 +2574,52 @@ function setAdminStatus(msg, cls) {
   adminResetStatus.className = cls || "";
 }
 
+// DOM-based confirm dialog. window.confirm() is unreliable inside the
+// Flutter WebView (the WKUIDelegate / WebChromeClient may swallow the
+// call and return false), so the admin reset path uses this overlay
+// instead. Returns a Promise<boolean>.
+function showAdminConfirm() {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById("admin-confirm-overlay");
+    const okBtn = document.getElementById("admin-confirm-ok");
+    const cancelBtn = document.getElementById("admin-confirm-cancel");
+    if (!overlay || !okBtn || !cancelBtn) {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      overlay.classList.remove("open");
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      overlay.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onOk = () => finish(true);
+    const onCancel = () => finish(false);
+    const onBackdrop = (e) => { if (e.target === overlay) finish(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(false);
+      else if (e.key === "Enter") finish(true);
+    };
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    overlay.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+    overlay.classList.add("open");
+    // Defer focus so the tap that opened the dialog doesn't immediately
+    // trigger the OK button on touch devices.
+    setTimeout(() => { try { cancelBtn.focus(); } catch (_) {} }, 0);
+  });
+}
+
 if (adminResetBtn) {
   adminResetBtn.addEventListener("click", async () => {
     if (adminResetBtn.disabled) return;
-    const confirmed = window.confirm(
-      "Reset the shared canvas for everyone? This wipes all drawings back to the seeded default and is recorded on-chain."
-    );
+    const confirmed = await showAdminConfirm();
     if (!confirmed) return;
 
     adminResetBtn.disabled = true;
