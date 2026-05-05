@@ -2668,8 +2668,25 @@ const STATUS_PAGE_HTML = `<!doctype html>
       rows.push('<div class="label">First-synced?</div><div class="val">' +
         (n.hasBeenSynced ? '<span class="badge ok">yes</span>' : '<span class="badge warn">not yet</span>') + '</div>');
       if (n.hasFullUtxoDb === false) {
-        rows.push('<div class="label">UTXO mode</div><div class="val"><span class="badge err">PARTIAL</span> ' +
-          '<span class="warn-text">sidecar booted without HAS_FULL_UTXO_DB — incoming txs from non-tracked senders may be silently dropped</span></div>');
+        rows.push('<div class="label">UTXO mode</div><div class="val">' +
+          '<span class="badge err">PARTIAL</span> ' +
+          '<span class="warn-text">sidecar lacks HAS_FULL_UTXO_DB — incoming txs from non-tracked senders may be silently dropped</span>' +
+          '<details style="margin-top:6px"><summary class="small">Why? (likely cause)</summary>' +
+          '<div class="small" style="margin-top:6px;line-height:1.5">' +
+          'Most often this is a silent <code>BlockchainSyncAction::Replace</code>: the candidate verifier picks a target chain that doesn&rsquo;t share enough ancestor with the current best chain, ' +
+          '<code>replace()</code> clears <code>trees.utxo_root</code>, and from that point every block applies in <code>partial</code> mode because the worker has no full UTXO tree at the new parent root. ' +
+          '(Replace actions log at <code>DEBUG</code> by default, so they don&rsquo;t appear in <code>RUST_LOG=info</code>.)' +
+          '<br><br>' +
+          'A related contributing path is the <code>BlocksApplyWithoutCandidateVerification</code> warning &mdash; peer-fetched blocks reaching the apply pipeline before candidate verification has signed off. ' +
+          'Upstream <code>FIXME</code> at ' +
+          '<a href="https://github.com/Usernode-Labs/usernode/blob/main/crates/node/src/blockchain/sync/blockchain_sync_reducer.rs#L468" target="_blank" rel="noopener" style="color:var(--accent)">' +
+          'crates/node/src/blockchain/sync/blockchain_sync_reducer.rs:468</a>:' +
+          '<br><em>&ldquo;ensure peer-origin intermediate sync blocks are ingested through candidate verification before they can enter the apply pipeline.&rdquo;</em>' +
+          '<br><br>' +
+          'Workaround: restart the sidecar with <code>make node-full</code> to load the archive and get a fresh full-mode window. ' +
+          'Confirm with <code>RUST_LOG=&#x27;info,usernode_node::blockchain=debug&#x27;</code> to see <code>BlockchainSyncReplace</code> events directly.' +
+          '</div></details>' +
+          '</div>');
       } else if (n.hasFullUtxoDb === true) {
         rows.push('<div class="label">UTXO mode</div><div class="val"><span class="badge ok">full</span></div>');
       }
