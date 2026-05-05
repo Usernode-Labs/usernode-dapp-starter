@@ -3010,6 +3010,39 @@ const STATUS_PAGE_HTML = `<!doctype html>
       return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
     }
 
+    // ── Preserve <details> open state across re-renders ──────────────────
+    //
+    // Every renderer below replaces its body via innerHTML on each SSE /
+    // poll frame (~1s cadence). Without intervention any <details> the
+    // user collapsed snaps right back to whatever default the renderer
+    // picked. The fix is the simplest possible one: before each render,
+    // snapshot the current open state of every tracked <details> from
+    // the live DOM, then after the render re-apply those states. The
+    // render-emitted 'open' attribute only takes effect for ids that
+    // didn't exist before (new caches, new pending sources) — those
+    // pick up the renderer's default heuristic. Anything already on
+    // the page keeps whatever state it had a moment ago, regardless
+    // of whether the user toggled it or it was just sitting at its
+    // default. Result: state never changes on its own, ever.
+    function detailsId(prefix, name) {
+      return "ds-" + prefix + "-" + String(name || "unknown").replace(/[^A-Za-z0-9_-]/g, "_");
+    }
+    function captureOpenStates() {
+      var map = {};
+      var els = document.querySelectorAll('details[id^="ds-"]');
+      for (var i = 0; i < els.length; i++) map[els[i].id] = !!els[i].open;
+      return map;
+    }
+    function restoreOpenStates(map) {
+      var els = document.querySelectorAll('details[id^="ds-"]');
+      for (var i = 0; i < els.length; i++) {
+        var id = els[i].id;
+        if (Object.prototype.hasOwnProperty.call(map, id)) {
+          els[i].open = map[id];
+        }
+      }
+    }
+
     // ── Renderers ─────────────────────────────────────────────────────────
     function renderHeader(snap) {
       var srv = snap.server || {};
@@ -3057,7 +3090,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
         rows.push('<div class="label">UTXO mode</div><div class="val">' +
           '<span class="badge err">PARTIAL</span> ' +
           '<span class="warn-text">sidecar lacks HAS_FULL_UTXO_DB — incoming txs from non-tracked senders may be silently dropped</span>' +
-          '<details style="margin-top:6px"><summary class="small">Why? (likely cause)</summary>' +
+          '<details id="ds-node-utxo-why" style="margin-top:6px"><summary class="small">Why? (likely cause)</summary>' +
           '<div class="small" style="margin-top:6px;line-height:1.5">' +
           'Most often this is a silent <code>BlockchainSyncAction::Replace</code>: the candidate verifier picks a target chain that doesn&rsquo;t share enough ancestor with the current best chain, ' +
           '<code>replace()</code> clears <code>trees.utxo_root</code>, and from that point every block applies in <code>partial</code> mode because the worker has no full UTXO tree at the new parent root. ' +
@@ -3211,8 +3244,11 @@ const STATUS_PAGE_HTML = `<!doctype html>
       var html = "";
       for (var i = 0; i < srcs.length; i++) {
         var src = srcs[i];
+        var did = detailsId("pending", src.name);
+        // Default for first-ever appearance only; restoreOpenStates
+        // overrides this for ids already on the page.
         var openAttr = src.count > 0 ? " open" : "";
-        html += '<details' + openAttr + '><summary>' + esc(src.name) +
+        html += '<details id="' + did + '"' + openAttr + '><summary>' + esc(src.name) +
           ' <span class="summary-meta">' + (src.count || 0) + ' pending</span></summary>';
         if (src.error) {
           html += '<div class="err-text">' + esc(src.error) + '</div>';
@@ -3280,7 +3316,8 @@ const STATUS_PAGE_HTML = `<!doctype html>
         var summaryBits = [];
         if (activeCount) summaryBits.push(activeCount + " waiting");
         if (recentCount) summaryBits.push(recentCount + " recent");
-        html += '<details open><summary>' + esc(c.name) +
+        var did = detailsId("waiters", c.name);
+        html += '<details id="' + did + '" open><summary>' + esc(c.name) +
           ' <span class="summary-meta">' + summaryBits.join(" · ") + '</span></summary>';
 
         // Active waiters
@@ -3360,8 +3397,9 @@ const STATUS_PAGE_HTML = `<!doctype html>
       for (var i = 0; i < caches.length; i++) {
         var c = caches[i];
         var recent = c.recent || [];
+        var did = detailsId("recent", c.name);
         var openAttr = i === 0 ? " open" : "";
-        html += '<details' + openAttr + '><summary>' + esc(c.name) +
+        html += '<details id="' + did + '"' + openAttr + '><summary>' + esc(c.name) +
           ' <span class="summary-meta">' + recent.length + ' shown · ' + fmtNum(c.count) + ' total</span></summary>';
         if (!recent.length) {
           html += '<div class="empty">No transactions in this cache.</div>';
@@ -3392,6 +3430,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
     }
 
     function render(snap) {
+      var openStates = captureOpenStates();
       try {
         renderHeader(snap);
         renderNode(snap);
@@ -3403,6 +3442,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
       } catch (e) {
         console.error("[status] render failed:", e);
       }
+      restoreOpenStates(openStates);
     }
 
     function setConn(state) {
