@@ -171,6 +171,24 @@
     var ourTip = (snap && typeof snap.bestTipHeight === "number") ? snap.bestTipHeight : null;
     var peerTip = (snap && typeof snap.peerBestTipHeight === "number") ? snap.peerBestTipHeight : null;
     var peers = (snap && typeof snap.peers === "number") ? snap.peers : 0;
+    var explorer = snap && snap.explorer ? snap.explorer : null;
+    var explorerDown = explorer
+      && (explorer.status === "unreachable" || explorer.status === "bad_response");
+
+    // Explorer outage on a fresh boot: cache backfill goes through the
+    // explorer, so the dapp can't surface any history until it's back.
+    // Show that explicitly instead of the misleading "Connecting to live
+    // updates…" message that points at the wrong subsystem.
+    if (snap && explorerDown && !snap.explorerHasBeenOk) {
+      var meta = explorer.host ? String(explorer.host) : "";
+      if (explorer.error) meta = meta ? meta + " · " + explorer.error : String(explorer.error);
+      return {
+        title: "Explorer unreachable…",
+        meta: meta,
+        percent: 0,
+        indeterminate: true,
+      };
+    }
 
     // Node is fine but our dapp's stream isn't ready yet. Show that
     // rather than "Node synced" — the user is actually waiting on the
@@ -225,6 +243,21 @@
     return snap.streams[streamKey] === true;
   }
 
+  function explorerGateOk(snap) {
+    // Fail open: older servers don't expose `explorer` at all. We don't
+    // want to hold every existing deployment's loader up just because the
+    // probe wasn't extended yet.
+    if (!snap || !snap.explorer) return true;
+    var s = snap.explorer.status;
+    if (s === "ok" || s === "mock" || s === "unknown") return true;
+    // Trust-after-first-ok: once we've seen the explorer healthy at
+    // least once this server lifetime, the dapp's caches have had a
+    // chance to backfill. After that, an explorer outage is tolerable
+    // (live tail still flows through the node SSE / our own poller).
+    if (snap.explorerHasBeenOk) return true;
+    return false;
+  }
+
   function shouldDismiss(snap, requireSynced, streamKey) {
     if (!snap) return false;
     if (snap.__notWired) return true;          // probe endpoint missing
@@ -235,6 +268,10 @@
     // has come up and its initial backfill has completed. See file
     // header for why this matters.
     if (!streamGateOk(snap, streamKey)) return false;
+    // Fresh-boot explorer gate: cache backfill goes through the explorer,
+    // so on a never-yet-ok explorer we hold the loader until either the
+    // explorer recovers or the node's own state allows dismissal anyway.
+    if (!explorerGateOk(snap)) return false;
     if (snap.status === "Synced") return true;
     if (requireSynced) return false;
     // Trust-after-first-sync: once the probe has ever observed `Synced` for

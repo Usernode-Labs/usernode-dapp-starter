@@ -630,7 +630,21 @@ async function pollChainReady() {
     const streamOk = !hasStreamMap || !streamRegistered
       || snap.streams[_SANDS_STREAM_KEY] === true;
 
-    if (streamOk) {
+    // Fresh-boot explorer gate: cache backfill goes through the
+    // explorer, so on a never-yet-ok explorer hold the loader until it
+    // recovers. Fail open if the probe doesn't surface explorer state
+    // (older server) — same fail-open posture as the stream gate.
+    const explorer = snap.explorer || null;
+    const explorerStatus = explorer ? explorer.status : null;
+    const explorerDown = explorer
+      && (explorerStatus === "unreachable" || explorerStatus === "bad_response");
+    const explorerOk = !explorer
+      || explorerStatus === "ok"
+      || explorerStatus === "mock"
+      || explorerStatus === "unknown"
+      || snap.explorerHasBeenOk === true;
+
+    if (streamOk && explorerOk) {
       if (snap.status === "Synced") {
         _chainLoaderReady = true;
         tryDismissLoader();
@@ -650,7 +664,14 @@ async function pollChainReady() {
     // engine → Connecting to server → Server loading → Loading snapshot
     // → Catching up).
     if (_engineLoaderReady) {
-      if (!streamOk) {
+      if (explorerDown && !snap.explorerHasBeenOk) {
+        // Highest precedence: explorer-down on a fresh boot blocks
+        // backfill, which is the actual problem worth surfacing.
+        const host = explorer && explorer.host ? String(explorer.host) : "";
+        setLoading(80, host
+          ? "Explorer unreachable\u2026 (" + host + ")"
+          : "Explorer unreachable\u2026");
+      } else if (!streamOk) {
         setLoading(95, "Connecting to live updates\u2026");
       } else if (snap.status === "Connecting") {
         setLoading(80, "Node connecting to network\u2026");

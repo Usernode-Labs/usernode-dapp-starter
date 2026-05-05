@@ -1927,6 +1927,13 @@ function createNodeStatusProbe(opts) {
   // just applying new blocks" vs "fresh boot, please wait".
   let hasBeenSynced = false;
 
+  // Same trust-after-first-ok latch for the block-explorer probe. The
+  // explorer is an independent service (separate host, separate failure
+  // mode from the sidecar) so it gets its own latch. Loaders use this
+  // to decide "explorer-down means cache backfill is broken" (fresh
+  // boot) vs "explorer-down is tolerable, we already backfilled" (warm).
+  let explorerHasBeenOk = false;
+
   // Per-dapp stream readiness sources. Each registered stream contributes
   // a boolean to `snapshot.streams[name]`. Callers (the dapp-loading
   // overlay) opt into gating their dismiss on a specific stream via
@@ -1961,7 +1968,16 @@ function createNodeStatusProbe(opts) {
     hasFullUtxoDb: null,
     at: Date.now(),
   };
+  let explorerSnapshot = {
+    status: "unknown",
+    host: getExplorerUpstream(),
+    chainId: null,
+    latencyMs: null,
+    error: null,
+    at: Date.now(),
+  };
   let lastStatus = "unknown";
+  let lastExplorerStatus = "unknown";
 
   // Listeners called after every probe tick. Used by createDappServerStatus
   // to push fresh status snapshots to SSE clients without polling.
@@ -1974,8 +1990,10 @@ function createNodeStatusProbe(opts) {
     return () => { updateListeners.delete(cb); };
   }
   function fireUpdateListeners() {
+    if (updateListeners.size === 0) return;
+    const merged = buildSnapshot();
     for (const cb of updateListeners) {
-      try { cb(snapshot); } catch (_) {}
+      try { cb(merged); } catch (_) {}
     }
   }
   // Tri-state so we only log when the flag actually changes value, not the
@@ -1992,6 +2010,16 @@ function createNodeStatusProbe(opts) {
       console.log(`[node-status] -> ${newStatus} (${errMsg})`);
     } else {
       console.log(`[node-status] -> ${newStatus}`);
+    }
+  }
+
+  function logExplorerStatusChange(newStatus, errMsg) {
+    if (newStatus === lastExplorerStatus) return;
+    lastExplorerStatus = newStatus;
+    if (errMsg) {
+      console.log(`[explorer-status] -> ${newStatus} (${errMsg})`);
+    } else {
+      console.log(`[explorer-status] -> ${newStatus}`);
     }
   }
 
@@ -2027,7 +2055,8 @@ function createNodeStatusProbe(opts) {
     }
   }
 
-  async function tick() {
+  async function tickNode() {
+    if (!nodeRpcUrl) return;
     try {
       const data = await httpsJson("GET", `${nodeRpcUrl}/status`);
       const status = (data && typeof data.node_sync_status === "string")
@@ -2084,6 +2113,61 @@ function createNodeStatusProbe(opts) {
       };
       logStatusChange("unreachable", snapshot.error);
     }
+  }
+
+  // Independent block-explorer probe. Hits the cheapest endpoint
+  // (`/active_chain`) which the existing chain pollers already use for
+  // discovery — confirms the explorer's HTTP front door is up AND it's
+  // returning JSON that parses. Latches `explorerHasBeenOk` once seen
+  // healthy so the loaders can apply trust-after-first-ok semantics.
+  async function tickExplorer() {
+    const upstream = getExplorerUpstream();
+    const upstreamBase = getExplorerUpstreamBase();
+    const url = `${explorerProto(upstream)}://${upstream}${upstreamBase}/active_chain`;
+    const startedAt = Date.now();
+    try {
+      const data = await httpsJson("GET", url);
+      const chainId = (data && typeof data.chain_id === "string") ? data.chain_id : null;
+      if (!chainId) {
+        explorerSnapshot = {
+          status: "bad_response",
+          host: upstream,
+          // Keep last known chainId so the dashboard doesn't blank out
+          // on a transient malformed response.
+          chainId: explorerSnapshot.chainId,
+          latencyMs: Date.now() - startedAt,
+          error: "missing chain_id in /active_chain response",
+          at: Date.now(),
+        };
+        logExplorerStatusChange("bad_response", explorerSnapshot.error);
+      } else {
+        explorerHasBeenOk = true;
+        explorerSnapshot = {
+          status: "ok",
+          host: upstream,
+          chainId,
+          latencyMs: Date.now() - startedAt,
+          error: null,
+          at: Date.now(),
+        };
+        logExplorerStatusChange("ok", null);
+      }
+    } catch (e) {
+      const errMsg = e && e.message ? e.message : String(e);
+      explorerSnapshot = {
+        status: "unreachable",
+        host: upstream,
+        chainId: explorerSnapshot.chainId,
+        latencyMs: null,
+        error: errMsg,
+        at: Date.now(),
+      };
+      logExplorerStatusChange("unreachable", errMsg);
+    }
+  }
+
+  async function tick() {
+    await Promise.allSettled([tickNode(), tickExplorer()]);
     fireUpdateListeners();
   }
 
@@ -2094,8 +2178,13 @@ function createNodeStatusProbe(opts) {
     }
     // Self-adapting cadence: tight while the node is still coming up, slow
     // once it's `Synced`. Avoids missing fast `Connecting → Connected`
-    // transitions without spamming the sidecar in steady state.
-    const delay = (snapshot.status === "Synced") ? intervalMs : bootIntervalMs;
+    // transitions without spamming the sidecar in steady state. When no
+    // sidecar is configured we boot off the explorer instead — fast until
+    // it has been seen healthy at least once, then slow.
+    const inBoot = nodeRpcUrl
+      ? snapshot.status !== "Synced"
+      : !explorerHasBeenOk;
+    const delay = inBoot ? bootIntervalMs : intervalMs;
     timer = setTimeout(() => {
       // Chain the next schedule onto tick completion so a slow /status
       // call can't queue up overlapping requests.
@@ -2118,16 +2207,25 @@ function createNodeStatusProbe(opts) {
         hasFullUtxoDb: null,
         at: Date.now(),
       };
+      explorerSnapshot = {
+        status: "mock",
+        host: getExplorerUpstream(),
+        chainId: null,
+        latencyMs: null,
+        error: null,
+        at: Date.now(),
+      };
       lastStatus = "mock";
+      lastExplorerStatus = "mock";
       console.log("[node-status] local-dev mode — probe disabled");
       return;
     }
 
     if (!nodeRpcUrl) {
-      // No node URL configured. Endpoint still serves a `unknown` snapshot
-      // so the loader can probe and gracefully decide it has no signal.
-      console.log("[node-status] no NODE_RPC_URL — probe disabled (snapshot stays 'unknown')");
-      return;
+      // No node URL configured. Node side stays `unknown` forever — the
+      // loader treats that as "nothing to wait for". Explorer probe still
+      // runs since it's an independent service.
+      console.log("[node-status] no NODE_RPC_URL — node probe disabled (status stays 'unknown'); explorer probe still active");
     }
 
     void tick().then(scheduleNext, scheduleNext);
@@ -2141,14 +2239,23 @@ function createNodeStatusProbe(opts) {
     started = false;
   }
 
+  function buildSnapshot() {
+    return {
+      ...snapshot,
+      streams: readStreams(),
+      explorer: { ...explorerSnapshot },
+      explorerHasBeenOk,
+    };
+  }
+
   function get() {
-    return { ...snapshot, streams: readStreams() };
+    return buildSnapshot();
   }
 
   function handleRequest(req, res, pathname) {
     if (pathname !== ROUTE) return false;
     if (req.method !== "GET" && req.method !== "HEAD") return false;
-    const body = JSON.stringify({ ...snapshot, streams: readStreams() });
+    const body = JSON.stringify(buildSnapshot());
     const headers = {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
@@ -2518,6 +2625,11 @@ const STATUS_PAGE_HTML = `<!doctype html>
       <div id="nodeBody" class="empty">Loading…</div>
     </div>
 
+    <div class="card" id="explorerCard">
+      <h2>Explorer</h2>
+      <div id="explorerBody" class="empty">Loading…</div>
+    </div>
+
     <div class="card">
       <h2>Caches</h2>
       <div id="cachesBody" class="empty">Loading…</div>
@@ -2616,9 +2728,9 @@ const STATUS_PAGE_HTML = `<!doctype html>
     function statusBadge(status) {
       var s = String(status || "unknown");
       var cls = "muted";
-      if (s === "Synced") cls = "ok";
+      if (s === "Synced" || s === "ok") cls = "ok";
       else if (s === "Syncing" || s === "Connected") cls = "accent";
-      else if (s === "Connecting") cls = "warn";
+      else if (s === "Connecting" || s === "bad_response") cls = "warn";
       else if (s === "unreachable") cls = "err";
       else if (s === "mock") cls = "muted";
       return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
@@ -2700,6 +2812,38 @@ const STATUS_PAGE_HTML = `<!doctype html>
         }
         rows.push('<div class="label">Streams</div><div class="val">' + sBits.join(' ') + '</div>');
       }
+      rows.push('</div>');
+      body.innerHTML = rows.join('');
+    }
+
+    function renderExplorer(snap) {
+      // Explorer state lives under snap.node.explorer because the probe
+      // owns both the sidecar /status poll and the explorer /active_chain
+      // poll (single snapshot, single endpoint).
+      var n = snap.node || null;
+      var ex = n && n.explorer ? n.explorer : null;
+      var body = $("explorerBody");
+      if (!ex) {
+        body.className = "empty";
+        body.textContent = "No explorer probe wired.";
+        return;
+      }
+      body.className = "";
+      var rows = [];
+      rows.push('<div class="kv">');
+      rows.push('<div class="label">Status</div><div class="val">' + statusBadge(ex.status) +
+        (ex.error ? ' <span class="err-text">' + esc(ex.error) + '</span>' : '') + '</div>');
+      rows.push('<div class="label">Host</div><div class="val mono">' + esc(ex.host || "—") + '</div>');
+      rows.push('<div class="label">Chain id</div><div class="val mono">' +
+        (ex.chainId ? esc(ex.chainId) : '—') + '</div>');
+      rows.push('<div class="label">Latency</div><div class="val">' +
+        (ex.latencyMs != null ? esc(String(ex.latencyMs)) + ' ms' : '—') + '</div>');
+      rows.push('<div class="label">First-ok?</div><div class="val">' +
+        (n && n.explorerHasBeenOk
+          ? '<span class="badge ok">yes</span>'
+          : '<span class="badge warn">not yet</span>') + '</div>');
+      rows.push('<div class="label">Last refresh</div><div class="val">' + fmtTime(ex.at) +
+        ' <span class="small">(' + fmtAge(Date.now() - (ex.at || Date.now())) + ' ago)</span></div>');
       rows.push('</div>');
       body.innerHTML = rows.join('');
     }
@@ -2952,6 +3096,7 @@ const STATUS_PAGE_HTML = `<!doctype html>
       try {
         renderHeader(snap);
         renderNode(snap);
+        renderExplorer(snap);
         renderCaches(snap);
         renderPending(snap);
         renderWaiters(snap);
