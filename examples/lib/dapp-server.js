@@ -11,6 +11,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { txMatches } = require("./tx-match");
 
 // ── .env loader ─────────────────────────────────────────────────────────────
 // Loads KEY=VALUE pairs from a .env file into process.env (does not overwrite
@@ -815,7 +816,16 @@ function createNodeRecentTxStream(opts) {
   // wrapper) anyway.
   void onChainReset;
 
-  return { start, close, setInitialLastHeight, addSeenIds, isReady, onReadyChange };
+  function getStats() {
+    return {
+      sseOpen,
+      trackedOwnerEnsured,
+      lastHeight,
+      backoffMs,
+    };
+  }
+
+  return { start, close, setInitialLastHeight, addSeenIds, isReady, onReadyChange, getStats };
 }
 
 // ── Bulk transaction fetch ───────────────────────────────────────────────────
@@ -1114,6 +1124,107 @@ function createAppStateCache(opts) {
   const rawTxIds = new Set();
   const cacheRoutePrefix = `/__usernode/cache/${appPubkey}`;
 
+  // Listeners notified after every processTransaction. Used by
+  // createDappServerStatus to debounce SSE pushes — `cb(rawTx)` is called
+  // post-user-processor so listeners observe state in its final form.
+  // Errors in listeners are swallowed; status notifications must never
+  // poison the chain pipeline.
+  const txProcessedListeners = new Set();
+  function onTxProcessed(cb) {
+    if (typeof cb !== "function") return () => {};
+    txProcessedListeners.add(cb);
+    return () => { txProcessedListeners.delete(cb); };
+  }
+
+  // Listeners notified when a waiter is added or removed (open / match /
+  // timeout / disconnect). Lets createDappServerStatus push a fresh
+  // snapshot to /status viewers immediately so the operator sees a new
+  // user click "send" without waiting for the 5s safety tick.
+  const waiterChangeListeners = new Set();
+  function onWaiterChange(cb) {
+    if (typeof cb !== "function") return () => {};
+    waiterChangeListeners.add(cb);
+    return () => { waiterChangeListeners.delete(cb); };
+  }
+  function _fireWaiterChange() {
+    for (const cb of waiterChangeListeners) {
+      try { cb(); } catch (_) {}
+    }
+  }
+
+  // ── Inclusion-wait waiters (SSE) ───────────────────────────────────────
+  //
+  // Each entry represents a connected client (typically the bridge inside a
+  // dapp page) that is waiting for a specific transaction to land in this
+  // cache. Replaces the bridge's polling loop on /getTransactions when the
+  // bridge has `serverCacheUrl` configured: instead of N polls per send,
+  // one persistent SSE connection per send.
+  //
+  // The Map is also the source of truth for "client pending sends" on the
+  // /status page — every open SSE here = one user actively waiting.
+  //
+  // Cleanup is symmetric: req.on('close') fires on tab close / network
+  // drop, and the timeout timer runs as a backstop. Sending `event: matched`
+  // followed by res.end() triggers the bridge's EventSource.close() which
+  // in turn fires req.on('close'), so we never have to manually delete
+  // post-match.
+  const waiters = new Map();
+
+  // Bounded ring of completed SSE waiters, newest-first. Powers the
+  // "Recent client sends" section on /status — useful for diagnosing
+  // timeouts (chain didn't include in time? bridge predicate wrong?
+  // sidecar stalled?) without having to be staring at the page when it
+  // happens. Capped at RECENT_WAITERS_LIMIT to keep snapshots small.
+  const RECENT_WAITERS_LIMIT = 50;
+  const recentWaiters = [];
+
+  function _recordWaiterEnd(meta, finalStatus) {
+    const endedAt = Date.now();
+    const startedAt = meta.startedAt || endedAt;
+    const expected = meta.expected || {};
+    const memoStr = expected.memo != null ? String(expected.memo) : null;
+    recentWaiters.unshift({
+      finalStatus,
+      startedAt,
+      endedAt,
+      durationMs: endedAt - startedAt,
+      timeoutMs: meta.expiresAt != null ? meta.expiresAt - startedAt : null,
+      sender: expected.from_pubkey || null,
+      recipient: expected.destination_pubkey || null,
+      memoPreview: memoStr != null ? memoStr.slice(0, 120) : null,
+      txIdHash: expected.txId ? String(expected.txId).slice(0, 12) : null,
+      clientId: meta.clientId || null,
+    });
+    if (recentWaiters.length > RECENT_WAITERS_LIMIT) {
+      recentWaiters.length = RECENT_WAITERS_LIMIT;
+    }
+  }
+
+  function _matchAgainstWaiters(rawTx) {
+    if (!rawTx || waiters.size === 0) return;
+    let removed = false;
+    for (const [id, w] of waiters) {
+      let hit;
+      try { hit = txMatches(rawTx, w.expected); }
+      catch (_) { hit = false; }
+      if (!hit) continue;
+      try {
+        w.res.write("event: matched\n");
+        w.res.write(`data: ${JSON.stringify(rawTx)}\n\n`);
+      } catch (_) {}
+      try { w.res.end(); } catch (_) {}
+      // The req.on('close') cleanup will fire and remove the entry, but
+      // delete here too so any synchronous follow-up (status snapshot,
+      // getStats) sees the post-match state. Record before delete so the
+      // history captures the match before cleanup runs (which would
+      // otherwise see had=false and skip).
+      _recordWaiterEnd(w, "matched");
+      waiters.delete(id);
+      removed = true;
+    }
+    if (removed) _fireWaiterChange();
+  }
+
   function processTransaction(rawTx) {
     if (rawTx && typeof rawTx === "object") {
       const id = _appStateExtractId(rawTx);
@@ -1123,7 +1234,14 @@ function createAppStateCache(opts) {
       }
       _maybeWarnNullSource(rawTx);
     }
-    return userProcessTransaction(rawTx);
+    const result = userProcessTransaction(rawTx);
+    // Wake bridge waiters before notifying status listeners — the latency
+    // path matters here; the status SSE just rerenders.
+    _matchAgainstWaiters(rawTx);
+    for (const cb of txProcessedListeners) {
+      try { cb(rawTx); } catch (_) {}
+    }
+    return result;
   }
 
   // ── PARTIAL_LEDGER_RECENT_TX_SOURCE_BUG detector ─────────────────────────
@@ -1269,7 +1387,155 @@ function createAppStateCache(opts) {
       return true;
     }
 
+    // SSE inclusion wait — replaces the bridge's polling loop on
+    // /getTransactions when window.usernode.serverCacheUrl is set. The
+    // bridge opens an EventSource here at the start of each
+    // sendTransaction; we hold the connection open and write
+    // `event: matched` the instant a tx landing in our cache satisfies
+    // the predicate.
+    //
+    // Query string carries the predicate fields (all optional, conjunctive
+    // in txMatches): sender, recipient/dest, memo, txId, minCreatedAtMs.
+    // Plus operational fields: timeoutMs (server-side hard cap),
+    // clientId (opaque, surfaced on /status).
+    if (sub === "/waitForTx" && (req.method === "GET" || req.method === "HEAD")) {
+      _handleWaitForTxSse(req, res);
+      return true;
+    }
+
     return false;
+  }
+
+  function _handleWaitForTxSse(req, res) {
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    } catch (_) {
+      res.writeHead(400, { "content-type": "text/plain" });
+      res.end("invalid url");
+      return;
+    }
+    const q = parsedUrl.searchParams;
+
+    const expected = {};
+    if (q.has("sender")) expected.from_pubkey = q.get("sender");
+    const recipient = q.get("recipient") || q.get("dest") || q.get("destination");
+    if (recipient) expected.destination_pubkey = recipient;
+    if (q.has("memo")) expected.memo = q.get("memo");
+    if (q.has("txId")) expected.txId = q.get("txId");
+    if (q.has("minCreatedAtMs")) {
+      const n = Number(q.get("minCreatedAtMs"));
+      if (Number.isFinite(n)) expected.minCreatedAtMs = n;
+    }
+
+    // Reject empty predicates — without at least one narrowing field the
+    // first incoming tx would wake the waiter and the bridge would think
+    // *some other* tx was its confirmation. Bridges always pass at least
+    // sender or txId; this guards against misconfiguration.
+    const hasNarrowing = expected.txId || expected.from_pubkey
+      || expected.destination_pubkey || expected.memo;
+    if (!hasNarrowing) {
+      res.writeHead(400, { "content-type": "text/plain" });
+      res.end("waitForTx requires at least one predicate field (sender, recipient, memo, or txId)");
+      return;
+    }
+
+    // 180s hard cap matches the bridge's default timeoutMs. Bridge can
+    // pass a smaller value to tighten its own ceiling; passing larger is
+    // ignored — we never hold a connection longer than 5 minutes.
+    const SERVER_HARD_CAP_MS = 5 * 60 * 1000;
+    const requestedTimeout = Number(q.get("timeoutMs"));
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? Math.min(requestedTimeout, SERVER_HARD_CAP_MS)
+      : 180000;
+
+    const clientId = q.get("clientId") || null;
+    const startedAt = Date.now();
+    const id = crypto.randomUUID();
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    // Race coverage: the tx may already be in the cache by the time the
+    // bridge subscribes (server-side processing is faster than the round
+    // trip to wallet → confirmation → bridge → SSE). Scan first, only
+    // register if no hit. Newest-first is fine — first match wins.
+    for (let i = rawTxs.length - 1; i >= 0; i--) {
+      let hit;
+      try { hit = txMatches(rawTxs[i], expected); }
+      catch (_) { hit = false; }
+      if (hit) {
+        try {
+          res.write("event: matched\n");
+          res.write(`data: ${JSON.stringify(rawTxs[i])}\n\n`);
+        } catch (_) {}
+        try { res.end(); } catch (_) {}
+        // Synthesize a meta record so the operator sees this on /status
+        // alongside normal matches — distinguishing the race-coverage
+        // path is useful when debugging "why was it instant?" questions.
+        _recordWaiterEnd(
+          { expected, clientId, startedAt, expiresAt: startedAt + timeoutMs },
+          "matched-immediate"
+        );
+        _fireWaiterChange();
+        return;
+      }
+    }
+
+    // No existing match — register and hold the connection.
+    const keepAlive = setInterval(() => {
+      try { res.write(":keep-alive\n\n"); } catch (_) {}
+    }, 15000);
+    if (keepAlive.unref) keepAlive.unref();
+
+    const timeoutHandle = setTimeout(() => {
+      const w = waiters.get(id);
+      if (!w) return;
+      try {
+        res.write("event: timeout\n");
+        res.write(`data: {"timeoutMs":${timeoutMs}}\n\n`);
+      } catch (_) {}
+      try { res.end(); } catch (_) {}
+      _recordWaiterEnd(w, "timeout");
+      waiters.delete(id);
+      _fireWaiterChange();
+    }, timeoutMs);
+    if (timeoutHandle.unref) timeoutHandle.unref();
+
+    let cleanedUp = false;
+    function cleanup() {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearInterval(keepAlive);
+      clearTimeout(timeoutHandle);
+      const w = waiters.get(id);
+      const had = waiters.delete(id);
+      // had=true only when neither match nor timeout already removed
+      // this entry, so this is genuinely a tab-close / network-drop
+      // event. Match and timeout paths record before they delete, so
+      // they short-circuit here cleanly.
+      if (had) {
+        if (w) _recordWaiterEnd(w, "disconnected");
+        _fireWaiterChange();
+      }
+    }
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+    res.on("error", cleanup);
+
+    waiters.set(id, {
+      expected,
+      res,
+      clientId,
+      startedAt,
+      expiresAt: startedAt + timeoutMs,
+    });
+    _fireWaiterChange();
   }
 
   function handleRequest(req, res, pathname) {
@@ -1298,6 +1564,67 @@ function createAppStateCache(opts) {
     if (!backfillDone) return false;
     if (nodeStream) return nodeStream.isReady();
     return true;
+  }
+
+  // Compact snapshot for /__usernode/status. Keep `recent` and `waiters`
+  // bounded so the SSE payload stays small (5 caches × 20 txs + 20 waiters
+  // is still single-digit KB).
+  function getStats() {
+    const recentLimit = 20;
+    const recent = [];
+    for (let i = rawTxs.length - 1; i >= 0 && recent.length < recentLimit; i--) {
+      const tx = rawTxs[i];
+      const memoStr = tx.memo != null ? String(tx.memo) : null;
+      recent.push({
+        id: _appStateExtractId(tx),
+        from: _txField(tx, "source", "from_pubkey", "from"),
+        to: _txField(tx, "destination", "destination_pubkey", "to"),
+        amount: tx.amount != null ? tx.amount : null,
+        memo: memoStr != null ? memoStr.slice(0, 240) : null,
+        ts: _appStateExtractTs(tx),
+        blockHeight: typeof tx.block_height === "number" ? tx.block_height : null,
+        txType: tx.tx_type || tx.type || null,
+      });
+    }
+    // Project waiters in reverse-chronological (newest first) so the most
+    // recently-opened wait is at the top — matches how an operator scans
+    // an incident.
+    const now = Date.now();
+    const waitersList = [];
+    const waitersAll = Array.from(waiters.values()).sort((a, b) => b.startedAt - a.startedAt);
+    for (let i = 0; i < Math.min(20, waitersAll.length); i++) {
+      const w = waitersAll[i];
+      const memoStr = w.expected.memo != null ? String(w.expected.memo) : null;
+      waitersList.push({
+        ageMs: now - w.startedAt,
+        timeoutMs: w.expiresAt - w.startedAt,
+        sender: w.expected.from_pubkey || null,
+        recipient: w.expected.destination_pubkey || null,
+        memoPreview: memoStr != null ? memoStr.slice(0, 120) : null,
+        txIdHash: w.expected.txId
+          ? String(w.expected.txId).slice(0, 12)
+          : null,
+        clientId: w.clientId,
+      });
+    }
+    return {
+      name,
+      appPubkey,
+      queryFields: queryFields.slice(),
+      mode: localDev ? "local-dev" : "production",
+      count: rawTxs.length,
+      backfillDone,
+      streamReady: isStreamReady(),
+      nullSource: getNullSourceStats(),
+      nodeStream: nodeStream && typeof nodeStream.getStats === "function"
+        ? nodeStream.getStats()
+        : null,
+      recent,
+      waitersCount: waiters.size,
+      waiters: waitersList,
+      recentWaitersCount: recentWaiters.length,
+      recentWaiters: recentWaiters.slice(0, 20),
+    };
   }
 
   async function start() {
@@ -1408,6 +1735,10 @@ function createAppStateCache(opts) {
     getRawTransactions,
     isStreamReady,
     getNullSourceStats,
+    getStats,
+    onTxProcessed,
+    onWaiterChange,
+    appPubkey,
     name,
   };
 }
@@ -1526,6 +1857,9 @@ function createUsernamesCache(opts) {
   // — that's what the bridge's serverCacheUrl-based inclusion polling hits.
   // `cache.handleRequest` already chains its own cache-route check in front
   // of `handleStateRequest`, so callers get both endpoints from one entry.
+  //
+  // Also pass through `getStats` / `onTxProcessed` so `createDappServerStatus`
+  // can register the usernames cache uniformly with any other cache.
   return {
     start: cache.start,
     handleRequest: cache.handleRequest,
@@ -1533,7 +1867,11 @@ function createUsernamesCache(opts) {
     getStateResponse,
     reset,
     usernamesPubkey,
+    appPubkey: cache.appPubkey,
     isStreamReady: cache.isStreamReady,
+    getStats: cache.getStats,
+    onTxProcessed: cache.onTxProcessed,
+    onWaiterChange: cache.onWaiterChange,
     name: cache.name,
   };
 }
@@ -1624,6 +1962,22 @@ function createNodeStatusProbe(opts) {
     at: Date.now(),
   };
   let lastStatus = "unknown";
+
+  // Listeners called after every probe tick. Used by createDappServerStatus
+  // to push fresh status snapshots to SSE clients without polling.
+  // Errors in listeners are swallowed; status updates must never poison
+  // the probe loop.
+  const updateListeners = new Set();
+  function onUpdate(cb) {
+    if (typeof cb !== "function") return () => {};
+    updateListeners.add(cb);
+    return () => { updateListeners.delete(cb); };
+  }
+  function fireUpdateListeners() {
+    for (const cb of updateListeners) {
+      try { cb(snapshot); } catch (_) {}
+    }
+  }
   // Tri-state so we only log when the flag actually changes value, not the
   // first time we observe it. `null` = never observed yet (probe just
   // started or sidecar unreachable).
@@ -1730,6 +2084,7 @@ function createNodeStatusProbe(opts) {
       };
       logStatusChange("unreachable", snapshot.error);
     }
+    fireUpdateListeners();
   }
 
   function scheduleNext() {
@@ -1809,8 +2164,844 @@ function createNodeStatusProbe(opts) {
     return true;
   }
 
-  return { start, stop, get, handleRequest, registerStream };
+  return { start, stop, get, handleRequest, registerStream, onUpdate };
 }
+
+// ── Dapp-server aggregated status (`/status` page + SSE feed) ───────────────
+//
+// One per Node process. Aggregates everything the dapp-server already knows
+// (node probe, every createAppStateCache, optional per-app pending-send
+// queues) into a single JSON snapshot and pushes deltas to connected SSE
+// clients in real time.
+//
+// Routes mounted by `handleRequest`:
+//   - GET /__usernode/status         → JSON snapshot (one-shot)
+//   - GET /__usernode/status/stream  → SSE; initial snapshot + push on change
+//   - GET /status                    → self-contained HTML viewer
+//
+// The HTML page opens an EventSource against the SSE route and falls back
+// to polling /__usernode/status if SSE fails (e.g. proxies that buffer
+// text/event-stream aggressively).
+//
+// Wiring (per process):
+//
+//     const status = createDappServerStatus({
+//       name: "echo",
+//       nodeProbe: nodeStatusProbe,
+//       localDev: LOCAL_DEV,
+//       getBuildVersion: () => buildVersion,
+//       port: PORT,
+//     });
+//     status.registerCache(echoCache);
+//     status.registerCache(usernamesCache);
+//     status.registerPending("echo", () => echo.getPending());  // optional
+//     // ...inside the request handler, before catch-all routes:
+//     if (status.handleRequest(req, res, pathname)) return;
+//
+// All endpoints are public (no secrets exposed — pubkeys/memos are already
+// public on chain).
+
+function createDappServerStatus(opts) {
+  opts = opts || {};
+  const name = opts.name || "dapp-server";
+  const nodeProbe = opts.nodeProbe || null;
+  const localDev = !!opts.localDev;
+  const getBuildVersion = typeof opts.getBuildVersion === "function"
+    ? opts.getBuildVersion
+    : null;
+  const port = opts.port != null ? opts.port : null;
+  const startedAtMs = Date.now();
+  const debounceMs = opts.debounceMs != null ? opts.debounceMs : 250;
+  const safetyTickMs = opts.safetyTickMs != null ? opts.safetyTickMs : 5000;
+
+  // Registered caches and pending-send sources.
+  const caches = []; // { cache, unsubscribe }
+  const pendingSources = []; // { name, fn }
+
+  // Active SSE response objects. Cleaned up on `close`/`error`.
+  const sseClients = new Set();
+
+  let pendingTimer = null;
+  function notify() {
+    if (pendingTimer != null) return;
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      broadcast();
+    }, debounceMs);
+    if (pendingTimer.unref) pendingTimer.unref();
+  }
+
+  function broadcast() {
+    if (sseClients.size === 0) return;
+    let payload;
+    try {
+      payload = `data: ${JSON.stringify(getSnapshot())}\n\n`;
+    } catch (e) {
+      console.warn(`[${name}-status] snapshot serialize failed: ${e.message}`);
+      return;
+    }
+    for (const res of sseClients) {
+      try {
+        res.write(payload);
+      } catch (_) {
+        sseClients.delete(res);
+      }
+    }
+  }
+
+  function registerCache(cache) {
+    if (!cache) return;
+    const unsubscribers = [];
+    if (typeof cache.onTxProcessed === "function") {
+      unsubscribers.push(cache.onTxProcessed(() => notify()));
+    }
+    if (typeof cache.onWaiterChange === "function") {
+      // Surface bridge SSE waiter open/close immediately so a user
+      // clicking "send" appears on /status without waiting for the
+      // safety tick.
+      unsubscribers.push(cache.onWaiterChange(() => notify()));
+    }
+    caches.push({
+      cache,
+      unsubscribe: () => unsubscribers.forEach((u) => { try { u(); } catch (_) {} }),
+    });
+    notify();
+  }
+
+  function registerPending(srcName, fn) {
+    if (typeof srcName !== "string" || !srcName) {
+      throw new Error("registerPending: name required");
+    }
+    if (typeof fn !== "function") {
+      throw new Error("registerPending: fn required");
+    }
+    pendingSources.push({ name: srcName, fn });
+    notify();
+  }
+
+  if (nodeProbe && typeof nodeProbe.onUpdate === "function") {
+    nodeProbe.onUpdate(() => notify());
+  }
+
+  // Periodic safety push covers timer-based state (Last One Wins countdown,
+  // pending-send age timers) that doesn't trigger any of the change-driven
+  // notify() paths.
+  const safetyTimer = setInterval(() => notify(), safetyTickMs);
+  if (safetyTimer.unref) safetyTimer.unref();
+
+  function _safe(fn, fallback) {
+    try { return fn(); } catch (_) { return fallback; }
+  }
+
+  function getSnapshot() {
+    const cacheStats = caches.map(({ cache }) => {
+      try {
+        return typeof cache.getStats === "function"
+          ? cache.getStats()
+          : { name: cache.name || "?", error: "cache has no getStats()" };
+      } catch (e) {
+        return { name: cache.name || "?", error: e && e.message ? e.message : String(e) };
+      }
+    });
+
+    const pending = pendingSources.map(({ name: pName, fn }) => {
+      try {
+        const items = fn();
+        const list = Array.isArray(items) ? items : [];
+        return { name: pName, count: list.length, items: list };
+      } catch (e) {
+        return {
+          name: pName, count: 0, items: [],
+          error: e && e.message ? e.message : String(e),
+        };
+      }
+    });
+
+    let nodeSnap = null;
+    if (nodeProbe && typeof nodeProbe.get === "function") {
+      try { nodeSnap = nodeProbe.get(); } catch (_) { nodeSnap = null; }
+    }
+
+    return {
+      server: {
+        name,
+        mode: localDev ? "local-dev" : "production",
+        port,
+        uptimeMs: Date.now() - startedAtMs,
+        startedAt: startedAtMs,
+        buildVersion: getBuildVersion ? _safe(getBuildVersion, null) : null,
+        cachesCount: caches.length,
+        sseClients: sseClients.size,
+      },
+      node: nodeSnap,
+      caches: cacheStats,
+      pending,
+      at: Date.now(),
+    };
+  }
+
+  function handleRequest(req, res, pathname) {
+    if (pathname === "/__usernode/status/stream") {
+      if (req.method !== "GET") return false;
+      _handleSse(req, res);
+      return true;
+    }
+    if (pathname === "/__usernode/status") {
+      if (req.method !== "GET" && req.method !== "HEAD") return false;
+      const body = JSON.stringify(getSnapshot());
+      const headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+      };
+      if (req.method === "HEAD") {
+        res.writeHead(200, { ...headers, "Content-Length": Buffer.byteLength(body) });
+        res.end();
+        return true;
+      }
+      res.writeHead(200, headers);
+      res.end(body);
+      return true;
+    }
+    if (pathname === "/status") {
+      if (req.method !== "GET" && req.method !== "HEAD") return false;
+      const headers = {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      };
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        res.end();
+        return true;
+      }
+      res.writeHead(200, headers);
+      res.end(STATUS_PAGE_HTML);
+      return true;
+    }
+    return false;
+  }
+
+  function _handleSse(req, res) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Connection": "keep-alive",
+      // Hint to nginx-style proxies to not buffer the response. SSE is
+      // useless if buffered.
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    });
+    // Initial snapshot, immediately. Clients shouldn't have to wait for
+    // the next change to render anything.
+    try {
+      res.write(`data: ${JSON.stringify(getSnapshot())}\n\n`);
+    } catch (_) {
+      try { res.end(); } catch (_) {}
+      return;
+    }
+    sseClients.add(res);
+
+    const keepAlive = setInterval(() => {
+      try { res.write(":keep-alive\n\n"); } catch (_) {}
+    }, 15000);
+    if (keepAlive.unref) keepAlive.unref();
+
+    let cleanedUp = false;
+    function cleanup() {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      sseClients.delete(res);
+      clearInterval(keepAlive);
+      try { res.end(); } catch (_) {}
+    }
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+    res.on("error", cleanup);
+  }
+
+  return {
+    name,
+    notify,
+    registerCache,
+    registerPending,
+    getSnapshot,
+    handleRequest,
+  };
+}
+
+// Inline HTML for `/status`. Self-contained: no external assets, no build
+// step. Reads from the SSE stream with /__usernode/status polling fallback.
+// Kept readable rather than minified — operators sometimes view-source
+// when debugging.
+const STATUS_PAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dapp Server Status</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b0f16; --fg: #e7edf7; --muted: #a8b3c7;
+      --card: #141b26; --border: rgba(255,255,255,0.12);
+      --accent: #6ea8fe; --danger: #ff6b6b; --ok: #5dd39e; --warn: #e6a817;
+      --soft: rgba(255,255,255,0.04);
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f7f8fb; --fg: #0b1220; --muted: #4b5568;
+        --card: #ffffff; --border: rgba(15,23,42,0.12);
+        --accent: #2563eb; --danger: #c81e1e; --ok: #0f766e; --warn: #b45309;
+        --soft: rgba(15,23,42,0.03);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: var(--bg); color: var(--fg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+    .header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+    h1 { font-size: 20px; margin: 0; font-weight: 600; }
+    .conn { font-size: 11px; color: var(--muted); }
+    .conn .led { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
+    .conn.live .led { background: var(--ok); }
+    .conn.poll .led { background: var(--warn); }
+    .conn.dead .led { background: var(--danger); }
+    .header-pill { font-size: 13px; color: var(--muted); margin-bottom: 24px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 14px 0; }
+    .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.6; vertical-align: middle; }
+    .badge.ok { background: rgba(93,211,158,0.15); color: var(--ok); }
+    .badge.warn { background: rgba(230,168,23,0.15); color: var(--warn); }
+    .badge.err { background: rgba(255,107,107,0.18); color: var(--danger); }
+    .badge.muted { background: var(--soft); color: var(--muted); }
+    .badge.accent { background: rgba(110,168,254,0.18); color: var(--accent); }
+    .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; font-size: 13px; }
+    .kv .label { color: var(--muted); }
+    .kv .val { word-break: break-all; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    th { font-weight: 600; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+    tr:last-child td { border-bottom: none; }
+    .mono, code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .sync-bar { width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
+    .sync-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+    .sync-fill.full { background: var(--ok); }
+    details { background: var(--soft); border-radius: 8px; padding: 6px 12px; margin: 8px 0; }
+    details[open] { padding-bottom: 12px; }
+    summary { cursor: pointer; font-size: 13px; padding: 4px 0; font-weight: 500; user-select: none; }
+    summary::marker { color: var(--muted); }
+    .summary-meta { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 12px; }
+    .empty { color: var(--muted); font-size: 12px; padding: 6px 0; font-style: italic; }
+    .arrow { color: var(--muted); margin: 0 4px; }
+    .err-text { color: var(--danger); font-size: 12px; margin: 8px 0; }
+    .warn-text { color: var(--warn); font-size: 12px; margin: 8px 0; }
+    .small { font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div>
+        <h1 id="serverName">Loading…</h1>
+        <div class="header-pill" id="serverMeta"></div>
+      </div>
+      <div class="conn" id="conn"><span class="led"></span><span id="connText">connecting…</span></div>
+    </div>
+
+    <div class="card" id="nodeCard">
+      <h2>Node</h2>
+      <div id="nodeBody" class="empty">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Caches</h2>
+      <div id="cachesBody" class="empty">Loading…</div>
+    </div>
+
+    <div class="card" id="pendingCard" style="display:none">
+      <h2>Pending Sends (server-initiated)</h2>
+      <div id="pendingBody"></div>
+    </div>
+
+    <div class="card" id="waitersCard">
+      <h2>Client Pending Sends</h2>
+      <div class="small" style="margin-bottom:10px">
+        Live SSE waiters from dapp clients calling
+        <code>sendTransaction(...)</code> — each row is one open connection
+        waiting for an inclusion match. Recent completions are kept for
+        debugging (matched / timeout / disconnected).
+      </div>
+      <div id="waitersBody"></div>
+    </div>
+
+    <div class="card">
+      <h2>Recent Transactions</h2>
+      <div id="recentBody" class="empty">Loading…</div>
+    </div>
+
+    <div class="small" style="text-align:center;margin-top:18px">
+      Updated <span id="lastUpdated">—</span> · live via
+      <code>/__usernode/status/stream</code> ·
+      JSON at <a href="/__usernode/status" style="color:var(--accent)">/__usernode/status</a>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var $ = function (id) { return document.getElementById(id); };
+
+    // ── Formatting helpers ────────────────────────────────────────────────
+    function shortAddr(p) {
+      if (!p) return "—";
+      var s = String(p);
+      if (s.length <= 16) return s;
+      return s.slice(0, 10) + "…" + s.slice(-4);
+    }
+    function shortId(s) {
+      if (!s) return "—";
+      var x = String(s);
+      if (x.length <= 14) return x;
+      return x.slice(0, 8) + "…" + x.slice(-4);
+    }
+    function fmtAge(ms) {
+      if (ms == null || !isFinite(ms)) return "—";
+      var s = Math.floor(ms / 1000);
+      if (s < 60) return s + "s";
+      var m = Math.floor(s / 60); s = s % 60;
+      if (m < 60) return m + "m " + s + "s";
+      var h = Math.floor(m / 60); m = m % 60;
+      if (h < 24) return h + "h " + m + "m";
+      var d = Math.floor(h / 24); h = h % 24;
+      return d + "d " + h + "h";
+    }
+    function fmtNum(n) {
+      if (n == null) return "—";
+      return Number(n).toLocaleString();
+    }
+    function fmtTime(ms) {
+      if (!ms) return "—";
+      try { return new Date(ms).toLocaleTimeString(); } catch (_) { return "—"; }
+    }
+    function fmtMemo(m) {
+      if (m == null) return "";
+      var s = String(m);
+      // Try JSON parse for compact display
+      try {
+        var parsed = JSON.parse(s);
+        if (parsed && typeof parsed === "object" && parsed.app) {
+          return parsed.app + (parsed.type ? "/" + parsed.type : "");
+        }
+      } catch (_) {}
+      return s.length > 40 ? s.slice(0, 40) + "…" : s;
+    }
+    function readyBadge(ok, label) {
+      var cls = ok ? "ok" : "warn";
+      var text = ok ? (label || "ready") : (label || "waiting");
+      return '<span class="badge ' + cls + '">' + esc(text) + '</span>';
+    }
+    function esc(s) {
+      if (s == null) return "";
+      return String(s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    function statusBadge(status) {
+      var s = String(status || "unknown");
+      var cls = "muted";
+      if (s === "Synced") cls = "ok";
+      else if (s === "Syncing" || s === "Connected") cls = "accent";
+      else if (s === "Connecting") cls = "warn";
+      else if (s === "unreachable") cls = "err";
+      else if (s === "mock") cls = "muted";
+      return '<span class="badge ' + cls + '">' + esc(s) + '</span>';
+    }
+
+    // ── Renderers ─────────────────────────────────────────────────────────
+    function renderHeader(snap) {
+      var srv = snap.server || {};
+      $("serverName").textContent = srv.name || "dapp-server";
+      var bits = [];
+      bits.push(srv.mode || "?");
+      if (srv.port != null) bits.push(":" + srv.port);
+      bits.push((srv.cachesCount || 0) + " cache" + (srv.cachesCount === 1 ? "" : "s"));
+      bits.push("up " + fmtAge(srv.uptimeMs));
+      if (srv.buildVersion) bits.push("build " + esc(String(srv.buildVersion)));
+      bits.push(srv.sseClients + " viewer" + (srv.sseClients === 1 ? "" : "s"));
+      $("serverMeta").textContent = bits.join(" · ");
+      $("lastUpdated").textContent = fmtTime(snap.at);
+    }
+
+    function renderNode(snap) {
+      var n = snap.node;
+      var body = $("nodeBody");
+      if (!n) {
+        body.className = "empty";
+        body.textContent = "No node probe wired.";
+        return;
+      }
+      body.className = "";
+      var rows = [];
+      rows.push('<div class="kv">');
+      rows.push('<div class="label">Status</div><div class="val">' + statusBadge(n.status) +
+        (n.error ? ' <span class="err-text">' + esc(n.error) + '</span>' : '') + '</div>');
+      rows.push('<div class="label">Peers</div><div class="val">' + fmtNum(n.peers) + '</div>');
+      rows.push('<div class="label">Best tip</div><div class="val">' +
+        (n.bestTipHeight != null ? fmtNum(n.bestTipHeight) : "—") +
+        (n.peerBestTipHeight != null ? ' / ' + fmtNum(n.peerBestTipHeight) + ' (peers)' : '') + '</div>');
+      var pct = null;
+      if (n.bestTipHeight != null && n.peerBestTipHeight != null && n.peerBestTipHeight > 0) {
+        pct = Math.max(0, Math.min(100, (n.bestTipHeight / n.peerBestTipHeight) * 100));
+      }
+      if (pct != null) {
+        rows.push('<div class="label">Sync</div><div class="val">' + pct.toFixed(1) + '%' +
+          '<div class="sync-bar"><div class="sync-fill' + (pct >= 99.9 ? ' full' : '') + '" style="width:' + pct + '%"></div></div>' +
+          '</div>');
+      }
+      rows.push('<div class="label">First-synced?</div><div class="val">' +
+        (n.hasBeenSynced ? '<span class="badge ok">yes</span>' : '<span class="badge warn">not yet</span>') + '</div>');
+      if (n.hasFullUtxoDb === false) {
+        rows.push('<div class="label">UTXO mode</div><div class="val"><span class="badge err">PARTIAL</span> ' +
+          '<span class="warn-text">sidecar booted without HAS_FULL_UTXO_DB — incoming txs from non-tracked senders may be silently dropped</span></div>');
+      } else if (n.hasFullUtxoDb === true) {
+        rows.push('<div class="label">UTXO mode</div><div class="val"><span class="badge ok">full</span></div>');
+      }
+      rows.push('<div class="label">Last refresh</div><div class="val">' + fmtTime(n.at) +
+        ' <span class="small">(' + fmtAge(Date.now() - (n.at || Date.now())) + ' ago)</span></div>');
+      // Per-stream readiness if probe exposes it
+      if (n.streams && Object.keys(n.streams).length) {
+        var sBits = [];
+        for (var k in n.streams) {
+          sBits.push((n.streams[k] ? '<span class="badge ok">' : '<span class="badge warn">') + esc(k) + '</span>');
+        }
+        rows.push('<div class="label">Streams</div><div class="val">' + sBits.join(' ') + '</div>');
+      }
+      rows.push('</div>');
+      body.innerHTML = rows.join('');
+    }
+
+    function renderCaches(snap) {
+      var caches = snap.caches || [];
+      var body = $("cachesBody");
+      if (!caches.length) {
+        body.className = "empty";
+        body.textContent = "No caches registered.";
+        return;
+      }
+      body.className = "";
+      var rows = ['<table><thead><tr>',
+        '<th>Name</th><th>Pubkey</th><th>Query fields</th>',
+        '<th>Cached</th><th>Waiters</th><th>Backfill</th><th>Stream</th>',
+        '<th>Node SSE</th><th>Last height</th><th>Null-source</th>',
+        '</tr></thead><tbody>'];
+      for (var i = 0; i < caches.length; i++) {
+        var c = caches[i];
+        var ns = c.nodeStream || null;
+        var nsCell = '<span class="badge muted">explorer</span>';
+        if (ns) {
+          var nsParts = [
+            ns.sseOpen ? '<span class="badge ok">SSE open</span>' : '<span class="badge warn">SSE closed</span>',
+          ];
+          if (!ns.trackedOwnerEnsured) nsParts.push('<span class="badge warn">untracked</span>');
+          if (ns.backoffMs && ns.backoffMs > 1000 && !ns.sseOpen) nsParts.push('<span class="small">backoff ' + Math.round(ns.backoffMs / 1000) + 's</span>');
+          nsCell = nsParts.join(' ');
+        }
+        var nullCell = '—';
+        if (c.nullSource) {
+          if (c.nullSource.firstSeen) {
+            nullCell = '<span class="badge err">' + c.nullSource.nullSourceCount + '/' + c.nullSource.transferTotalCount + '</span>';
+          } else if (c.nullSource.transferTotalCount > 0) {
+            nullCell = '<span class="badge ok">0/' + c.nullSource.transferTotalCount + '</span>';
+          }
+        }
+        var waitersCount = c.waitersCount || 0;
+        var waitersCell = waitersCount > 0
+          ? '<span class="badge accent">' + waitersCount + '</span>'
+          : '<span class="small">0</span>';
+        rows.push('<tr>',
+          '<td><strong>' + esc(c.name) + '</strong></td>',
+          '<td class="mono">' + esc(shortAddr(c.appPubkey)) + '</td>',
+          '<td><span class="small">' + esc((c.queryFields || []).join(', ')) + '</span></td>',
+          '<td>' + fmtNum(c.count) + '</td>',
+          '<td>' + waitersCell + '</td>',
+          '<td>' + readyBadge(!!c.backfillDone, c.backfillDone ? "done" : "running") + '</td>',
+          '<td>' + readyBadge(!!c.streamReady) + '</td>',
+          '<td>' + nsCell + '</td>',
+          '<td>' + (ns && ns.lastHeight != null ? fmtNum(ns.lastHeight) : '—') + '</td>',
+          '<td>' + nullCell + '</td>',
+          '</tr>');
+      }
+      rows.push('</tbody></table>');
+      body.innerHTML = rows.join('');
+    }
+
+    function renderPending(snap) {
+      var srcs = snap.pending || [];
+      var card = $("pendingCard");
+      var body = $("pendingBody");
+      if (!srcs.length) { card.style.display = "none"; return; }
+      card.style.display = "";
+      var html = "";
+      for (var i = 0; i < srcs.length; i++) {
+        var src = srcs[i];
+        var openAttr = src.count > 0 ? " open" : "";
+        html += '<details' + openAttr + '><summary>' + esc(src.name) +
+          ' <span class="summary-meta">' + (src.count || 0) + ' pending</span></summary>';
+        if (src.error) {
+          html += '<div class="err-text">' + esc(src.error) + '</div>';
+        } else if (!src.items || !src.items.length) {
+          html += '<div class="empty">Nothing in flight.</div>';
+        } else {
+          html += '<table><thead><tr>' +
+            '<th>Id</th><th>Kind</th><th>Counterparty</th><th>Amount</th>' +
+            '<th>Status</th><th>Age</th><th>Note</th>' +
+            '</tr></thead><tbody>';
+          for (var j = 0; j < src.items.length; j++) {
+            var it = src.items[j];
+            var statusCls = "muted";
+            if (/(confirmed|done|ok)/i.test(it.status || "")) statusCls = "ok";
+            else if (/(fail|error|reject)/i.test(it.status || "")) statusCls = "err";
+            else if (/(pend|wait|in.?flight|echoing|sending|active|in.?progress)/i.test(it.status || "")) statusCls = "accent";
+            html += '<tr>' +
+              '<td class="mono">' + esc(shortId(it.id)) + '</td>' +
+              '<td>' + esc(it.kind || "—") + '</td>' +
+              '<td class="mono">' + esc(shortAddr(it.fromOrTo || it.to || it.from)) + '</td>' +
+              '<td>' + (it.amount != null ? fmtNum(it.amount) : "—") + '</td>' +
+              '<td><span class="badge ' + statusCls + '">' + esc(it.status || "—") + '</span></td>' +
+              '<td>' + fmtAge(it.ageMs) + '</td>' +
+              '<td><span class="small">' + esc(it.error || it.note || "") + '</span></td>' +
+              '</tr>';
+          }
+          html += '</tbody></table>';
+        }
+        html += '</details>';
+      }
+      body.innerHTML = html;
+    }
+
+    function waiterFinalBadge(status) {
+      var s = String(status || "—");
+      var cls = "muted";
+      if (s === "matched" || s === "matched-immediate") cls = "ok";
+      else if (s === "timeout") cls = "err";
+      else if (s === "disconnected") cls = "warn";
+      var label = s === "matched-immediate" ? "matched (instant)" : s;
+      return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
+    }
+
+    function renderWaiters(snap) {
+      var caches = snap.caches || [];
+      var body = $("waitersBody");
+      // Card is always visible (per request) — the body either shows
+      // per-cache active+recent tables or a friendly empty state if no
+      // client has ever subscribed yet on this server lifetime.
+      var hasAny = caches.some(function (c) {
+        return (c.waitersCount || 0) > 0 ||
+               (c.recentWaitersCount || 0) > 0;
+      });
+      if (!hasAny) {
+        body.innerHTML = '<div class="empty">No client sends recorded yet.</div>';
+        return;
+      }
+      var html = "";
+      var now = Date.now();
+      for (var i = 0; i < caches.length; i++) {
+        var c = caches[i];
+        var activeCount = c.waitersCount || 0;
+        var recentCount = c.recentWaitersCount || 0;
+        if (!activeCount && !recentCount) continue;
+        var summaryBits = [];
+        if (activeCount) summaryBits.push(activeCount + " waiting");
+        if (recentCount) summaryBits.push(recentCount + " recent");
+        html += '<details open><summary>' + esc(c.name) +
+          ' <span class="summary-meta">' + summaryBits.join(" · ") + '</span></summary>';
+
+        // Active waiters
+        var ws = c.waiters || [];
+        if (activeCount) {
+          html += '<div class="small" style="margin:6px 0 4px;font-weight:600">Active</div>';
+          html += '<table><thead><tr>' +
+            '<th>Age</th><th>Sender</th><th>Memo</th>' +
+            '<th>Tx hint</th><th>Client</th><th>Timeout</th>' +
+            '</tr></thead><tbody>';
+          for (var j = 0; j < ws.length; j++) {
+            var w = ws[j];
+            html += '<tr>' +
+              '<td>' + fmtAge(w.ageMs) + '</td>' +
+              '<td class="mono">' + esc(shortAddr(w.sender)) + '</td>' +
+              '<td><span class="small">' + esc(fmtMemo(w.memoPreview)) + '</span></td>' +
+              '<td class="mono">' + esc(w.txIdHash || '—') + '</td>' +
+              '<td class="mono">' + esc(w.clientId ? String(w.clientId).slice(0, 8) : '—') + '</td>' +
+              '<td><span class="small">' + fmtAge(w.timeoutMs) + '</span></td>' +
+              '</tr>';
+          }
+          html += '</tbody></table>';
+          if (activeCount > ws.length) {
+            html += '<div class="small" style="margin-top:6px">' +
+              (activeCount - ws.length) + ' more active not shown.</div>';
+          }
+        } else {
+          html += '<div class="small" style="margin:6px 0">No active waiters.</div>';
+        }
+
+        // Recent (completed) waiters — kept for debugging timeouts and
+        // diagnosing slow inclusions.
+        var rs = c.recentWaiters || [];
+        if (rs.length) {
+          html += '<div class="small" style="margin:10px 0 4px;font-weight:600">Recent</div>';
+          html += '<table><thead><tr>' +
+            '<th>Status</th><th>Ended</th><th>Took</th>' +
+            '<th>Sender</th><th>Memo</th><th>Tx hint</th><th>Client</th>' +
+            '</tr></thead><tbody>';
+          for (var k = 0; k < rs.length; k++) {
+            var r = rs[k];
+            var endedAge = r.endedAt ? (now - r.endedAt) : null;
+            html += '<tr>' +
+              '<td>' + waiterFinalBadge(r.finalStatus) + '</td>' +
+              '<td><span class="small">' + fmtAge(endedAge) + ' ago</span></td>' +
+              '<td><span class="small">' + fmtAge(r.durationMs) + '</span></td>' +
+              '<td class="mono">' + esc(shortAddr(r.sender)) + '</td>' +
+              '<td><span class="small">' + esc(fmtMemo(r.memoPreview)) + '</span></td>' +
+              '<td class="mono">' + esc(r.txIdHash || '—') + '</td>' +
+              '<td class="mono">' + esc(r.clientId ? String(r.clientId).slice(0, 8) : '—') + '</td>' +
+              '</tr>';
+          }
+          html += '</tbody></table>';
+          if (recentCount > rs.length) {
+            html += '<div class="small" style="margin-top:6px">' +
+              (recentCount - rs.length) + ' older not shown.</div>';
+          }
+        }
+
+        html += '</details>';
+      }
+      body.innerHTML = html;
+    }
+
+    function renderRecent(snap) {
+      var caches = snap.caches || [];
+      var body = $("recentBody");
+      var any = caches.some(function (c) { return (c.recent || []).length > 0; });
+      if (!any) {
+        body.className = "empty";
+        body.textContent = "No transactions cached yet.";
+        return;
+      }
+      body.className = "";
+      var html = "";
+      var now = Date.now();
+      for (var i = 0; i < caches.length; i++) {
+        var c = caches[i];
+        var recent = c.recent || [];
+        var openAttr = i === 0 ? " open" : "";
+        html += '<details' + openAttr + '><summary>' + esc(c.name) +
+          ' <span class="summary-meta">' + recent.length + ' shown · ' + fmtNum(c.count) + ' total</span></summary>';
+        if (!recent.length) {
+          html += '<div class="empty">No transactions in this cache.</div>';
+        } else {
+          html += '<table><thead><tr>' +
+            '<th>Id</th><th>From</th><th></th><th>To</th><th>Amount</th>' +
+            '<th>Memo</th><th>Block</th><th>Age</th>' +
+            '</tr></thead><tbody>';
+          for (var j = 0; j < recent.length; j++) {
+            var t = recent[j];
+            var age = t.ts ? (now - t.ts) : null;
+            html += '<tr>' +
+              '<td class="mono">' + esc(shortId(t.id)) + '</td>' +
+              '<td class="mono">' + esc(shortAddr(t.from)) + '</td>' +
+              '<td><span class="arrow">→</span></td>' +
+              '<td class="mono">' + esc(shortAddr(t.to)) + '</td>' +
+              '<td>' + (t.amount != null ? fmtNum(t.amount) : "—") + '</td>' +
+              '<td><span class="small">' + esc(fmtMemo(t.memo)) + '</span></td>' +
+              '<td>' + (t.blockHeight != null ? fmtNum(t.blockHeight) : '—') + '</td>' +
+              '<td>' + fmtAge(age) + '</td>' +
+              '</tr>';
+          }
+          html += '</tbody></table>';
+        }
+        html += '</details>';
+      }
+      body.innerHTML = html;
+    }
+
+    function render(snap) {
+      try {
+        renderHeader(snap);
+        renderNode(snap);
+        renderCaches(snap);
+        renderPending(snap);
+        renderWaiters(snap);
+        renderRecent(snap);
+      } catch (e) {
+        console.error("[status] render failed:", e);
+      }
+    }
+
+    function setConn(state) {
+      var el = $("conn");
+      var t = $("connText");
+      el.className = "conn " + state;
+      if (state === "live") t.textContent = "live";
+      else if (state === "poll") t.textContent = "polling (SSE failed)";
+      else if (state === "dead") t.textContent = "disconnected";
+      else t.textContent = "connecting…";
+    }
+
+    // ── Connection: SSE first, polling fallback ───────────────────────────
+    var es = null;
+    var pollTimer = null;
+
+    function startPolling() {
+      setConn("poll");
+      if (pollTimer != null) return;
+      var fetchOnce = function () {
+        fetch("/__usernode/status", { cache: "no-store" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (snap) { if (snap) render(snap); })
+          .catch(function (err) {
+            setConn("dead");
+            console.warn("[status] poll failed:", err && err.message ? err.message : err);
+          });
+      };
+      fetchOnce();
+      pollTimer = setInterval(fetchOnce, 3000);
+    }
+
+    function startSse() {
+      try { es = new EventSource("/__usernode/status/stream"); }
+      catch (e) { startPolling(); return; }
+      es.onopen = function () { setConn("live"); };
+      es.onmessage = function (ev) {
+        try { render(JSON.parse(ev.data)); }
+        catch (e) { console.warn("[status] bad SSE frame:", e); }
+      };
+      es.onerror = function () {
+        // EventSource auto-reconnects on its own. If the page never reaches
+        // 'live' within ~3s, fall back to polling so the page isn't blank.
+        // We don't tear down 'es' — if it recovers, onopen will flip the
+        // pill back to live.
+        setConn("dead");
+        if (pollTimer == null) {
+          setTimeout(function () {
+            if (es && es.readyState !== 1) startPolling();
+          }, 3000);
+        }
+      };
+    }
+
+    if (typeof EventSource !== "undefined") startSse();
+    else startPolling();
+  })();
+  </script>
+</body>
+</html>`;
 
 // ── Path resolution ──────────────────────────────────────────────────────────
 
@@ -1838,6 +3029,7 @@ module.exports = {
   createAppStateCache,
   createUsernamesCache,
   createNodeStatusProbe,
+  createDappServerStatus,
   walletAddTrackedOwner,
   nodeRecentTxByRecipient,
   createNodeRecentTxStream,

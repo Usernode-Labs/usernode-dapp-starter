@@ -14,7 +14,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { handleExplorerProxy, createMockApi, createAppStateCache, createNodeStatusProbe, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
+const { handleExplorerProxy, createMockApi, createAppStateCache, createNodeStatusProbe, createDappServerStatus, fetchAllTransactions, discoverChainInfo, resolvePath } = require("../lib/dapp-server");
 const createEngine = require("./engine");
 
 // ── CLI flags ────────────────────────────────────────────────────────────────
@@ -78,6 +78,29 @@ let engineCache = null;
 // false during replay and tracks real readiness once the cache exists.
 nodeStatusProbe.registerStream("sands", () => !!engineCache && engineCache.isStreamReady());
 nodeStatusProbe.start();
+
+// ── Aggregated dapp-server status (HTML viewer + SSE) ───────────────────────
+const dappServerStatus = createDappServerStatus({
+  name: "sands",
+  nodeProbe: nodeStatusProbe,
+  localDev: LOCAL_DEV,
+  port: PORT,
+});
+// engineCache is created inside the async init() IIFE below. Poll for it
+// and register once it exists (cap at 60s — partial status beats spinning).
+{
+  const start = Date.now();
+  const sandsRegPoll = setInterval(() => {
+    if (engineCache) {
+      dappServerStatus.registerCache(engineCache);
+      clearInterval(sandsRegPoll);
+    } else if (Date.now() - start > 60000) {
+      clearInterval(sandsRegPoll);
+      console.warn("[status] sands cache never came up — leaving unregistered");
+    }
+  }, 500);
+  if (sandsRegPoll.unref) sandsRegPoll.unref();
+}
 
 (async function init() {
   const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
@@ -208,6 +231,10 @@ const server = http.createServer((req, res) => {
 
   // Sidecar /status probe (cached snapshot for usernode-loading.js)
   if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
+
+  // Aggregated dapp-server status: /status, /__usernode/status,
+  // /__usernode/status/stream
+  if (dappServerStatus.handleRequest(req, res, pathname)) return;
 
   // Engine state APIs (snapshot + transactions log) — wired through the
   // shared cache so future engines can opt in by exposing engine.handleRequest.

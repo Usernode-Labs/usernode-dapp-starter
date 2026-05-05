@@ -98,6 +98,23 @@ function createLastOneWins(opts) {
     };
   }
 
+  // Snapshot of in-flight server-side operations for /__usernode/status.
+  // Lastwin only has one such operation at a time: the active payout.
+  // Shape matches createDappServerStatus.registerPending() contract:
+  //   [{ id, kind, fromOrTo, amount, status, ageMs, error?, note? }, ...]
+  function getPending() {
+    if (!state.payoutInProgress) return [];
+    return [{
+      id: "round-" + state.roundNumber,
+      kind: "payout",
+      fromOrTo: state.lastSender,
+      amount: state.potBalance,
+      status: "in-progress",
+      ageMs: state.lastEntryTs ? Date.now() - state.lastEntryTs : null,
+      note: "round " + state.roundNumber + " → winner",
+    }];
+  }
+
   function processTransaction(rawTx) {
     const tx = normalizeTx(rawTx);
     if (!tx || !tx.id || !tx.from || !tx.to) return;
@@ -335,6 +352,7 @@ function createLastOneWins(opts) {
     processTransaction,
     handleRequest,
     getStateResponse,
+    getPending,
     checkPayout,
     start,
     reset,

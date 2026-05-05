@@ -27,6 +27,7 @@ const {
   createAppStateCache,
   createUsernamesCache,
   createNodeStatusProbe,
+  createDappServerStatus,
   resolvePath,
 } = require("../lib/dapp-server");
 const createLastOneWins = require("./game-logic");
@@ -106,6 +107,17 @@ nodeStatusProbe.registerStream("lastwin", () => gameCache.isStreamReady());
 nodeStatusProbe.registerStream("usernames", () => usernamesCache.isStreamReady());
 nodeStatusProbe.start();
 
+// ── Aggregated dapp-server status (HTML viewer + SSE) ───────────────────────
+const dappServerStatus = createDappServerStatus({
+  name: "lastwin",
+  nodeProbe: nodeStatusProbe,
+  localDev: LOCAL_DEV,
+  port: PORT,
+});
+dappServerStatus.registerCache(gameCache);
+dappServerStatus.registerCache(usernamesCache);
+dappServerStatus.registerPending("lastwin", () => game.getPending());
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 function send(res, code, headers, body) {
@@ -147,6 +159,10 @@ const server = http.createServer((req, res) => {
 
   // Sidecar /status probe (cached snapshot for usernode-loading.js)
   if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
+
+  // Aggregated dapp-server status: /status, /__usernode/status,
+  // /__usernode/status/stream
+  if (dappServerStatus.handleRequest(req, res, pathname)) return;
 
   // Mock API
   if (mockApi.handleRequest(req, res, pathname)) return;

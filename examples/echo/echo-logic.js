@@ -157,6 +157,31 @@ function createEcho(opts) {
     };
   }
 
+  // Snapshot of in-flight echoes for /__usernode/status. Only the rows that
+  // haven't been confirmed yet — confirmed/skipped echoes belong in the
+  // recent-tx feed, not the pending queue. Shape matches the
+  // `registerPending(name, fn)` contract in createDappServerStatus:
+  //   [{ id, kind, fromOrTo, amount, status, ageMs, error?, note? }, ...]
+  function getPending() {
+    const now = Date.now();
+    const out = [];
+    for (const e of events.values()) {
+      if (e.status === "confirmed" || e.status === "skipped") continue;
+      out.push({
+        id: e.requestTxId,
+        kind: "echo",
+        fromOrTo: e.requestFrom,
+        amount: e.echoAmount != null ? e.echoAmount : e.requestAmount,
+        status: e.status,
+        ageMs: e.requestSeenAtServerMs ? now - e.requestSeenAtServerMs : null,
+        error: e.error || null,
+        note: e.echoTxId ? "echo tx " + String(e.echoTxId).slice(0, 12) + "…" : null,
+      });
+    }
+    out.sort((a, b) => (b.ageMs || 0) - (a.ageMs || 0));
+    return out;
+  }
+
   // ── Chain poller entrypoint ──────────────────────────────────────────────
 
   function processTransaction(rawTx) {
@@ -396,6 +421,7 @@ function createEcho(opts) {
     processTransaction,
     handleRequest,
     getStateResponse,
+    getPending,
     start,
     reset,
     appPubkey,

@@ -21,7 +21,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { loadEnvFile, handleExplorerProxy, createMockApi, createAppStateCache, createUsernamesCache, createNodeStatusProbe, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
+const { loadEnvFile, handleExplorerProxy, createMockApi, createAppStateCache, createUsernamesCache, createNodeStatusProbe, createDappServerStatus, fetchAllTransactions, fetchGenesisAccounts, discoverChainInfo, httpsJson, resolvePath } = require("./lib/dapp-server");
 
 loadEnvFile();
 const createEngine = require("./falling-sands/engine");
@@ -366,6 +366,48 @@ nodeStatusProbe.registerStream("usernames", () => usernamesCache.isStreamReady()
 nodeStatusProbe.registerStream("sands", () => !!sandsCache && sandsCache.isStreamReady());
 nodeStatusProbe.start();
 
+// ── Aggregated dapp-server status (HTML viewer + SSE) ───────────────────────
+// One page lists every dapp this process hosts: OM, Lastwin, Echo, Sands,
+// Usernames. Sidecar /status, per-cache backfill/stream readiness, and
+// per-app pending-send queues all in one snapshot.
+//
+// Routes mounted by handleRequest:
+//   GET /status                    — HTML viewer
+//   GET /__usernode/status         — JSON snapshot
+//   GET /__usernode/status/stream  — SSE feed
+const dappServerStatus = createDappServerStatus({
+  name: "examples",
+  nodeProbe: nodeStatusProbe,
+  localDev: LOCAL_DEV,
+  port: PORT,
+  // Index page is the common landing — its hash is a fine proxy for "what
+  // version of the bundle is live". Per-page hashes still drive
+  // cache-busting elsewhere; this is just for the status pill.
+  getBuildVersion: () => buildVersionFor(INDEX_HTML),
+});
+dappServerStatus.registerCache(omCache);
+dappServerStatus.registerCache(lastwinCache);
+dappServerStatus.registerCache(echoCache);
+dappServerStatus.registerCache(usernamesCache);
+// sandsCache is created inside the async initEngine() IIFE above. Poll for
+// it and register once it exists (cap at 60s; if the engine never inits
+// we'd rather show partial status than spin forever).
+{
+  const start = Date.now();
+  const sandsRegPoll = setInterval(() => {
+    if (sandsCache) {
+      dappServerStatus.registerCache(sandsCache);
+      clearInterval(sandsRegPoll);
+    } else if (Date.now() - start > 60000) {
+      clearInterval(sandsRegPoll);
+      console.warn("[status] sands cache never came up — leaving unregistered");
+    }
+  }, 500);
+  if (sandsRegPoll.unref) sandsRegPoll.unref();
+}
+dappServerStatus.registerPending("lastwin", () => lastOneWins.getPending());
+dappServerStatus.registerPending("echo", () => echo.getPending());
+
 // ── HTTP server ──────────────────────────────────────────────────────────────
 
 function send(res, code, headers, body) {
@@ -474,6 +516,10 @@ const server = http.createServer((req, res) => {
 
   // Sidecar /status probe (cached snapshot for usernode-loading.js)
   if (nodeStatusProbe.handleRequest(req, res, pathname)) return;
+
+  // Aggregated dapp-server status: /status, /__usernode/status,
+  // /__usernode/status/stream
+  if (dappServerStatus.handleRequest(req, res, pathname)) return;
 
   // Opinion Market vote encryption pubkey fallback
   if (voteEncryption.handleRequest(req, res, pathname)) return;

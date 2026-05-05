@@ -418,8 +418,17 @@
     _notifyNativeTxObserved(txId);
   };
 
+  // ── txMatches predicate ───────────────────────────────────────────────
+  //
+  // ⚠ KEEP IN SYNC WITH examples/lib/tx-match.js — single source of truth
+  // lives there. The server's SSE waitForTx route runs the same logic
+  // against the cache; if these drift, sends will confirm via polling
+  // fallback but never via SSE (or vice versa). The function is small and
+  // duplicated to avoid forcing every dapp HTML to script-tag-include a
+  // separate file.
   function txMatches(tx, expected) {
     if (!tx || typeof tx !== "object") return false;
+    if (!expected || typeof expected !== "object") return false;
 
     if (expected.txId) {
       var txIdCandidates = [
@@ -490,7 +499,239 @@
     });
   }
 
+  // ── Per-page client identifier ────────────────────────────────────────
+  //
+  // Random opaque string assigned once per page-load. Sent to the server
+  // as ?clientId= on the SSE waitForTx connection so /status can group
+  // multiple concurrent sends from the same user under one row. Not
+  // security-relevant — purely an operator-debugging aid.
+  function _ensureClientId() {
+    if (window.usernode && window.usernode._clientId) {
+      return window.usernode._clientId;
+    }
+    var id = randomHex(8);
+    window.usernode = window.usernode || {};
+    window.usernode._clientId = id;
+    return id;
+  }
+
+  // ── waitForTransactionVisible (SSE primary, polling fallback) ─────────
+  //
+  // Two transports:
+  //   1. SSE  — when serverCacheUrl is set AND EventSource is available.
+  //             Server holds a connection open and pushes `event: matched`
+  //             the moment a matching tx lands in its cache. One
+  //             round-trip latency, near-zero idle cost.
+  //   2. Poll — fallback. Repeatedly POSTs /getTransactions every
+  //             pollIntervalMs and runs txMatches client-side. Used for
+  //             explorer-only mode (no cache server), older WebViews
+  //             without EventSource, and when SSE fails before any data
+  //             is received (proxy strips `text/event-stream`, server is
+  //             behind a captive portal, etc.).
+  //
+  // Failure modes that fall back to polling instead of throwing:
+  //   - SSE connection error before the first message — typical of a
+  //     misconfigured proxy or missing /waitForTx route on an older server
+  //   - SSE reaches readyState === EventSource.CLOSED unexpectedly
+  // Failure modes that propagate as-is:
+  //   - SSE returned `event: timeout` — server-side hard cap reached,
+  //     polling would time out too
+  //   - Polling timed out — same as today
+  //
+  // Escape hatches:
+  //   - opts.forcePolling: true  — skip SSE entirely
+  //   - opts.timeoutMs           — both transports respect it
   function waitForTransactionVisible(expected, opts) {
+    var timeoutMs =
+      opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 180000;
+
+    var sseAvailable =
+      _serverCacheUrl() &&
+      typeof window.EventSource !== "undefined" &&
+      !(opts && opts.forcePolling);
+
+    if (!sseAvailable) {
+      return _waitViaPolling(expected, opts);
+    }
+
+    return _waitViaSse(expected, timeoutMs).then(
+      function (matched) {
+        _notifyNativeTxObserved(
+          extractTxId(matched) || (expected && expected.txId),
+          matched
+        );
+        return matched;
+      },
+      function (err) {
+        if (err && err._fallbackToPolling) {
+          console.log(
+            "[usernode-bridge] SSE waitForTx failed (" + err.reason +
+            "), falling back to polling"
+          );
+          return _waitViaPolling(expected, opts);
+        }
+        return Promise.reject(err);
+      }
+    );
+  }
+
+  function _waitViaSse(expected, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var clientId = _ensureClientId();
+      var params = new URLSearchParams();
+      if (expected.from_pubkey) params.set("sender", expected.from_pubkey);
+      if (expected.destination_pubkey)
+        params.set("recipient", expected.destination_pubkey);
+      if (expected.memo != null) params.set("memo", expected.memo);
+      if (expected.txId) params.set("txId", expected.txId);
+      if (typeof expected.minCreatedAtMs === "number")
+        params.set("minCreatedAtMs", String(expected.minCreatedAtMs));
+      params.set("timeoutMs", String(timeoutMs));
+      params.set("clientId", clientId);
+
+      var url = _serverCacheUrl() + "/waitForTx?" + params.toString();
+      var startedAt = Date.now();
+      var es;
+      try {
+        es = new EventSource(url, { withCredentials: false });
+      } catch (e) {
+        var initErr = new Error("EventSource constructor failed: " + e.message);
+        initErr._fallbackToPolling = true;
+        initErr.reason = "constructor-failed";
+        return reject(initErr);
+      }
+
+      var receivedMessage = false;
+      var settled = false;
+
+      function settle(fn) {
+        if (settled) return;
+        settled = true;
+        try { es.close(); } catch (_) {}
+        fn();
+      }
+
+      es.addEventListener("matched", function (e) {
+        receivedMessage = true;
+        var tx = null;
+        try { tx = JSON.parse(e.data); } catch (_) {}
+        settle(function () {
+          console.log(
+            "[usernode-bridge] tx matched via SSE in " +
+            (Date.now() - startedAt) + "ms"
+          );
+          resolve(tx);
+        });
+      });
+
+      es.addEventListener("timeout", function (e) {
+        receivedMessage = true;
+        settle(function () {
+          var details = [
+            expected.txId ? "txId=" + expected.txId : null,
+            expected.memo != null ? "memo=" + expected.memo : null,
+          ].filter(Boolean).join(", ");
+          var err = new Error(
+            "Timed out waiting for transaction to appear (" + timeoutMs +
+            "ms via server-cache SSE" + (details ? ", " + details : "") + ")"
+          );
+          // Server gave up; polling would too. Don't fall back.
+          reject(err);
+        });
+      });
+
+      es.onerror = function () {
+        // EventSource fires `error` for both transient blips (it auto-
+        // reconnects) and terminal failure. We treat error-before-any-
+        // message as terminal and fall back to polling — the typical
+        // cause is a server / proxy misconfiguration that breaks the
+        // SSE response, and the auto-reconnect would just loop forever.
+        // Errors AFTER receiving at least one message are treated as
+        // transient and the EventSource is allowed to retry on its own.
+        if (settled) return;
+        if (receivedMessage) return;
+        settle(function () {
+          var err = new Error("SSE connection error");
+          err._fallbackToPolling = true;
+          err.reason = "connection-error";
+          reject(err);
+        });
+      };
+    });
+  }
+
+  // ── Passive telemetry: open SSE waiter for fire-and-forget sends ──────
+  //
+  // When a dapp calls sendTransaction(... { waitForInclusion: false }) the
+  // bridge returns immediately and never awaits inclusion. That's correct
+  // for dapps like falling-sands that have their own out-of-band
+  // confirmation channel (a server-pushed WS broadcast), but it means the
+  // send is invisible to /status — there's no SSE waiter, so no row in
+  // "Client Pending Sends".
+  //
+  // This helper opens a fire-and-forget SSE to the same /waitForTx route
+  // purely so the server records the wait in its `waiters` map (live) and
+  // `recentWaiters` ring (after match/timeout). The bridge ignores the
+  // outcome — the only consumer is the operator-facing /status page.
+  //
+  // Conditions to skip silently:
+  //   - no serverCacheUrl  → no cache to wait against
+  //   - no EventSource     → ancient WebView; not worth polyfilling for
+  //                          telemetry only
+  //   - opts.forcePolling  → caller explicitly opted out of SSE
+  //   - empty predicate    → server would 400; happens if tx submission
+  //                          failed before we got an id and we have no
+  //                          sender either
+  //
+  // Connection lifetime: closes on the first `matched`, `timeout`, or
+  // error. We don't allow EventSource's auto-reconnect for telemetry —
+  // a misconfigured cache shouldn't burn a tab's connection budget on a
+  // never-ending retry loop.
+  function _openPassiveSseTelemetry(expected, opts) {
+    if (opts && opts.forcePolling) return;
+    if (!_serverCacheUrl()) return;
+    if (typeof window.EventSource === "undefined") return;
+
+    var hasNarrowing = !!(
+      (expected.txId) ||
+      (expected.from_pubkey) ||
+      (expected.destination_pubkey) ||
+      (expected.memo != null)
+    );
+    if (!hasNarrowing) return;
+
+    var timeoutMs =
+      opts && typeof opts.timeoutMs === "number" ? opts.timeoutMs : 180000;
+    var clientId = _ensureClientId();
+
+    var params = new URLSearchParams();
+    if (expected.from_pubkey) params.set("sender", expected.from_pubkey);
+    if (expected.destination_pubkey)
+      params.set("recipient", expected.destination_pubkey);
+    if (expected.memo != null) params.set("memo", expected.memo);
+    if (expected.txId) params.set("txId", expected.txId);
+    if (typeof expected.minCreatedAtMs === "number")
+      params.set("minCreatedAtMs", String(expected.minCreatedAtMs));
+    params.set("timeoutMs", String(timeoutMs));
+    params.set("clientId", clientId);
+
+    var url = _serverCacheUrl() + "/waitForTx?" + params.toString();
+    var es;
+    try { es = new EventSource(url, { withCredentials: false }); }
+    catch (_) { return; }
+
+    var closed = false;
+    function close() {
+      if (closed) return;
+      closed = true;
+      try { es.close(); } catch (_) {}
+    }
+    es.addEventListener("matched", close);
+    es.addEventListener("timeout", close);
+    es.onerror = close;
+  }
+
+  function _waitViaPolling(expected, opts) {
     // 180s default: chain inclusion on the live network can take a couple
     // of minutes during slow mempool periods. Dapps that want a tighter
     // ceiling can pass opts.timeoutMs explicitly. See AGENTS.md §2.
@@ -3187,7 +3428,22 @@
         var sendFailed = sendResult && (sendResult.error || sendResult.queued === false);
         var shouldWait =
           !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
-        if (!shouldWait) return sendResult;
+        if (!shouldWait) {
+          if (!sendFailed) {
+            // Fire passive SSE so this send still surfaces on /status.
+            window.getNodeAddress().then(function (from) {
+              _openPassiveSseTelemetry({
+                txId: extractTxId(sendResult),
+                minCreatedAtMs: startedAt,
+                memo: memo == null ? null : String(memo),
+                destination_pubkey: destination_pubkey == null ? null : String(destination_pubkey),
+                from_pubkey: from ? String(from).trim() : null,
+                amount: amount,
+              }, opts);
+            }).catch(function () {});
+          }
+          return sendResult;
+        }
         return window.getNodeAddress().then(function (from) {
           var txId = extractTxId(sendResult);
           return waitForTransactionVisible({
@@ -3231,7 +3487,21 @@
         if (!sendFailed) fireOnSubmitted(opts, sendResult);
         var shouldWait =
           !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
-        if (!shouldWait) return sendResult;
+        if (!shouldWait) {
+          if (!sendFailed) {
+            window.getNodeAddress().then(function (from) {
+              _openPassiveSseTelemetry({
+                txId: extractTxId(sendResult),
+                minCreatedAtMs: startedAt,
+                memo: memo == null ? null : String(memo),
+                destination_pubkey: destination_pubkey == null ? null : String(destination_pubkey),
+                from_pubkey: from ? String(from).trim() : null,
+                amount: amount,
+              }, opts);
+            }).catch(function () {});
+          }
+          return sendResult;
+        }
         return window.getNodeAddress().then(function (from) {
           var txId = extractTxId(sendResult);
           return waitForTransactionVisible({
@@ -3265,7 +3535,21 @@
         if (!sendFailed) fireOnSubmitted(opts, sendResult);
         var shouldWait =
           !sendFailed && (!opts || opts.waitForInclusion == null ? true : !!opts.waitForInclusion);
-        if (!shouldWait) return sendResult;
+        if (!shouldWait) {
+          if (!sendFailed) {
+            // from_pubkey already resolved in the outer .then — no
+            // getNodeAddress round-trip needed.
+            _openPassiveSseTelemetry({
+              txId: extractTxId(sendResult),
+              minCreatedAtMs: startedAt,
+              memo: memo == null ? null : String(memo),
+              destination_pubkey: destination_pubkey == null ? null : String(destination_pubkey),
+              from_pubkey: from_pubkey || null,
+              amount: amount,
+            }, opts);
+          }
+          return sendResult;
+        }
         var txId = extractTxId(sendResult);
         return waitForTransactionVisible({
           txId: txId,

@@ -703,6 +703,13 @@ function timestampToTick(ms) { return Math.floor((ms - TICK_EPOCH) / TICK_INTERV
 const APP_PUBKEY = "ut1r96pdaa7h2k4vf62w3w598fyrelv9wru4t53qtgswgfzpsvz77msj588uu";
 const TX_SEND_OPTS = { timeoutMs: 180000, pollIntervalMs: 1500 };
 
+// Route the bridge's inclusion polling at the dapp-server's per-app cache
+// so every connected client shares the same chain poll on the server side
+// instead of each one re-polling the explorer. Also surfaces this dapp's
+// in-flight client sends on /status. See AGENTS.md §7.
+window.usernode = window.usernode || {};
+window.usernode.serverCacheUrl = "/__usernode/cache/" + APP_PUBKEY;
+
 // Populated from the server's WS init/resync message. null when
 // SANDS_ADMIN_PUBKEY isn't configured server-side; non-null means reset
 // memos from that address are honored and the client shows the admin UI
