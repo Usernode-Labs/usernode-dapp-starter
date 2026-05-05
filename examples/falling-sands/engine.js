@@ -48,7 +48,18 @@ function createEngine(opts) {
   const wasmLoaderPath = (opts && opts.wasmLoaderPath) || "./wasm-loader";
   const snapshotDir = (opts && opts.snapshotDir) || __dirname;
   const chainId = (opts && opts.chainId) || null;
-  const TICK_EPOCH = (opts && opts.epoch) || DEFAULT_TICK_EPOCH;
+  const explicitEpoch = opts && opts.epoch;
+  const TICK_EPOCH = explicitEpoch || DEFAULT_TICK_EPOCH;
+  // Persisting a snapshot is only safe when both chain_id and epoch are
+  // real (caller-supplied). Otherwise the snapshot ends up tagged with
+  // DEFAULT_TICK_EPOCH, which is permanently incompatible with any boot
+  // that successfully discovers the real chain genesis — the same
+  // "fallback poisoning" that just made us replay 220 draws from
+  // genesis. When this is false the engine still runs (with the
+  // fallback epoch) but never writes to disk; a subsequent boot with
+  // proper chain info will start fresh and write the first good
+  // snapshot.
+  const canPersistSnapshots = !!(chainId && explicitEpoch);
   // Pubkey permitted to issue `{ app: "falling-sands", type: "reset" }`
   // memos. Any reset memo from a different sender is silently ignored
   // (both live and during historical replay), so only the configured
@@ -207,8 +218,16 @@ function createEngine(opts) {
     return lastSnapshot;
   }
 
+  let _warnedNoPersist = false;
   function saveSnapshotToDisk() {
     if (!lastSnapshot) return;
+    if (!canPersistSnapshots) {
+      if (!_warnedNoPersist) {
+        console.warn("[snapshot] not saving to disk: missing chainId or epoch — running ephemerally to avoid fallback-epoch poisoning. Future boots will replay from genesis until chain info becomes available.");
+        _warnedNoPersist = true;
+      }
+      return;
+    }
     try {
       const filePath = path.join(snapshotDir, "snapshot.json");
       fs.writeFileSync(filePath, JSON.stringify(lastSnapshot));
@@ -273,6 +292,16 @@ function createEngine(opts) {
     const snapChain = lastSnapshot.chain_id || null;
     const snapEpoch = lastSnapshot.epoch || DEFAULT_TICK_EPOCH;
 
+    // Pre-fix snapshots (no chain_id) cannot be reasoned about: they
+    // were either written by a successful boot for THIS chain, or by
+    // some earlier boot that fell back to DEFAULT_TICK_EPOCH because
+    // chain discovery failed. Without chain_id we can't tell which,
+    // and the latter case has a wrong epoch that would corrupt
+    // engine timing. Reject explicitly so the user sees why.
+    if (chainId && !snapChain) {
+      reason.push("snapshot lacks chain_id (pre-fix format — cannot verify chain or epoch)");
+      discard = true;
+    }
     if (chainId && snapChain && snapChain !== chainId) {
       reason.push(`chain_id mismatch (snapshot: ${snapChain.slice(0, 16)}…, current: ${chainId.slice(0, 16)}…)`);
       discard = true;

@@ -183,8 +183,91 @@ if (LOCAL_DEV && OM_TEST_MARKET) {
 let engine = null;
 let sandsCache = null;
 
+// `discoverChainInfo()` estimates genesis_timestamp_ms from explorer
+// blocks: `genesis ≈ b1.timestamp_ms - b1.global_slot * slotMs`. Block
+// timestamps are noisy production times (not slot-aligned), so the
+// estimate jitters by ms-to-seconds across boots even on a stable
+// chain. The engine uses that value as `TICK_EPOCH`, which determines
+// the tick coordinate of every snapshot — so any boot-to-boot jitter
+// invalidates the disk snapshot and forces a full replay (was 220+
+// draws → minutes-to-hours). Cache the first known-good value to disk
+// so subsequent boots use the same number, eliminating drift.
+function loadCachedChainInfo(dir) {
+  try {
+    const filePath = path.join(dir, "chain-info.json");
+    if (!fs.existsSync(filePath)) return null;
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!data || !data.chain_id || !data.genesis_timestamp_ms) return null;
+    return {
+      chainId: String(data.chain_id),
+      genesisTimestampMs: Number(data.genesis_timestamp_ms),
+    };
+  } catch (e) {
+    console.warn(`[chain-info] cache read failed: ${e.message}`);
+    return null;
+  }
+}
+
+function saveCachedChainInfo(dir, info) {
+  if (!dir || !info || !info.chainId || !info.genesisTimestampMs) return;
+  try {
+    const filePath = path.join(dir, "chain-info.json");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        chain_id: info.chainId,
+        genesis_timestamp_ms: info.genesisTimestampMs,
+        cached_at: Date.now(),
+      }),
+    );
+    console.log(`[chain-info] cached to ${filePath}`);
+  } catch (e) {
+    console.warn(`[chain-info] cache write failed: ${e.message}`);
+  }
+}
+
+// Returns { chainId, genesisTimestampMs }. Prefers a cached value when
+// the live chain_id matches it; falls back to a fresh estimate;
+// degrades to the cache alone if discovery fails.
+async function getStableChainInfo(snapshotDir) {
+  const cached = snapshotDir ? loadCachedChainInfo(snapshotDir) : null;
+  const live = await discoverChainInfo().catch(() => ({
+    chainId: null,
+    genesisTimestampMs: null,
+  }));
+
+  if (cached && live.chainId && cached.chainId === live.chainId) {
+    console.log(
+      `[chain-info] using cached genesis ${new Date(cached.genesisTimestampMs).toISOString()} (chain=${cached.chainId.slice(0, 16)}…) — live estimate ${new Date(live.genesisTimestampMs || 0).toISOString()} ignored to avoid estimator drift`,
+    );
+    return cached;
+  }
+  if (live.chainId && live.genesisTimestampMs) {
+    if (cached && cached.chainId !== live.chainId) {
+      console.log(
+        `[chain-info] cached chain_id ${cached.chainId.slice(0, 16)}… no longer active (now ${live.chainId.slice(0, 16)}…) — replacing cache`,
+      );
+    }
+    if (snapshotDir) saveCachedChainInfo(snapshotDir, live);
+    return { chainId: live.chainId, genesisTimestampMs: live.genesisTimestampMs };
+  }
+  if (cached) {
+    console.log(
+      `[chain-info] live discovery failed; falling back to cached genesis ${new Date(cached.genesisTimestampMs).toISOString()} (chain=${cached.chainId.slice(0, 16)}…)`,
+    );
+    return cached;
+  }
+  return { chainId: null, genesisTimestampMs: null };
+}
+
 (async function initEngine() {
-  const chainInfo = await discoverChainInfo().catch(() => ({ chainId: null, genesisTimestampMs: null }));
+  let snapshotDir = null;
+  if (process.env.SNAPSHOT_DIR) {
+    snapshotDir = path.resolve(process.env.SNAPSHOT_DIR);
+    if (!fs.existsSync(snapshotDir)) fs.mkdirSync(snapshotDir, { recursive: true });
+  }
+
+  const chainInfo = await getStableChainInfo(snapshotDir);
 
   let replayTxs = [];
   let lastHeight = null;
@@ -207,11 +290,7 @@ let sandsCache = null;
     adminPubkey: SANDS_ADMIN_PUBKEY,
     replayTxs,
   };
-  if (process.env.SNAPSHOT_DIR) {
-    const dir = path.resolve(process.env.SNAPSHOT_DIR);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    engineOpts.snapshotDir = dir;
-  }
+  if (snapshotDir) engineOpts.snapshotDir = snapshotDir;
 
   engine = createEngine(engineOpts);
 
