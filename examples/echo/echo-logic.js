@@ -123,7 +123,14 @@ function createEcho(opts) {
   const RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
   const RETRY_MAX_ATTEMPTS = 30;
   const RETRY_TTL_MS = 60 * 60 * 1000;
-  const TRANSIENT_RE = /no UTXOs for owner|wallet send already pending|sidecar not ready|signer not configured|tracked owner not registered|queued tx not included|ECONNREFUSED|ECONNRESET|ETIMEDOUT|HTTP 5\d\d/i;
+  // `no eligible base-currency UTXOs found for owner` and `requires a single
+  // base-currency UTXO` are emitted by the wallet's single-input selector
+  // (crates/node/src/rpc/rpcs/wallet_tx.rs) and are typically transient races
+  // between the recent-tx SSE/ring fire and the wallet UTXO-DB applying the
+  // block that funds the next echo. Treat them as transient so the standard
+  // backoff/retry covers the race; if the wallet is genuinely depleted the
+  // retry loop still gives up at MAX_ATTEMPTS / RETRY_TTL_MS.
+  const TRANSIENT_RE = /no UTXOs for owner|no eligible base-currency UTXOs found for owner|requires a single base-currency UTXO|wallet send already pending|sidecar not ready|signer not configured|tracked owner not registered|queued tx not included|ECONNREFUSED|ECONNRESET|ETIMEDOUT|HTTP 5\d\d/i;
 
   // After /wallet/send returns queued:true with a tx_id, the sidecar can still
   // drop the tx silently — we've seen it disappear from mempool without ever
