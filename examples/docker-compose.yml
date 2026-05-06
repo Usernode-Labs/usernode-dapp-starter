@@ -48,6 +48,17 @@ services:
     volumes:
       - node-data:/var/lib/usernode
       - node-archive:/archive
+    # Bind the node's HTTP port to the host loopback so an operator
+    # SSHed into prod can `curl http://localhost:3000/...` directly
+    # against the sidecar — `/status`, `/wallet/by_owner`,
+    # `/transactions/stream`, etc. — without bouncing through
+    # dapp-examples' proxy. Bound to 127.0.0.1 (NOT 0.0.0.0) so the
+    # node's RPC stays off the public internet; nginx-proxy still
+    # exposes only `dapp-examples:8000` via VIRTUAL_HOST. Removing
+    # the bind reverts to in-network-only (works fine for the dapps,
+    # blind for ops).
+    ports:
+      - "127.0.0.1:3000:3000"
     # NOTE: deliberately NOT on `proxy-network`. Earlier topology had the
     # node sidecar attached only to nginx-proxy's external `proxy-network`,
     # which routes TCP fine but breaks the WebRTC data-channel UDP path
