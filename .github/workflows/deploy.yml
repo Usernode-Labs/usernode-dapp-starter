@@ -239,34 +239,16 @@ jobs:
                 grep -iE "peer|dial|connect|seed|listen|p2p|webrtc|quic|error|warn" | \
                 tail -100 || true
 
-              # ----------------------------------------------------------
-              # Network egress probes from inside dapp-node. Confirms (or
-              # rules out) the host firewall / NAT theory: outbound TCP to
-              # seed signaling ports works, but outbound UDP to seed
-              # WebRTC / STUN ports doesn't. If both legs work we know
-              # the failure is internal to the rust-webrtc stack; if UDP
-              # fails we know to look at iptables / nftables / cloud SG.
-              # ----------------------------------------------------------
-              echo "==> dapp-node interface + route table:"
-              docker exec dapp-node sh -c "ip -br addr; echo; ip -4 route" 2>&1 \
-                | head -20 || echo "::warning::could not introspect dapp-node net"
-              echo "==> dapp-node TCP egress to seed signaling ports (3 sec timeout each):"
-              for hp in 65.109.68.86:3001 65.109.99.245:3001 65.109.99.245:3002; do
-                docker exec dapp-node sh -c "timeout 3 sh -c 'echo > /dev/tcp/${hp%:*}/${hp#*:}'" \
-                  >/dev/null 2>&1 && echo "  $hp TCP OK" || echo "  $hp TCP FAIL"
-              done
-              echo "==> dapp-node UDP send to STUN ports (no reply expected for bare write):"
-              for hp in 65.109.99.245:3478 85.10.193.72:3478; do
-                docker exec dapp-node sh -c "timeout 3 sh -c 'echo > /dev/udp/${hp%:*}/${hp#*:}'" \
-                  >/dev/null 2>&1 && echo "  $hp UDP send-OK" || echo "  $hp UDP FAIL"
-              done
-              echo "==> dapp-node DNS resolution sanity:"
-              docker exec dapp-node sh -c "getent hosts static.usernodelabs.org" 2>&1 \
-                || echo "::warning::dapp-node DNS broken"
-
-              echo "==> /status from host loopback (127.0.0.1:3000:3000 mapping):"
-              curl -sfm 5 http://localhost:3000/status | head -c 800 || \
-                echo "::warning::host loopback could not reach dapp-node — port mapping or listener missing"
+              echo "==> /status from host (dapp-node runs in network_mode: host):"
+              curl -sfm 5 http://localhost:3000/status \
+                | python3 -c "
+import sys, json
+s = json.load(sys.stdin)
+peers = s.get('peers', [])
+connected = sum(1 for p in peers if p.get('connection_status') == 'Connected')
+print(f'  sync_status={s.get(\"node_sync_status\")}  peers={len(peers)} connected={connected}')
+print(f'  best_tip_height={s.get(\"blockchain\", {}).get(\"best_tip\", {}).get(\"height\")}')
+" || echo "::warning::host loopback could not reach dapp-node"
               echo
               echo "==> public /__usernode/node_status:"
               curl -sfm 5 https://dapps.usernodelabs.org/__usernode/node_status | \

@@ -48,31 +48,42 @@ services:
     volumes:
       - node-data:/var/lib/usernode
       - node-archive:/archive
-    # Bind the node's HTTP port to the host loopback so an operator
-    # SSHed into prod can `curl http://localhost:3000/...` directly
-    # against the sidecar — `/status`, `/wallet/by_owner`,
-    # `/transactions/stream`, etc. — without bouncing through
-    # dapp-examples' proxy. Bound to 127.0.0.1 (NOT 0.0.0.0) so the
-    # node's RPC stays off the public internet; nginx-proxy still
-    # exposes only `dapp-examples:8000` via VIRTUAL_HOST. Removing
-    # the bind reverts to in-network-only (works fine for the dapps,
-    # blind for ops).
-    ports:
-      - "127.0.0.1:3000:3000"
-    # NOTE: deliberately NOT on `proxy-network`. Earlier topology had the
-    # node sidecar attached only to nginx-proxy's external `proxy-network`,
-    # which routes TCP fine but breaks the WebRTC data-channel UDP path
-    # used by the P2P stack — outbound HTTP signaling reaches the testnet
-    # seeds, but ICE/DTLS/SCTP-over-UDP never completes, so every dial
-    # times out at 15s with `peers: 0` despite repeated retries. (Confirmed
-    # by 1:1 comparison with social-vibecoding, which runs the same image
-    # + flags but on a vanilla project-owned bridge and peers within 30s.)
-    # `dapp-internal` is a fresh docker bridge with default NAT
-    # behavior, which carries UDP correctly. dapp-examples joins both
-    # networks so it can still reach the node via `node:3000` AND remain
-    # discoverable by nginx-proxy on `proxy-network`.
-    networks:
-      - dapp-internal
+    # `network_mode: host` is REQUIRED for P2P to function on this host.
+    #
+    # The usernode P2P stack uses WebRTC datachannels (HTTP signaling +
+    # ICE/DTLS/SCTP over UDP). Empirically, on testnet-mini-apps every
+    # docker bridge variant we tried (proxy-network, project-owned
+    # `dapp-internal`, default `docker0`) fails at the WebRTC ICE
+    # connectivity-check phase: HTTP signaling completes, the SDP offer
+    # contains valid srflx candidates discovered via STUN, but the
+    # `FinalizePending → FinalizeSuccess` transition never happens and
+    # every dial times out at 15s with `reason=local close`. Direct
+    # comparison: a one-off `docker run --network=host` of the same
+    # image on the same host reaches Synced with 25+ peers within 30s.
+    #
+    # The host's NAT is well-behaved otherwise: cone NAT confirmed via
+    # raw STUN binding from the same socket to 4 different STUN servers
+    # (all returned the same external port), MTU is uniform 1500 across
+    # bridges + enp35s0, outbound UDP egress works (DNS + STUN both
+    # succeeded). Whatever's broken in the bridge→ICE path on this host
+    # didn't surface on social-vibecoding's host with the same image.
+    # Diagnosing the underlying NAT/iptables/conntrack issue would be a
+    # separate spelunking exercise; host networking is the proven fix.
+    #
+    # Side effects:
+    #   - Node binds 0.0.0.0:3000 directly on the host. Wallet endpoints
+    #     are auth-gated (signer registration requires the secret key,
+    #     which only this server has via .env), so public exposure is
+    #     safe; read endpoints (/status, /transactions/*) are public by
+    #     design anyway.
+    #   - dapp-examples can no longer reach the node via `node:3000` on
+    #     a docker network. It uses `host.docker.internal:3000` instead
+    #     (configured in the dapp-examples service below).
+    #   - The previous host-loopback `ports: ["127.0.0.1:3000:3000"]`
+    #     is no longer needed: `network_mode: host` makes the node bind
+    #     directly on the host's network namespace, so localhost queries
+    #     work natively.
+    network_mode: host
     restart: unless-stopped
 
   dapp-examples:
@@ -85,19 +96,26 @@ services:
         required: false
     environment:
       PORT: "8000"
-      NODE_RPC_URL: "http://node:3000"
+      # Node sidecar runs in `network_mode: host`, so it's reachable on
+      # the host's gateway IP from any docker bridge. `host-gateway` is
+      # docker's portable alias for that, mapped via `extra_hosts` below.
+      NODE_RPC_URL: "http://host.docker.internal:3000"
       SNAPSHOT_DIR: "/app/data"
       VIRTUAL_HOST: "dapps.usernodelabs.org"
       VIRTUAL_PORT: "8000"
       LETSENCRYPT_HOST: "dapps.usernodelabs.org"
+    extra_hosts:
+      # Required for `NODE_RPC_URL=http://host.docker.internal:3000` to
+      # resolve from inside this container. Docker auto-injects this on
+      # Mac/Windows but not on Linux, so we set it explicitly. Keeps
+      # working on dev machines too (no-op when the alias is already
+      # present from docker desktop).
+      - "host.docker.internal:host-gateway"
     expose:
       - "8000"
     volumes:
       - sands-data:/app/data
     networks:
-      # `dapp-internal` for talking to the node sidecar by service name.
-      # `proxy-network` for nginx-proxy public routing of VIRTUAL_HOST.
-      - dapp-internal
       - proxy-network
     restart: unless-stopped
 
@@ -107,12 +125,5 @@ volumes:
   node-archive:
 
 networks:
-  # Project-owned bridge that carries node↔dapp-examples traffic AND is
-  # the node sidecar's egress for outbound P2P UDP. Default `bridge`
-  # driver settings — that's the whole point: vanilla docker NAT makes
-  # WebRTC's DTLS/SCTP-over-UDP work, whereas `proxy-network` (nginx-
-  # proxy's external network) does not.
-  dapp-internal:
-    driver: bridge
   proxy-network:
     external: true
