@@ -209,9 +209,7 @@
     .status-dot.err { background: var(--danger); }
     .status-dot.pending { background: var(--gold); }
 
-    /* Username edit panel */
-    .username-panel { margin-top: 12px; display: none; }
-    .username-panel.open { display: block; }
+    /* Username edit form */
     .inputAffix {
       display: flex; align-items: center;
       border: 1px solid var(--border); border-radius: 10px;
@@ -228,7 +226,6 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       white-space: nowrap; font-size: 14px;
     }
-    .username-panel .row { display: flex; gap: 8px; margin-top: 8px; }
     .btn-sm {
       display: inline-block; padding: 8px 14px; border-radius: 8px;
       border: 1px solid var(--accent); background: var(--accent);
@@ -238,6 +235,75 @@
     .btn-sm:hover { opacity: 0.9; }
     .btn-sm:disabled { opacity: 0.45; cursor: not-allowed; }
     .btn-sm.secondary { background: transparent; color: var(--accent); }
+
+    /* Bottom sheet (matches opinion-market pattern) */
+    .bottomSheet-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 100;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      pointer-events: none;
+    }
+    .bottomSheet-backdrop.open { opacity: 1; pointer-events: auto; }
+    .bottomSheet {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0;
+      padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+      z-index: 101;
+      transform: translateY(100%);
+      transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+      max-width: 500px;
+      margin: 0 auto;
+      box-shadow: 0 -4px 24px rgba(0,0,0,0.15);
+    }
+    .bottomSheet.open { transform: translateY(0); }
+    .bottomSheet-handle {
+      width: 36px; height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      margin: 0 auto 16px;
+    }
+    .bottomSheet-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .bottomSheet-title { font-weight: 600; font-size: 16px; }
+    .bottomSheet-action {
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .bottomSheet-action:hover { opacity: 0.9; }
+    .bottomSheet-action:disabled { opacity: 0.4; cursor: not-allowed; }
+    .bottomSheet-cancel {
+      width: 100%;
+      padding: 10px;
+      margin-top: 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .bottomSheet-cancel:hover { color: var(--fg); border-color: var(--fg); }
+    .bottomSheet-cancel:disabled { opacity: 0.4; cursor: not-allowed; }
+
     .hide { display: none !important; }
   </style>
 </head>
@@ -251,22 +317,26 @@
         <button class="header-icon" id="infoToggle" type="button" title="How to play">?</button>
       </div>
     </div>
-    <div class="username-panel" id="usernamePanel">
-      <div style="font-size:13px;color:var(--muted);margin-bottom:6px;">Set your display name</div>
-      <div class="inputAffix">
-        <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
-        <span id="usernameSuffix" class="inputAffixSuffix">_??????</span>
-      </div>
-      <div class="row">
-        <button class="btn-sm" id="saveUsernameBtn" type="button">Save</button>
-        <button class="btn-sm secondary" id="cancelUsernameBtn" type="button">Cancel</button>
-      </div>
-      <div class="tx-progress hide" id="usernameTxProgress">
-        <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
-        <div class="tx-progress-label">Setting username...</div>
-      </div>
-    </div>
   </header>
+
+  <!-- Bottom sheet username editor -->
+  <div class="bottomSheet-backdrop" id="usernameBackdrop"></div>
+  <div class="bottomSheet" id="usernameSheet">
+    <div class="bottomSheet-handle"></div>
+    <div class="bottomSheet-header">
+      <span class="bottomSheet-title">Set your display name</span>
+    </div>
+    <div class="inputAffix">
+      <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
+      <span id="usernameSuffix" class="inputAffixSuffix">_??????</span>
+    </div>
+    <button class="bottomSheet-action" id="saveUsernameBtn" type="button" style="margin-top:12px;">Save</button>
+    <button class="bottomSheet-cancel" id="cancelUsernameBtn" type="button">Cancel</button>
+    <div class="tx-progress hide" id="usernameTxProgress" style="margin-top:8px;">
+      <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+      <div class="tx-progress-label">Setting username...</div>
+    </div>
+  </div>
 
   <div class="info-overlay" id="infoOverlay">
     <div class="info-content" id="infoContent">
@@ -344,7 +414,8 @@
     const myAddressEl = document.getElementById("myAddress");
     const usernamePill = document.getElementById("usernamePill");
     const usernameDisplay = document.getElementById("usernameDisplay");
-    const usernamePanel = document.getElementById("usernamePanel");
+    const usernameSheet = document.getElementById("usernameSheet");
+    const usernameBackdrop = document.getElementById("usernameBackdrop");
     const usernameInput = document.getElementById("usernameInput");
     const usernameSuffixEl = document.getElementById("usernameSuffix");
     const saveUsernameBtn = document.getElementById("saveUsernameBtn");
@@ -695,17 +766,28 @@
       const base = full.endsWith(suffix) ? full.slice(0, -suffix.length) : full.replace(/_[A-Za-z0-9]{6}$/, "");
       usernameInput.value = base || "user";
       usernameSuffixEl.textContent = suffix;
-      usernamePanel.classList.add("open");
+      usernameBackdrop.classList.add("open");
+      usernameSheet.classList.add("open");
+      document.body.style.overflow = "hidden";
+      setTimeout(() => { try { usernameInput.focus(); usernameInput.select(); } catch (_) {} }, 50);
     }
 
     function closeUsernamePanel() {
-      usernamePanel.classList.remove("open");
+      usernameBackdrop.classList.remove("open");
+      usernameSheet.classList.remove("open");
+      document.body.style.overflow = "";
       usernameTxProgress.classList.add("hide");
     }
 
     usernamePill.addEventListener("click", () => {
-      if (usernamePanel.classList.contains("open")) closeUsernamePanel();
+      if (usernameSheet.classList.contains("open")) closeUsernamePanel();
       else openUsernamePanel();
+    });
+
+    usernameBackdrop.addEventListener("click", closeUsernamePanel);
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && usernameSheet.classList.contains("open")) closeUsernamePanel();
     });
 
     cancelUsernameBtn.addEventListener("click", closeUsernamePanel);

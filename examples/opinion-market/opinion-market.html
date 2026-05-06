@@ -762,6 +762,28 @@
       </div>
     </div>
 
+    <!-- Bottom sheet username editor -->
+    <div class="bottomSheet-backdrop" id="usernameBackdrop"></div>
+    <div class="bottomSheet" id="usernameSheet">
+      <div class="bottomSheet-handle"></div>
+      <div class="bottomSheet-header">
+        <span class="bottomSheet-optName">Set username</span>
+      </div>
+      <label style="display: grid; gap: 6px; margin-top: 8px;">
+        <span class="muted" style="font-size: 13px;">Username</span>
+        <div class="inputAffix">
+          <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
+          <span id="usernameSuffix" class="inputAffixSuffix">_unknown</span>
+        </div>
+      </label>
+      <button class="bottomSheet-action" id="saveUsernameBtn" type="button" style="margin-top: 12px;">Save username</button>
+      <button class="btn" id="cancelUsernameBtn" type="button" style="width: 100%; margin-top: 8px;">Cancel</button>
+      <div id="setUsernamePending" class="tx-progress hide" role="status" aria-live="polite" style="margin-top: 8px;">
+        <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
+        <div class="tx-progress-label">Setting username...</div>
+      </div>
+    </div>
+
     <div class="scrollArea" id="scrollRoot">
       <div class="scrollArea-inner">
             <!-- Onboarding -->
@@ -778,26 +800,6 @@
               <div id="joinPending" class="tx-progress hide" role="status" aria-live="polite">
                 <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
                 <div class="tx-progress-label">Joining...</div>
-              </div>
-            </div>
-
-            <!-- Username -->
-            <div class="panel hide" id="setUsernamePanel">
-              <h3>Set username</h3>
-              <label style="display: grid; gap: 6px; margin-top: 8px;">
-                <span class="muted" style="font-size: 13px;">Username</span>
-                <div class="inputAffix">
-                  <input id="usernameInput" class="inputAffixField" maxlength="24" placeholder="username" />
-                  <span id="usernameSuffix" class="inputAffixSuffix">_unknown</span>
-                </div>
-              </label>
-              <div class="row" style="margin-top: 10px;">
-                <button class="btn primary" id="saveUsernameBtn" type="button">Save username</button>
-                <button class="btn" id="cancelUsernameBtn" type="button">Cancel</button>
-              </div>
-              <div id="setUsernamePending" class="tx-progress hide" role="status" aria-live="polite">
-                <div class="tx-progress-track"><div class="tx-progress-fill"></div></div>
-                <div class="tx-progress-label">Setting username...</div>
               </div>
             </div>
 
@@ -3068,6 +3070,24 @@
           _bsOptKey = null;
         }
 
+        function openUsernameSheet() {
+          if (sending) return;
+          clearUsernameForm();
+          $("usernameBackdrop").classList.add("open");
+          $("usernameSheet").classList.add("open");
+          document.body.style.overflow = "hidden";
+          const inp = $("usernameInput");
+          if (inp) setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 50);
+        }
+
+        function closeUsernameSheet() {
+          $("usernameBackdrop").classList.remove("open");
+          $("usernameSheet").classList.remove("open");
+          document.body.style.overflow = "";
+          const pending = $("setUsernamePending");
+          if (pending) pending.classList.add("hide");
+        }
+
         function switchBsTab(mode) {
           _bsMode = mode;
           $("bsTabBuy").classList.toggle("active", mode === "buy");
@@ -3841,21 +3861,26 @@
 
           $("headerUsernameBtn").addEventListener("click", () => {
             if (sending) return;
-            navigateToList();
-            const panel = $("setUsernamePanel");
-            const opening = panel && panel.classList.contains("hide");
-            show(panel, !!opening);
-            if (opening) clearUsernameForm();
+            const sheet = $("usernameSheet");
+            if (sheet && sheet.classList.contains("open")) closeUsernameSheet();
+            else openUsernameSheet();
           });
 
-          $("cancelUsernameBtn").addEventListener("click", () => show($("setUsernamePanel"), false));
+          $("usernameBackdrop").addEventListener("click", closeUsernameSheet);
+
+          $("cancelUsernameBtn").addEventListener("click", closeUsernameSheet);
 
           $("saveUsernameBtn").addEventListener("click", async () => {
             try {
               await setUsernameFlow(($("usernameInput") || {}).value || "");
-              show($("setUsernamePanel"), false);
               setSending(false, true);
+              closeUsernameSheet();
             } catch (e) { setSending(false, false); showInlineError(e.message || e); }
+          });
+
+          window.addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") return;
+            if ($("usernameSheet").classList.contains("open")) closeUsernameSheet();
           });
 
           $("joinBtn").addEventListener("click", async () => {
