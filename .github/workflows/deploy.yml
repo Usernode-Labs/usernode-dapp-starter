@@ -240,15 +240,12 @@ jobs:
                 tail -100 || true
 
               echo "==> /status from host (dapp-node runs in network_mode: host):"
-              curl -sfm 5 http://localhost:3000/status \
-                | python3 -c "
-import sys, json
-s = json.load(sys.stdin)
-peers = s.get('peers', [])
-connected = sum(1 for p in peers if p.get('connection_status') == 'Connected')
-print(f'  sync_status={s.get(\"node_sync_status\")}  peers={len(peers)} connected={connected}')
-print(f'  best_tip_height={s.get(\"blockchain\", {}).get(\"best_tip\", {}).get(\"height\")}')
-" || echo "::warning::host loopback could not reach dapp-node"
+              curl -sfm 5 http://localhost:3000/status | jq -r '
+                "  sync_status=" + (.node_sync_status // "null") +
+                "  peers=" + (.peers | length | tostring) +
+                "  connected=" + ([.peers[] | select(.connection_status == "Connected")] | length | tostring),
+                "  best_tip_height=" + ((.blockchain.best_tip.height // "null") | tostring)
+              ' || echo "::warning::host loopback could not reach dapp-node"
               echo
               echo "==> public /__usernode/node_status:"
               curl -sfm 5 https://dapps.usernodelabs.org/__usernode/node_status | \
