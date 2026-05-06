@@ -1166,12 +1166,12 @@ Every server in the project (root `server.js` and each sub-app server) must prox
 The convention:
 
 ```js
-const EXPLORER_UPSTREAM      = "alpha1.usernodelabs.org";
-const EXPLORER_UPSTREAM_BASE = "/explorer/api";
+const EXPLORER_UPSTREAM      = "testnet-explorer.usernodelabs.org";
+const EXPLORER_UPSTREAM_BASE = "/api";
 const EXPLORER_PROXY_PREFIX  = "/explorer-api/";
 ```
 
-When the server receives a request starting with `/explorer-api/`, it rewrites the path and forwards it to `https://alpha1.usernodelabs.org/explorer/api/...`, then pipes the response back to the client.
+When the server receives a request starting with `/explorer-api/`, it rewrites the path and forwards it to `https://testnet-explorer.usernodelabs.org/api/...`, then pipes the response back to the client.
 
 Client-side code uses this proxy transparently:
 
@@ -1410,7 +1410,7 @@ APP_PUBKEY=ut1...
 APP_SECRET_KEY=...
 ```
 
-`NODE_RPC_URL` defaults to `https://alpha1.usernodelabs.org` in JS code as a fallback, but in Docker deployments the `docker-compose.yml` sets `NODE_RPC_URL=http://node:3000` to use the sidecar node. You only need to set `NODE_RPC_URL` in `.env` if you're running outside Docker and pointing at a specific node.
+`NODE_RPC_URL` defaults to `http://usernode-node:3000` in JS code (matches the sidecar service name in `docker-compose.yml`). Docker deployments use that sidecar; outside Docker, set `NODE_RPC_URL` in `.env` to the host:port of whatever node you want to talk to.
 
 See Section 14 for how to generate these, load them, and back them up via GitHub secrets.
 
@@ -1469,7 +1469,7 @@ APP_SECRET_KEY=...
 TIMER_DURATION_MS=86400000
 ```
 
-`NODE_RPC_URL` defaults to `https://alpha1.usernodelabs.org` in JS code, but Docker deployments override it to `http://node:3000` (the sidecar node). You only need to set it in `.env` when running outside Docker.
+`NODE_RPC_URL` defaults to `http://usernode-node:3000` in JS code (matches the sidecar service name in `docker-compose.yml`). You only need to set it in `.env` when running outside Docker, or when you want a different host.
 
 The sidecar node also reads genesis and seedlist URLs. These have sensible defaults in `docker-compose.yml` and only need overriding if you're targeting a different network:
 
@@ -1824,7 +1824,7 @@ make down    # Stop and remove
 
 ## 19. Connecting to a Localnet (Optional)
 
-By default, dapps are developed with `--local-dev` (mock endpoints) or against the production network (`alpha1.usernodelabs.org`). If you're running a Usernode localnet (via `usernode/tools/localnet/`), you can point the dapp server at it instead.
+By default, dapps are developed with `--local-dev` (mock endpoints) or against the production network (`testnet-explorer.usernodelabs.org`). If you're running a Usernode localnet (via `usernode/tools/localnet/`), you can point the dapp server at it instead.
 
 ### Prerequisites
 
@@ -1840,26 +1840,26 @@ APP_SECRET_KEY=...
 
 # Localnet: point at the seed node's HTTP port
 NODE_RPC_URL=http://192.168.1.116:3001
-# Production (default when not set):
-#NODE_RPC_URL=https://alpha1.usernodelabs.org
+# Production (default when not set — assumes the docker compose sidecar):
+#NODE_RPC_URL=http://usernode-node:3000
 
 # Localnet: point explorer proxy at the local block explorer backend
 EXPLORER_UPSTREAM=192.168.1.116:4173
 EXPLORER_UPSTREAM_BASE=/api
 # Production (default when not set):
-#EXPLORER_UPSTREAM=alpha1.usernodelabs.org
-#EXPLORER_UPSTREAM_BASE=/explorer/api
+#EXPLORER_UPSTREAM=testnet-explorer.usernodelabs.org
+#EXPLORER_UPSTREAM_BASE=/api
 ```
 
 Key differences from production:
 
 | Variable | Production (default) | Localnet |
 |---|---|---|
-| `NODE_RPC_URL` | `https://alpha1.usernodelabs.org` | `http://<LAN_IP>:3001` |
-| `EXPLORER_UPSTREAM` | `alpha1.usernodelabs.org` | `<LAN_IP>:4173` |
-| `EXPLORER_UPSTREAM_BASE` | `/explorer/api` | `/api` |
+| `NODE_RPC_URL` | `http://usernode-node:3000` (sidecar) | `http://<LAN_IP>:3001` |
+| `EXPLORER_UPSTREAM` | `testnet-explorer.usernodelabs.org` | `<LAN_IP>:4173` |
+| `EXPLORER_UPSTREAM_BASE` | `/api` | `/api` |
 
-The localnet block explorer backend runs on port 4173 with a `/api` prefix (no `/explorer` prefix). The server auto-selects `http` vs `https` based on whether the host looks like a private IP.
+The localnet block explorer backend runs on port 4173 with a `/api` prefix; the public testnet explorer also serves under `/api`, so the path-prefix config is identical in both environments. The server auto-selects `http` vs `https` based on whether the host looks like a private IP.
 
 ### Running
 
@@ -1877,7 +1877,7 @@ Comment out or remove the localnet lines in `.env` and uncomment the production 
 
 ### Notes
 
-- The localnet explorer uses a different API path prefix (`/api`) than production (`/explorer/api`). This is the most common gotcha.
+- Localnet and production both serve the explorer under `/api` (the legacy `/explorer/api` path is no longer used). Override `EXPLORER_UPSTREAM_BASE` only when targeting a non-standard explorer build.
 - If the explorer proxy returns connection errors, verify the block explorer container is running (`docker ps | grep block-explorer`) and that port 4173 is reachable (`curl http://<LAN_IP>:4173/api/active_chain`).
 - For the `examples/` combined server, the same `.env` variables apply — `examples/lib/dapp-server.js` reads `EXPLORER_UPSTREAM` and `EXPLORER_UPSTREAM_BASE` from `process.env`.
 - Generate a fresh keypair for localnet testing: `node scripts/generate-keypair.js --env --node-url http://<LAN_IP>:3001`. This writes `APP_PUBKEY` and `APP_SECRET_KEY` to `.env` and registers the account on the localnet node.

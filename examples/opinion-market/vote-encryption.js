@@ -74,7 +74,7 @@ function createVoteEncryption(opts) {
   const appPubkey = opts.appPubkey;
   const senderPubkey = opts.senderPubkey || appPubkey;
   const senderSecretKey = opts.senderSecretKey || "";
-  const nodeRpcUrl = opts.nodeRpcUrl || "https://alpha1.usernodelabs.org";
+  const nodeRpcUrl = opts.nodeRpcUrl || "http://usernode-node:3000";
   const localDev = !!opts.localDev;
   const mockTransactions = opts.mockTransactions || null;
 
