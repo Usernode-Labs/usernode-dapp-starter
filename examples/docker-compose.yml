@@ -48,8 +48,20 @@ services:
     volumes:
       - node-data:/var/lib/usernode
       - node-archive:/archive
+    # NOTE: deliberately NOT on `proxy-network`. Earlier topology had the
+    # node sidecar attached only to nginx-proxy's external `proxy-network`,
+    # which routes TCP fine but breaks the WebRTC data-channel UDP path
+    # used by the P2P stack — outbound HTTP signaling reaches the testnet
+    # seeds, but ICE/DTLS/SCTP-over-UDP never completes, so every dial
+    # times out at 15s with `peers: 0` despite repeated retries. (Confirmed
+    # by 1:1 comparison with social-vibecoding, which runs the same image
+    # + flags but on a vanilla project-owned bridge and peers within 30s.)
+    # `dapp-internal` is a fresh docker bridge with default NAT
+    # behavior, which carries UDP correctly. dapp-examples joins both
+    # networks so it can still reach the node via `node:3000` AND remain
+    # discoverable by nginx-proxy on `proxy-network`.
     networks:
-      - proxy-network
+      - dapp-internal
     restart: unless-stopped
 
   dapp-examples:
@@ -72,6 +84,9 @@ services:
     volumes:
       - sands-data:/app/data
     networks:
+      # `dapp-internal` for talking to the node sidecar by service name.
+      # `proxy-network` for nginx-proxy public routing of VIRTUAL_HOST.
+      - dapp-internal
       - proxy-network
     restart: unless-stopped
 
@@ -81,5 +96,12 @@ volumes:
   node-archive:
 
 networks:
+  # Project-owned bridge that carries node↔dapp-examples traffic AND is
+  # the node sidecar's egress for outbound P2P UDP. Default `bridge`
+  # driver settings — that's the whole point: vanilla docker NAT makes
+  # WebRTC's DTLS/SCTP-over-UDP work, whereas `proxy-network` (nginx-
+  # proxy's external network) does not.
+  dapp-internal:
+    driver: bridge
   proxy-network:
     external: true
