@@ -239,13 +239,15 @@ jobs:
                 grep -iE "peer|dial|connect|seed|listen|p2p|webrtc|quic|error|warn" | \
                 tail -100 || true
 
+              # NOTE: prod testnet-mini-apps has python3 but NOT jq, so
+              # the parser is python; single-quote outer + double-quote
+              # internal keeps the embedded JSON-ish strings clean
+              # inside the YAML literal block. Multi-line python here
+              # would outdent below the block and silently truncate the
+              # script body — keep it as one logical line.
               echo "==> /status from host (dapp-node runs in network_mode: host):"
-              curl -sfm 5 http://localhost:3000/status | jq -r '
-                "  sync_status=" + (.node_sync_status // "null") +
-                "  peers=" + (.peers | length | tostring) +
-                "  connected=" + ([.peers[] | select(.connection_status == "Connected")] | length | tostring),
-                "  best_tip_height=" + ((.blockchain.best_tip.height // "null") | tostring)
-              ' || echo "::warning::host loopback could not reach dapp-node"
+              curl -sfm 5 http://localhost:3000/status | python3 -c 'import sys,json; s=json.load(sys.stdin); peers=s.get("peers",[]); conn=sum(1 for p in peers if p.get("connection_status")=="Connected"); tip=(s.get("blockchain") or {}).get("best_tip") or {}; print("  sync_status=" + str(s.get("node_sync_status"))); print("  peers=" + str(len(peers)) + " connected=" + str(conn)); print("  best_tip_height=" + str(tip.get("height")))' \
+                || echo "::warning::host loopback could not reach dapp-node"
               echo
               echo "==> public /__usernode/node_status:"
               curl -sfm 5 https://dapps.usernodelabs.org/__usernode/node_status | \
