@@ -4,6 +4,22 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      wipe_node_data:
+        description: "Drop examples_node-data before up. Forces a fresh p2p identity and clean work-dir; archive snapshot is preserved. Use when the sidecar is stuck in Connecting / 0 peers."
+        required: false
+        default: false
+        type: boolean
+      recreate_node:
+        description: "Pass --force-recreate to docker compose up so the node container is cycled even when compose doesn't detect a change. Cheap and safe; useful when latest tag was repulled but the running container kept the old SHA."
+        required: false
+        default: false
+        type: boolean
+      dump_logs:
+        description: "After up, sleep 30s and dump dapp-node logs + /status probes into the action output. Auto-enables when wipe_node_data or recreate_node is set; explicit toggle for log-only inspection without state changes. Off by default on push deploys to keep them quiet."
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -41,12 +57,25 @@ jobs:
       #     the existing deploy uses all of these).
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
+        env:
+          # workflow_dispatch booleans render as "true" / "false"; on push events
+          # `inputs.*` is null and these expressions render as "false". The remote
+          # `[ "$X" = "true" ]` tests treat anything non-"true" as off, so push
+          # deploys behave identically to the pre-input version.
+          #
+          # DUMP_LOGS is OR'd at template time so any remediation flag implies
+          # log capture (you almost certainly want logs when you're actively
+          # poking the sidecar) without forcing operators to set both inputs.
+          WIPE_NODE_DATA: ${{ inputs.wipe_node_data }}
+          RECREATE_NODE: ${{ inputs.recreate_node }}
+          DUMP_LOGS: ${{ inputs.dump_logs == true || inputs.wipe_node_data == true || inputs.recreate_node == true }}
         with:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           command_timeout: 30m
+          envs: WIPE_NODE_DATA,RECREATE_NODE,DUMP_LOGS
           script: |
             set -euxo pipefail
             REPO_DIR=${{ secrets.DEPLOY_PATH }}
@@ -150,15 +179,79 @@ jobs:
             # error.
             COMPOSE="docker compose --env-file ../.env"
             $COMPOSE down || true
+
+            # Optional: wipe `examples_node-data` (the node's work-dir +
+            # p2p identity + peer cache) when the workflow_dispatch input
+            # `wipe_node_data` is set. Use this when the sidecar is wedged
+            # in `Connecting` / `peers: 0` after a deploy — typical cause
+            # is stale on-disk peer state that survives across deploys
+            # (we already wipe `examples_node-archive` every run, but
+            # `examples_node-data` is preserved by design). Safe: the node
+            # regenerates a p2p identity on boot and re-bootstraps from
+            # the freshly-fetched archive snapshot; seeds accept the new
+            # identity normally.
+            if [ "${WIPE_NODE_DATA:-false}" = "true" ]; then
+              echo "==> wipe_node_data=true — dropping examples_node-data volume"
+              docker volume rm examples_node-data 2>/dev/null || \
+                echo "==> volume already absent, continuing"
+            fi
+
             echo "==> Pulling latest node sidecar image..."
             # Tolerant of failure: if USERNODE_IMAGE points at a tag that
             # only exists locally (e.g. `usernode:local-amd64` from a
             # one-off `docker save`/`docker load`), `pull` will 404 — but
             # `up -d` will still find the image in the local daemon.
             $COMPOSE pull node || echo "==> pull skipped (image may be local-only); continuing"
-            $COMPOSE up -d --build 2>&1
+
+            # Optional: --force-recreate the node container even if the
+            # image SHA hasn't changed (compose will skip recreate
+            # otherwise). Useful when `:latest` was repulled but the
+            # running container retained the previous SHA, or when the
+            # container is wedged in some bad in-memory state and just
+            # needs a clean cycle.
+            UP_ARGS="-d --build"
+            if [ "${RECREATE_NODE:-false}" = "true" ]; then
+              echo "==> recreate_node=true — passing --force-recreate"
+              UP_ARGS="$UP_ARGS --force-recreate"
+            fi
+            $COMPOSE up $UP_ARGS 2>&1
             $COMPOSE ps
             echo "==> Combined examples server started."
+
+            # ----------------------------------------------------------
+            # Optional diagnostic tail: dump the sidecar's startup logs
+            # plus internal/public /status into the GH Actions output so
+            # we can see *why* peering fails when it does. Without this
+            # we're flying blind from a remote status endpoint that only
+            # reports `Connecting` / `peers: 0` with no error string.
+            # Gated behind DUMP_LOGS to keep push deploys quiet (auto-on
+            # whenever wipe_node_data or recreate_node is set, since
+            # those imply active debugging).
+            # ----------------------------------------------------------
+            if [ "${DUMP_LOGS:-false}" = "true" ]; then
+              echo "==> Waiting 30s for node startup..."
+              sleep 30
+              echo "==> dapp-node logs (last 300 lines):"
+              docker logs --tail 300 dapp-node 2>&1 || \
+                echo "::warning::could not read dapp-node logs"
+              echo "==> dapp-node peer/dial/connect/seed/listen log lines:"
+              docker logs dapp-node 2>&1 | \
+                grep -iE "peer|dial|connect|seed|listen|p2p|webrtc|quic|error|warn" | \
+                tail -100 || true
+              echo "==> /status from inside the proxy network:"
+              # one-shot curl container joining the same external network
+              # as the sidecar so we don't depend on `curl`/`wget` being
+              # in the dapp-examples or node images.
+              docker run --rm --network proxy-network curlimages/curl:8.10.1 \
+                -sfm 5 http://dapp-node:3000/status | head -c 800 || \
+                echo "::warning::could not reach dapp-node:3000/status from proxy-network"
+              echo
+              echo "==> public /__usernode/node_status:"
+              curl -sfm 5 https://dapps.usernodelabs.org/__usernode/node_status | \
+                head -c 800 || \
+                echo "::warning::public node_status endpoint unreachable"
+              echo
+            fi
 
             echo "==> All running containers:"
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
